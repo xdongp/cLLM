@@ -89,7 +89,9 @@ def export_qwen_torchscript(
     wrapped_model.eval()
     
     # 创建示例输入（用于 tracing）
-    example_input = torch.randint(0, model.config.vocab_size, (1, 8), dtype=torch.long)
+    # NOTE: seq_len 决定了导出模型能处理的最大序列长度！
+    # 之前用 (1, 8) 导致模型只能处理 8 token，现在改为 128
+    example_input = torch.randint(0, model.config.vocab_size, (1, 128), dtype=torch.long)
     
     print(f"[export_qwen_torchscript] Tracing model with example input shape: {example_input.shape}")
     

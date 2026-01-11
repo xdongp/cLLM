@@ -62,36 +62,58 @@ bool LibTorchBackend::initialize() {
         model_.eval();
         CLLM_INFO("[LibTorchBackend] Model set to eval mode");
         
-        // 4. 从模型中提取vocab_size并更新config
+        // 4. 探测 TorchScript 可接受的输入 seq_len，并从输出维度提取 vocab_size
+        //    注意：torch.jit.trace 可能会固化 seq_len（之前工程里写死为 8，会导致 seq128 模型运行崩溃）
         try {
-            // 创建一个测试输入,推理一次获取输出维度
-            auto test_input = torch::randint(0, 1000, {1, 8}, torch::kLong).to(device_);
             torch::NoGradGuard no_grad;
-            auto test_output = model_.forward({test_input}).toTensor();
-            
-            // 输出形状应该是 [batch, seq_len, vocab_size] 或 [seq_len, vocab_size]
-            auto output_sizes = test_output.sizes();
-            size_t detected_vocab_size = 0;
-            
-            if (output_sizes.size() == 3) {
-                // [batch, seq, vocab]
-                detected_vocab_size = static_cast<size_t>(output_sizes[2]);
-            } else if (output_sizes.size() == 2) {
-                // [seq, vocab]
-                detected_vocab_size = static_cast<size_t>(output_sizes[1]);
+
+            const std::vector<size_t> candidates = {8, 16, 32, 64, 128, 256};
+            bool detected = false;
+
+            for (size_t len : candidates) {
+                try {
+                    auto test_input = torch::randint(0, 1000, {1, static_cast<int64_t>(len)}, torch::kLong).to(device_);
+                    auto test_output = model_.forward({test_input}).toTensor();
+
+                    auto output_sizes = test_output.sizes();
+                    size_t detected_vocab_size = 0;
+
+                    if (output_sizes.size() == 3) {
+                        // [batch, seq, vocab]
+                        detected_vocab_size = static_cast<size_t>(output_sizes[2]);
+                    } else if (output_sizes.size() == 2) {
+                        // [seq, vocab]
+                        detected_vocab_size = static_cast<size_t>(output_sizes[1]);
+                    }
+
+                    tracedSeqLen_ = len;
+                    detected = true;
+
+                    CLLM_INFO("[LibTorchBackend] Detected traced seq_len: {}", tracedSeqLen_);
+
+                    if (detected_vocab_size > 0 && detected_vocab_size != config_.vocabSize) {
+                        CLLM_INFO("[LibTorchBackend] Detected vocab_size from model: {} (config has: {})",
+                                  detected_vocab_size, config_.vocabSize);
+                        config_.vocabSize = detected_vocab_size;
+                        CLLM_INFO("[LibTorchBackend] Updated config vocab_size to {}", config_.vocabSize);
+                    } else {
+                        CLLM_INFO("[LibTorchBackend] Vocab size: {}", config_.vocabSize);
+                    }
+
+                    break;  // 探测成功
+                } catch (const std::exception& e) {
+                    // 尝试下一个候选长度
+                    CLLM_DEBUG("[LibTorchBackend] seq_len {} not supported by traced model: {}", len, e.what());
+                }
             }
-            
-            if (detected_vocab_size > 0 && detected_vocab_size != config_.vocabSize) {
-                CLLM_INFO("[LibTorchBackend] Detected vocab_size from model: {} (config has: {})", 
-                          detected_vocab_size, config_.vocabSize);
-                config_.vocabSize = detected_vocab_size;
-                CLLM_INFO("[LibTorchBackend] Updated config vocab_size to {}", config_.vocabSize);
-            } else {
-                CLLM_INFO("[LibTorchBackend] Vocab size: {}", config_.vocabSize);
+
+            if (!detected) {
+                throw std::runtime_error("failed to detect traced seq_len from candidates");
             }
         } catch (const std::exception& e) {
-            CLLM_WARN("[LibTorchBackend] Could not auto-detect vocab_size: {}", e.what());
-            CLLM_WARN("[LibTorchBackend] Using config vocab_size: {}", config_.vocabSize);
+            CLLM_WARN("[LibTorchBackend] Could not detect traced seq_len / vocab_size: {}", e.what());
+            CLLM_WARN("[LibTorchBackend] Fallback to config vocab_size: {} and seq_len=8", config_.vocabSize);
+            tracedSeqLen_ = 8;
         }
         
         // 5. 应用图优化（可选）
@@ -221,16 +243,16 @@ Tensor LibTorchBackend::forward(const std::vector<int> &inputIds) {
             }
         }
         
-        // 由于 TorchScript trace 固化了输入形状（8），需要填充或裁剪
+        // 由于 TorchScript trace 可能固化输入 seq_len，需要填充或裁剪到 tracedSeqLen_
         std::vector<int> paddedInputIds = validInputIds;
         const size_t originalLen = validInputIds.size();
-        const size_t tracedLen = 8;  // 导出时使用的长度
+        const size_t tracedLen = (tracedSeqLen_ > 0 ? tracedSeqLen_ : 8);
         
         if (originalLen < tracedLen) {
             // 填充到 tracedLen（使用 PAD token 0）
             paddedInputIds.resize(tracedLen, 0);
-            CLLM_INFO("[LibTorchBackend] Padded input from {} to {} tokens", 
-                      originalLen, tracedLen);
+            CLLM_DEBUG("[LibTorchBackend] Padded input from {} to {} tokens", 
+                       originalLen, tracedLen);
         } else if (originalLen > tracedLen) {
             // 裁剪到 tracedLen（不建议，但作为临时方案）
             paddedInputIds.resize(tracedLen);

@@ -2,6 +2,8 @@
 #include "cllm/http/request.h"
 #include "cllm/http/response.h"
 #include <mutex>
+#include <thread>
+#include <algorithm>
 
 namespace cllm {
 
@@ -18,6 +20,11 @@ void DrogonServer::init(const std::string& host, int port, HttpHandler* handler)
         host_ = host;
         port_ = port;
     }
+
+    // Drogon 默认线程数可能较小，/generate 为同步阻塞处理时会导致 /health 等请求卡住
+    // 这里显式配置线程数，保证健康检查等轻量请求可并发响应
+    const unsigned int threads = std::max(2u, std::thread::hardware_concurrency());
+    drogon::app().setThreadNum(static_cast<int>(threads));
 
     // 显式注册路由到 HttpHandler（避免依赖 Controller 自动注册失败导致 404）
     drogon::app().registerHandler(

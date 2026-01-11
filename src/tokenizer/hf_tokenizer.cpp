@@ -100,13 +100,16 @@ std::string HFTokenizer::decode(const std::vector<int>& ids, bool skipSpecialTok
     }
     
     try {
-        // 转换为tokenizers-cpp需要的类型
+        // 转换为tokenizers-cpp需要的类型（同时按需跳过特殊 tokens）
         std::vector<int32_t> tokenIds;
         tokenIds.reserve(ids.size());
         for (int id : ids) {
+            if (skipSpecialTokens && isSpecialToken(id)) {
+                continue;
+            }
             tokenIds.push_back(static_cast<int32_t>(id));
         }
-        
+
         // Decode
         std::string text = tokenizer_->Decode(tokenIds);
         return text;

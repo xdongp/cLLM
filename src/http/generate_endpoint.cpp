@@ -88,6 +88,7 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
     
     std::string requestId = generateRequestId();
     std::string generatedText = "";
+    size_t generatedTokenCount = 0;
     
     if (scheduler_ != nullptr && tokenizer_ != nullptr) {
         try {
@@ -103,6 +104,10 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
             requestState.temperature = req.temperature;
             requestState.topP = req.topP;
             requestState.topK = 0; // 使用默认值
+
+            // 从 tokenizer 注入 EOS，确保调度/批处理能正确停止
+            requestState.eosTokenId = tokenizer_->getEosId();
+
             requestState.priority = 0;
             requestState.arrivalTime = 0;
             requestState.startTime = 0;
@@ -118,11 +123,12 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
             requestState.tokenizedPrompt = tokenizer_->encode(req.prompt, true);
             CLLM_DEBUG("Tokenization completed, got %zu tokens", requestState.tokenizedPrompt.size());
             
-            // 限制 token 数量以适配 TorchScript trace 限制（8 tokens）
-            const size_t MAX_INPUT_TOKENS = 7;  // 留一个位置用于填充
+            // 控制输入长度：TorchScript trace 可能固化 seq_len（当前模型为 128），过长输入会导致推理开销变大
+            // 这里做一个温和的上限，避免超长 prompt 把 CPU 推理拖垮；真正的裁剪/填充由后端按 traced seq_len 处理
+            const size_t MAX_INPUT_TOKENS = 120;
             if (requestState.tokenizedPrompt.size() > MAX_INPUT_TOKENS) {
-                CLLM_WARN("Input tokens (%zu) exceeds limit (%zu), truncating", 
-                         requestState.tokenizedPrompt.size(), MAX_INPUT_TOKENS);
+                CLLM_WARN("Input tokens (%zu) exceeds limit (%zu), truncating",
+                          requestState.tokenizedPrompt.size(), MAX_INPUT_TOKENS);
                 requestState.tokenizedPrompt.resize(MAX_INPUT_TOKENS);
             }
             
@@ -146,8 +152,9 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
             CLLM_DEBUG("Request added with ID: %zu", reqId);
             
             // 等待请求完成
-            CLLM_DEBUG("Waiting for request completion...");
-            if (scheduler_->waitForRequest(reqId, 60.0f)) { // 60秒超时（从30秒增加，适应当前性能）
+            const float timeoutSec = std::max(60.0f, std::min(600.0f, static_cast<float>(req.maxTokens) * 10.0f));
+            CLLM_DEBUG("Waiting for request completion (timeout=%.1fs)...", timeoutSec);
+            if (scheduler_->waitForRequest(reqId, timeoutSec)) {
                 CLLM_DEBUG("Request completed, retrieving result...");
                 RequestState result = scheduler_->getRequestResult(reqId);
                 
@@ -166,9 +173,23 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
                     }
                     generatedTokens << " ]";
                     CLLM_DEBUG("%s", generatedTokens.str().c_str());
-                    
+
+                    // 解码前：按 EOS 截断，避免 EOS 后继续采样导致“乱码”
+                    std::vector<int> toDecode = result.generatedTokens;
+                    const int eosId = tokenizer_->getEosId();
+                    if (eosId >= 0) {
+                        for (size_t k = 0; k < toDecode.size(); ++k) {
+                            if (toDecode[k] == eosId) {
+                                toDecode.resize(k);
+                                break;
+                            }
+                        }
+                    }
+
+                    generatedTokenCount = toDecode.size();
+
                     CLLM_DEBUG("Decoding tokens...");
-                    generatedText = tokenizer_->decode(result.generatedTokens, true);
+                    generatedText = tokenizer_->decode(toDecode, true);
                     CLLM_DEBUG("Decoded text: [%s]", generatedText.c_str());
                     CLLM_DEBUG("Decoded text length: %zu", generatedText.length());
                 } else {
@@ -191,22 +212,22 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
     auto endTime = std::chrono::high_resolution_clock::now();
     float responseTime = std::chrono::duration<float>(endTime - startTime).count();
     
+    // TPS 使用实际生成 token 数量（req.maxTokens 只是上限）
     float tokensPerSecond = 0.0f;
     if (responseTime > 0.0f) {
-        tokensPerSecond = static_cast<float>(req.maxTokens) / responseTime;
+        tokensPerSecond = static_cast<float>(generatedTokenCount) / responseTime;
     }
     
-    std::ostringstream oss;
-    oss << "{";
-    oss << "\"id\":\"" << requestId << "\",";
-    oss << "\"text\":\"" << generatedText << "\",";
-    oss << "\"response_time\":" << responseTime << ",";
-    oss << "\"tokens_per_second\":" << tokensPerSecond;
-    oss << "}";
-    
+    // 用 JSON 库构造响应，确保 text 等字段正确转义（避免出现双引号导致 JSON 断裂）
+    nlohmann::json resp;
+    resp["id"] = requestId;
+    resp["text"] = generatedText;
+    resp["response_time"] = responseTime;
+    resp["tokens_per_second"] = tokensPerSecond;
+
     HttpResponse response;
     response.setStatusCode(200);
-    response.setBody(oss.str());
+    response.setBody(resp.dump());
     response.setContentType("application/json");
     
     return response;
@@ -248,19 +269,24 @@ HttpResponse GenerateEndpoint::handleStreaming(const GenerateRequest& req) {
             }
             generatedText += tokenText;
             
+            nlohmann::json chunk;
+            chunk["id"] = requestId;
+            chunk["token"] = tokenText;
+            chunk["done"] = false;
+
             std::ostringstream oss;
-            oss << "data: {\"id\":\"" << requestId << "\",";
-            oss << "\"token\":\"" << tokenText << "\",";
-            oss << "\"done\":false}\n\n";
-            
+            oss << "data: " << chunk.dump() << "\n\n";
             response.addChunk(oss.str());
         }
         
         // Send final done message
+        nlohmann::json finalChunk;
+        finalChunk["id"] = requestId;
+        finalChunk["token"] = "";
+        finalChunk["done"] = true;
+
         std::ostringstream finalOss;
-        finalOss << "data: {\"id\":\"" << requestId << "\",";
-        finalOss << "\"token\":\"\",";
-        finalOss << "\"done\":true}\n\n";
+        finalOss << "data: " << finalChunk.dump() << "\n\n";
         response.addChunk(finalOss.str());
     }
     

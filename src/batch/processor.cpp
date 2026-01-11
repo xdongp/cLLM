@@ -57,13 +57,8 @@ void BatchProcessor::checkStoppingConditions(RequestState& request, int nextToke
         request.isCompleted = true;
         return;
     }
-    
-    if (nextToken == 2) {
-        request.isCompleted = true;
-        return;
-    }
-    
-    if (nextToken == 0) {
+
+    if (request.eosTokenId >= 0 && nextToken == request.eosTokenId) {
         request.isCompleted = true;
         return;
     }

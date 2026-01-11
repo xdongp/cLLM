@@ -224,11 +224,11 @@ void SchedulerBatchProcessor::updateRequestStates(
         CLLM_DEBUG("Request %zu - Generated tokens now: %zu", i, batch[i].generatedTokens.size());
         
         // Check if we should complete the request
-        bool eosReached = (nextToken == 2);
-        bool maxTokensReached = (batch[i].generatedTokens.size() >= batch[i].maxTokens);
-        
+        const bool eosReached = (batch[i].eosTokenId >= 0 && nextToken == batch[i].eosTokenId);
+        const bool maxTokensReached = (batch[i].generatedTokens.size() >= batch[i].maxTokens);
+
         if (eosReached) {
-            CLLM_DEBUG("Request %zu - Reached EOS token (2), completing", i);
+            CLLM_DEBUG("Request %zu - Reached EOS token (%d), completing", i, batch[i].eosTokenId);
             batch[i].isCompleted = true;
         } else if (maxTokensReached) {
             CLLM_DEBUG("Request %zu - Reached max tokens (%zu), completing", i, batch[i].generatedTokens.size());

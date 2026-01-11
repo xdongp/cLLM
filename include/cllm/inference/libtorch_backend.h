@@ -109,6 +109,9 @@ private:
     torch::Device device_;            ///< 推理设备（CPU/GPU）
     bool initialized_;                ///< 是否已初始化
 
+    // TorchScript trace 可能固化了输入序列长度；这里记录实际可用的 seq_len
+    size_t tracedSeqLen_ = 0;
+
     /**
      * @brief 将 std::vector<int> 转换为 torch::Tensor
      */

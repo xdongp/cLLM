@@ -248,13 +248,9 @@ void BatchManager::checkStoppingConditions(RequestState& request, int nextToken)
         request.isCompleted = true;
         return;
     }
-    
-    if (nextToken == 2) {
-        request.isCompleted = true;
-        return;
-    }
-    
-    if (nextToken == 0) {
+
+    // 使用请求注入的 EOS token id（避免写死 2/0 导致不同模型行为错误）
+    if (request.eosTokenId >= 0 && nextToken == request.eosTokenId) {
         request.isCompleted = true;
         return;
     }
