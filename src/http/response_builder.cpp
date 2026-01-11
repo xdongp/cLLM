@@ -1,0 +1,56 @@
+#include "cllm/http/response_builder.h"
+
+namespace cllm {
+
+ResponseBuilder::ResponseBuilder() : statusCode_(200) {
+}
+
+ResponseBuilder::~ResponseBuilder() {
+}
+
+ResponseBuilder& ResponseBuilder::setStatus(int code) {
+    statusCode_ = code;
+    return *this;
+}
+
+ResponseBuilder& ResponseBuilder::setHeader(const std::string& name, const std::string& value) {
+    headers_[name] = value;
+    return *this;
+}
+
+ResponseBuilder& ResponseBuilder::setBody(const std::string& body) {
+    body_ = body;
+    return *this;
+}
+
+HttpResponse ResponseBuilder::build() {
+    HttpResponse response;
+    response.setStatusCode(statusCode_);
+    
+    for (const auto& header : headers_) {
+        response.setHeader(header.first, header.second);
+    }
+    
+    response.setBody(body_);
+    return response;
+}
+
+ResponseBuilder ResponseBuilder::ok() {
+    ResponseBuilder builder;
+    builder.setStatus(200);
+    return builder;
+}
+
+ResponseBuilder ResponseBuilder::error(int code, const std::string& message) {
+    ResponseBuilder builder;
+    builder.setStatus(code);
+    
+    std::string errorBody = "{\"error\":{\"code\":" + std::to_string(code) + 
+                           ",\"message\":\"" + message + "\"}}";
+    builder.setBody(errorBody);
+    builder.setHeader("Content-Type", "application/json");
+    
+    return builder;
+}
+
+}

@@ -1,0 +1,251 @@
+cmake_minimum_required(VERSION 3.15)
+project(cllm VERSION 1.0.0 LANGUAGES CXX)
+
+# Find Drogon (temporarily commented out for testing)
+# find_package(Drogon REQUIRED)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
+include_directories(${CMAKE_SOURCE_DIR}/include)
+include_directories(${CMAKE_SOURCE_DIR}/third_party)
+include_directories(${CMAKE_SOURCE_DIR}/third_party/eigen)
+
+option(BUILD_TESTS "Build tests" ON)
+option(BUILD_EXAMPLES "Build examples" ON)
+
+find_package(Threads REQUIRED)
+
+# Find nlohmann/json
+find_package(nlohmann_json 3.2.0 REQUIRED)
+if(nlohmann_json_FOUND)
+    message(STATUS "Found nlohmann_json: ${nlohmann_json_VERSION}")
+endif()
+
+# Find Asio
+find_package(asio CONFIG QUIET)
+if(NOT asio_FOUND)
+    message(WARNING "Asio not found. You may need to install it manually.")
+    # For now, we'll skip Asio integration in this build
+else()
+    target_link_libraries(cllm_core PRIVATE asio::asio)
+endif()
+
+# Find YAML-CPP
+find_package(yaml-cpp REQUIRED)
+if(yaml-cpp_FOUND)
+    message(STATUS "Found yaml-cpp: ${yaml-cpp_LIBRARIES}")
+endif()
+
+# Find spdlog
+find_package(spdlog REQUIRED)
+
+# Find LibTorch (PyTorch C++ API)
+set(TORCH_PATH "${CMAKE_SOURCE_DIR}/third_party/libtorch")
+list(APPEND CMAKE_PREFIX_PATH "${TORCH_PATH}")
+find_package(Torch REQUIRED)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
+message(STATUS "Found LibTorch: ${TORCH_LIBRARIES}")
+
+# Tokenizers 选项 (✅ 默认启用)
+option(USE_TOKENIZERS_CPP "Use tokenizers-cpp for HuggingFace tokenizer" ON)
+
+if(USE_TOKENIZERS_CPP)
+    message(STATUS "✅ Enabling HuggingFace tokenizers support (tokenizers-cpp)")
+    
+    # 查找tokenizers-cpp头文件
+    find_path(TOKENIZERS_INCLUDE_DIR 
+        NAMES tokenizers_cpp.h tokenizers_c.h
+        PATHS 
+            /opt/homebrew/include
+            /usr/local/include
+            ${CMAKE_SOURCE_DIR}/third_party/tokenizers-cpp/include
+        PATH_SUFFIXES tokenizers
+    )
+    
+    # 查找tokenizers-cpp库文件
+    find_library(TOKENIZERS_LIBRARY 
+        NAMES tokenizers_cpp tokenizers_c
+        PATHS 
+            /opt/homebrew/lib
+            /usr/local/lib
+            ${CMAKE_SOURCE_DIR}/third_party/tokenizers-cpp/lib
+    )
+    
+    if(TOKENIZERS_INCLUDE_DIR AND TOKENIZERS_LIBRARY)
+        message(STATUS "✅ Found tokenizers-cpp:")
+        message(STATUS "   Include: ${TOKENIZERS_INCLUDE_DIR}")
+        message(STATUS "   Library: ${TOKENIZERS_LIBRARY}")
+        
+        add_compile_definitions(USE_TOKENIZERS_CPP)
+        include_directories(${TOKENIZERS_INCLUDE_DIR})
+        
+        set(TOKENIZERS_LIBRARIES ${TOKENIZERS_LIBRARY})
+    else()
+        message(WARNING "⚠️  tokenizers-cpp not found, falling back to NativeTokenizer")
+        message(WARNING "   Install guide: https://github.com/mlc-ai/tokenizers-cpp")
+        message(STATUS "   Quick install on macOS:")
+        message(STATUS "     brew install rust")
+        message(STATUS "     git clone https://github.com/mlc-ai/tokenizers-cpp")
+        message(STATUS "     cd tokenizers-cpp && mkdir build && cd build")
+        message(STATUS "     cmake .. -DCMAKE_INSTALL_PREFIX=/opt/homebrew")
+        message(STATUS "     make -j8 && make install")
+        set(USE_TOKENIZERS_CPP OFF)
+    endif()
+else()
+    message(STATUS "❌ HuggingFace tokenizers support disabled")
+endif()
+
+# Find SentencePiece - try multiple methods
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(SentencePiece QUIET sentencepiece)
+    if(SentencePiece_FOUND)
+        message(STATUS "Found SentencePiece via pkg-config: ${SentencePiece_LIBRARIES}")
+        include_directories(${SentencePiece_INCLUDE_DIRS})
+    endif()
+endif()
+
+# If pkg-config failed, try manual find
+if(NOT SentencePiece_FOUND)
+    find_path(SentencePiece_INCLUDE_DIRS
+        NAMES sentencepiece_processor.h
+        PATHS /usr/include /usr/local/include /opt/homebrew/include
+        PATH_SUFFIXES sentencepiece
+    )
+    
+    find_library(SentencePiece_LIBRARIES
+        NAMES sentencepiece
+        PATHS /usr/lib /usr/local/lib /opt/homebrew/lib
+    )
+    
+    if(SentencePiece_INCLUDE_DIRS AND SentencePiece_LIBRARIES)
+        message(STATUS "Found SentencePiece manually: ${SentencePiece_LIBRARIES}")
+        include_directories(${SentencePiece_INCLUDE_DIRS})
+        set(SentencePiece_FOUND TRUE)
+    else()
+        message(FATAL_ERROR "SentencePiece not found. Please install it and set SentencePiece_ROOT")
+    endif()
+endif()
+
+find_package(Drogon REQUIRED)
+
+add_subdirectory(third_party)
+add_subdirectory(src/CTokenizer)
+
+# CTokenizer sources are now available via CTOKENIZER_SOURCES variable
+
+add_library(cllm_core
+    src/common/config.cpp
+    src/common/types.cpp
+    src/common/utils.cpp
+    src/common/json.cpp
+    src/common/logger.cpp
+    src/common/asio_handler.cpp
+    src/common/memory_utils.cpp
+    src/memory/monitor.cpp
+    src/memory/float_array.cpp
+    src/memory/cache_manager.cpp
+    src/memory/executor_manager.cpp
+    src/thread_pool/manager.cpp
+    src/thread_pool/monitor.cpp
+    src/common/queue.cpp
+    src/common/request_state.cpp
+    src/batch/manager.cpp
+    src/batch/processor.cpp
+    src/kv_cache/cache.cpp
+    src/kv_cache/cache_manager.cpp
+    src/sampler/sampler.cpp
+    src/sampler/config.cpp
+    src/sampler/stats.cpp
+    src/model/config.cpp
+    src/model/executor.cpp
+    src/model/stats.cpp
+    src/model/inference_optimizer.cpp
+    src/model/quantization_manager.cpp
+    src/model/batch_processor.cpp
+    src/kylin/kernels.cpp
+    src/kylin/rope.cpp
+    src/kylin/attention.cpp
+    src/kylin/feed_forward.cpp
+    src/kylin/transformer_block.cpp
+    src/kylin/transformer_model.cpp
+    src/kylin/model_loader.cpp
+    src/inference/inference_engine.cpp
+    src/inference/backend_factory.cpp
+    src/inference/kylin_backend.cpp
+    src/inference/libtorch_backend.cpp
+    src/scheduler/scheduler.cpp
+    src/scheduler/stats.cpp
+    src/scheduler/tracker.cpp
+    src/scheduler/batch_processor.cpp
+    src/tokenizer/token.cpp
+    src/tokenizer/config.cpp
+    src/tokenizer/request.cpp
+    src/tokenizer/response.cpp
+    src/tokenizer/stats.cpp
+    src/tokenizer/tokenizer.cpp
+    src/tokenizer/generator.cpp
+    src/tokenizer/manager.cpp
+    src/tokenizer/json_tokenizer.cpp
+    src/tokenizer/qwen2_tokenizer.cpp
+    src/tokenizer/hf_tokenizer.cpp
+    src/tokenizer/native_tokenizer.cpp
+    src/tokenizer/unicode_utils.cpp
+    src/http/request.cpp
+    src/http/response.cpp
+    src/http/request_validator.cpp
+    src/http/response_builder.cpp
+    src/http/handler.cpp
+    src/http/api_endpoint.cpp
+    src/http/health_endpoint.cpp
+    src/http/generate_endpoint.cpp
+    src/http/encode_endpoint.cpp
+    src/http/drogon_server.cpp
+    ${CTOKENIZER_SOURCES}
+)
+
+target_link_libraries(cllm_core
+    Threads::Threads
+    bs_thread_pool
+    spdlog::spdlog
+    yaml-cpp::yaml-cpp
+    "${TORCH_LIBRARIES}"
+    ${SentencePiece_LIBRARIES}
+    ${TOKENIZERS_LIBRARIES}  # ✅ Add tokenizers-cpp
+    Drogon::Drogon
+)
+
+# Set ASIO_STANDALONE flag to use header-only version
+if(NOT asio_FOUND)
+    target_compile_definitions(cllm_core PUBLIC ASIO_STANDALONE)
+endif()
+
+if(BUILD_TESTS)
+    add_subdirectory(third_party/googletest)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+if(BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
+
+# Add executable for the main program
+add_executable(cllm_server src/main.cpp)
+
+# Add test server executable
+target_link_libraries(cllm_server
+    cllm_core
+    Threads::Threads
+    Drogon::Drogon
+)
+
+

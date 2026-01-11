@@ -1,0 +1,6 @@
+# 采样器配置
+sampler:
+  temperature: 0.7
+  top_k: 50
+  top_p: 0.9
+  greedy_threshold: 0.0  # Unified with test_config

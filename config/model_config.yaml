@@ -1,0 +1,14 @@
+# 模型配置
+model:
+  type: "qwen3"
+  vocab_size: 151936  # Qwen3 model actual vocab size
+  hidden_size: 4096
+  num_layers: 32
+  num_attention_heads: 32
+  num_key_value_heads: 32
+  max_sequence_length: 2048
+  intermediate_size: 11008
+  use_kv_cache: true
+  use_quantization: false
+  use_memory_compression: false
+  quantization_type: ""
