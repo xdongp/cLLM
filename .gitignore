@@ -1,0 +1,386 @@
+# ====================================
+# cLLM 项目 .gitignore
+# C++ LLM 推理引擎
+# ====================================
+
+# ====================================
+# C++ 编译产物
+# ====================================
+# 构建目录
+build/
+cmake-build-*/
+out/
+.cmake/
+
+# 编译输出
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+
+# CMake 缓存
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+install_manifest.txt
+
+# 可执行文件
+/bin/
+/test_*
+test_pool_init
+
+# ====================================
+# 第三方库 (通过子模块或包管理器管理)
+# ====================================
+third_party/
+!third_party/README.md
+llama.cpp/
+!llama.cpp/README.md
+
+# tokenizers-cpp (通过 CMake FetchContent)
+_deps/
+
+# sentencepiece (如果是子模块)
+sentencepiece/
+
+# ====================================
+# 依赖和包管理
+# ====================================
+# vcpkg
+vcpkg_installed/
+.vcpkg-root
+
+# Conan
+conanfile.txt.user
+conaninfo.txt
+conanbuildinfo.*
+conan.lock
+
+# ====================================
+# 模型文件 (大文件)
+# ====================================
+# 模型权重
+*.bin
+*.safetensors
+*.gguf
+*.pt
+*.pth
+*.onnx
+*.torchscript
+
+# 模型目录
+model/Qwen/
+model/*/Qwen*/
+model/*/checkpoints/
+model/*/weights/
+!model/*.py
+!model/*.md
+
+# 分词器模型
+*.model
+*.vocab
+!tests/test_tokenizer.model
+!tests/tokenizer.model
+
+# ====================================
+# 日志和输出
+# ====================================
+# 日志文件
+*.log
+logs/
+log/
+*.log.*
+
+# 测试输出
+test_results/
+test_output/
+*.test
+Testing/Temporary/
+
+# Benchmark 结果
+benchmark_results/
+*.benchmark
+*_benchmark_*.json
+*_results.json
+*_report.md
+
+# ====================================
+# IDE 和编辑器
+# ====================================
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# CLion / IntelliJ IDEA
+.idea/
+cmake-build-*/
+*.iml
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+
+# Vim
+*.swp
+*.swo
+*~
+.*.sw?
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ====================================
+# 操作系统
+# ====================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# ====================================
+# Python (如果有Python工具脚本)
+# ====================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# pytest
+.pytest_cache/
+.cache/
+
+# ====================================
+# 调试和性能分析
+# ====================================
+# GDB
+.gdb_history
+core
+core.*
+
+# Valgrind
+*.memcheck
+vgcore.*
+
+# Profiling
+*.prof
+*.perf
+*.svg
+perf.data
+perf.data.old
+
+# Sanitizers
+*.asan
+*.tsan
+*.ubsan
+
+# ====================================
+# 文档构建
+# ====================================
+docs/_build/
+docs/html/
+docs/latex/
+site/
+Doxyfile.bak
+
+# ====================================
+# 临时文件
+# ====================================
+*.tmp
+*.temp
+*.bak
+*.cache
+.cache/
+
+# ====================================
+# 配置文件 (包含敏感信息)
+# ====================================
+# 本地配置
+config/local.yaml
+config/*.local.yaml
+*.secret.yaml
+.env
+.env.local
+
+# API keys
+*_key.txt
+*_secret.txt
+
+# ====================================
+# CodeBuddy (AI开发助手)
+# ====================================
+.codebuddy/context/
+.codebuddy/memory/cache/
+.codebuddy/*.tmp
+.codebuddy/*.log
+
+# 保留规则和配置
+!.codebuddy/rules/
+!.codebuddy/*.md
+!.codebuddy/project.yaml
+
+# ====================================
+# Git 相关
+# ====================================
+# 备份分支的临时文件
+*.orig
+*.rej
+*.BACKUP.*
+*.BASE.*
+*.LOCAL.*
+*.REMOTE.*
+
+# ====================================
+# 项目特定
+# ====================================
+# 备份目录 (如果是临时备份)
+backup/tmp/
+backup/*.tmp
+
+# 服务器运行时
+*.pid
+*.sock
+
+# 性能测试结果
+token_performance_results.json
+optimized_token_performance_results.json
+sampler_benchmark_results.json
+improved_optimized_*.json
+improved_optimization_test_report.md
+sampler_performance_analysis.md
+
+# ====================================
+# 文档临时文件
+# ====================================
+# 不纳入版本控制的临时文档
+docs/tmp/
+docs/*.tmp.md
+
+# ====================================
+# 数据文件
+# ====================================
+# 测试数据 (大文件)
+test_data/large/
+data/*/large/
+
+# 生成的数据
+generated/
+output/
+
+# ====================================
+# 打包和发布
+# ====================================
+*.tar.gz
+*.zip
+*.7z
+*.rpm
+*.deb
+*.dmg
+
+# ====================================
+# 其他
+# ====================================
+# 编辑器标签
+tags
+TAGS
+.tags
+.TAGS
+
+# ctags
+.ctags
+
+# cscope
+cscope.*
+
+# 覆盖率报告
+*.gcov
+*.gcda
+*.gcno
+coverage/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# ASan/TSan 输出
+*.asan.log
+*.tsan.log
+
+# 压缩文件
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+
+# ====================================
+# 保留的文件 (明确允许)
+# ====================================
+# 保留配置示例
+!config/*.example.yaml
+!config/*.template.yaml
+
+# 保留 README
+!README*.md
+!**/README.md
+
+# 保留文档
+!docs/**/*.md
+!**/*.md
+
+# 保留测试模型 (小文件)
+!tests/*.model
+
+# 保留 CMakeLists.txt
+!**/CMakeLists.txt
+
+# 保留 Makefile
+!Makefile
