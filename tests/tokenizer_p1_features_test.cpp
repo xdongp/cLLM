@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 #include "cllm/CTokenizer/token_cache.h"
 #include "cllm/CTokenizer/performance_config.h"
 #include "cllm/CTokenizer/sentencepiece_tokenizer.h"

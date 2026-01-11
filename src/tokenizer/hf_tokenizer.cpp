@@ -29,10 +29,17 @@ bool HFTokenizer::load(const std::string& modelPath) {
     
     try {
         // Step 2: 加载tokenizer
-        tokenizer_ = tokenizers::Tokenizer::FromFile(tokenizerJsonPath);
+        std::ifstream f(tokenizerJsonPath);
+        if (!f.is_open()) {
+            CLLM_ERROR("Failed to open tokenizer.json: %s", tokenizerJsonPath.c_str());
+            return false;
+        }
+        std::string json_blob((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        
+        tokenizer_ = tokenizers::Tokenizer::FromBlobJSON(json_blob);
         
         if (!tokenizer_) {
-            CLLM_ERROR("Failed to load tokenizer from: %s", tokenizerJsonPath.c_str());
+            CLLM_ERROR("Failed to create tokenizer from blob: %s", tokenizerJsonPath.c_str());
             return false;
         }
         
@@ -63,8 +70,8 @@ std::vector<int> HFTokenizer::encode(const std::string& text, bool addSpecialTok
     }
     
     try {
-        // tokenizers-cpp API: Encode(text, add_special_tokens)
-        auto encoding = tokenizer_->Encode(text, addSpecialTokens);
+        // tokenizers-cpp API: Encode(text)
+        auto encoding = tokenizer_->Encode(text);
         
         // 转换为std::vector<int>
         std::vector<int> ids;
@@ -94,14 +101,14 @@ std::string HFTokenizer::decode(const std::vector<int>& ids, bool skipSpecialTok
     
     try {
         // 转换为tokenizers-cpp需要的类型
-        std::vector<uint32_t> tokenIds;
+        std::vector<int32_t> tokenIds;
         tokenIds.reserve(ids.size());
         for (int id : ids) {
-            tokenIds.push_back(static_cast<uint32_t>(id));
+            tokenIds.push_back(static_cast<int32_t>(id));
         }
         
         // Decode
-        std::string text = tokenizer_->Decode(tokenIds, skipSpecialTokens);
+        std::string text = tokenizer_->Decode(tokenIds);
         return text;
         
     } catch (const std::exception& e) {
@@ -213,7 +220,7 @@ std::vector<std::string> HFTokenizer::tokenize(const std::string& text) {
 #ifdef USE_TOKENIZERS_CPP
     if (!tokenizer_) return {};
     
-    auto encoding = tokenizer_->Encode(text, false);
+    auto encoding = tokenizer_->Encode(text);
     std::vector<std::string> tokens;
     for (auto id : encoding) {
         tokens.push_back(tokenizer_->IdToToken(id));

@@ -67,27 +67,48 @@ if(USE_TOKENIZERS_CPP)
             /opt/homebrew/include
             /usr/local/include
             ${CMAKE_SOURCE_DIR}/third_party/tokenizers-cpp/include
-        PATH_SUFFIXES tokenizers
     )
     
     # 查找tokenizers-cpp库文件
     find_library(TOKENIZERS_LIBRARY 
-        NAMES tokenizers_cpp tokenizers_c
+        NAMES tokenizers_cpp
         PATHS 
             /opt/homebrew/lib
             /usr/local/lib
             ${CMAKE_SOURCE_DIR}/third_party/tokenizers-cpp/lib
+            ${CMAKE_SOURCE_DIR}/third_party/tokenizers-cpp/build
     )
     
-    if(TOKENIZERS_INCLUDE_DIR AND TOKENIZERS_LIBRARY)
+    # 查找tokenizers_c库 (Rust部分)
+    find_library(TOKENIZERS_C_LIBRARY 
+        NAMES tokenizers_c
+        PATHS 
+            /opt/homebrew/lib
+            /usr/local/lib
+            ${CMAKE_SOURCE_DIR}/third_party/tokenizers-cpp/lib
+            ${CMAKE_SOURCE_DIR}/third_party/tokenizers-cpp/build
+    )
+
+    # 查找sentencepiece库 (tokenizers-cpp依赖)
+    find_library(TOKENIZERS_SP_LIBRARY 
+        NAMES sentencepiece
+        PATHS 
+            ${CMAKE_SOURCE_DIR}/third_party/tokenizers-cpp/build/sentencepiece/src
+    )
+    
+    if(TOKENIZERS_INCLUDE_DIR AND TOKENIZERS_LIBRARY AND TOKENIZERS_C_LIBRARY)
         message(STATUS "✅ Found tokenizers-cpp:")
         message(STATUS "   Include: ${TOKENIZERS_INCLUDE_DIR}")
-        message(STATUS "   Library: ${TOKENIZERS_LIBRARY}")
+        message(STATUS "   Library (CPP): ${TOKENIZERS_LIBRARY}")
+        message(STATUS "   Library (C): ${TOKENIZERS_C_LIBRARY}")
         
         add_compile_definitions(USE_TOKENIZERS_CPP)
         include_directories(${TOKENIZERS_INCLUDE_DIR})
         
-        set(TOKENIZERS_LIBRARIES ${TOKENIZERS_LIBRARY})
+        set(TOKENIZERS_LIBRARIES ${TOKENIZERS_LIBRARY} ${TOKENIZERS_C_LIBRARY})
+        if(TOKENIZERS_SP_LIBRARY)
+            list(APPEND TOKENIZERS_LIBRARIES ${TOKENIZERS_SP_LIBRARY})
+        endif()
     else()
         message(WARNING "⚠️  tokenizers-cpp not found, falling back to NativeTokenizer")
         message(WARNING "   Install guide: https://github.com/mlc-ai/tokenizers-cpp")
