@@ -232,10 +232,31 @@ if(BUILD_TESTS)
     add_subdirectory(third_party/googletest)
     enable_testing()
     add_subdirectory(tests)
+    
+    # HFTokenizer 专项测试
+    add_executable(test_hf_tokenizer
+        tests/test_hf_tokenizer.cpp
+    )
+    target_link_libraries(test_hf_tokenizer
+        cllm_core
+        gtest
+        gtest_main
+        Threads::Threads
+    )
+    add_test(NAME HFTokenizerTest COMMAND test_hf_tokenizer)
 endif()
 
 if(BUILD_EXAMPLES)
     add_subdirectory(examples)
+    
+    # HFTokenizer 示例
+    add_executable(hf_tokenizer_example
+        examples/hf_tokenizer_example.cpp
+    )
+    target_link_libraries(hf_tokenizer_example
+        cllm_core
+        Threads::Threads
+    )
 endif()
 
 # Add executable for the main program
