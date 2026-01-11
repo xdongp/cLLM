@@ -68,6 +68,10 @@ git clone --depth 1 https://github.com/mlc-ai/tokenizers-cpp.git
 cd tokenizers-cpp
 
 echo ""
+echo "正在初始化子模块..."
+git submodule update --init --recursive
+
+echo ""
 echo "正在编译tokenizers-cpp..."
 mkdir -p build
 cd build
