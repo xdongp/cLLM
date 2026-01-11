@@ -1,4 +1,5 @@
 #include "cllm/http/response_builder.h"
+#include <nlohmann/json.hpp>
 
 namespace cllm {
 
@@ -45,9 +46,10 @@ ResponseBuilder ResponseBuilder::error(int code, const std::string& message) {
     ResponseBuilder builder;
     builder.setStatus(code);
     
-    std::string errorBody = "{\"error\":{\"code\":" + std::to_string(code) + 
-                           ",\"message\":\"" + message + "\"}}";
-    builder.setBody(errorBody);
+    nlohmann::json errorJson;
+    errorJson["error"]["code"] = code;
+    errorJson["error"]["message"] = message;
+    builder.setBody(errorJson.dump());
     builder.setHeader("Content-Type", "application/json");
     
     return builder;

@@ -1,0 +1,74 @@
+{
+  "single_turn_qa": {
+    "name": "单轮问答",
+    "conversations": [
+      {
+        "user": "What is machine learning?",
+        "expected_keywords": [
+          "machine learning",
+          "algorithm",
+          "data"
+        ]
+      },
+      {
+        "user": "什么是深度学习？",
+        "expected_keywords": [
+          "深度学习",
+          "神经网络"
+        ]
+      }
+    ]
+  },
+  "multi_turn_chat": {
+    "name": "多轮对话",
+    "conversations": [
+      {
+        "turns": [
+          {
+            "role": "user",
+            "content": "Hello!"
+          },
+          {
+            "role": "assistant",
+            "content": "Hello! How can I help you?"
+          },
+          {
+            "role": "user",
+            "content": "Can you write code?"
+          },
+          {
+            "role": "assistant",
+            "content": "Yes, I can help with programming!"
+          },
+          {
+            "role": "user",
+            "content": "Write a hello world in Python"
+          }
+        ]
+      }
+    ]
+  },
+  "code_assistance": {
+    "name": "代码辅助",
+    "tasks": [
+      {
+        "description": "Write a sorting algorithm",
+        "language": "Python",
+        "expected_keywords": [
+          "def",
+          "sort",
+          "return"
+        ]
+      },
+      {
+        "description": "Debug this code: for i in range(10 print(i)",
+        "language": "Python",
+        "expected_keywords": [
+          "syntax",
+          "error",
+          "parentheses"
+        ]
+      }
+    ]
+  }
+}

@@ -12,6 +12,7 @@
 
 #include <memory>
 #include <string>
+#include <filesystem>
 
 #include "cllm/http/handler.h"
 #include "cllm/http/health_endpoint.h"
@@ -19,7 +20,7 @@
 #include "cllm/http/encode_endpoint.h"
 #include "cllm/scheduler/scheduler.h"
 #include "cllm/model/executor.h"
-#include "cllm/tokenizer/tokenizer.h"
+#include "cllm/tokenizer/manager.h"
 #include "cllm/common/config.h"
 #include "cllm/common/logger.h"
 #include "cllm/common/asio_handler.h"
@@ -27,7 +28,7 @@
 // 全局变量用于信号处理
 static std::unique_ptr<cllm::Scheduler> g_scheduler;
 static std::unique_ptr<cllm::ModelExecutor> g_modelExecutor;
-static std::unique_ptr<cllm::Tokenizer> g_tokenizer;
+static std::unique_ptr<cllm::TokenizerManager> g_tokenizerManager;
 
 /**
  * @brief 信号处理函数
@@ -215,10 +216,34 @@ int main(int argc, char* argv[]) {
     CLLM_INFO("  - Log Level: {}", logLevel);
     
     try {
-        // 加载配置文件（如果提供）
-        if (!configPath.empty()) {
-            CLLM_INFO("Loading config from: {}", configPath);
-            cllm::Config::instance().load(configPath);
+        // 加载配置文件：优先使用 --config，否则自动加载 config/scheduler_config.yaml
+        {
+            namespace fs = std::filesystem;
+            std::string selectedConfigPath;
+
+            if (!configPath.empty()) {
+                selectedConfigPath = configPath;
+            } else {
+                const fs::path candidates[] = {
+                    fs::path("config") / "scheduler_config.yaml",
+                    fs::path("../config") / "scheduler_config.yaml",
+                    fs::path("../../config") / "scheduler_config.yaml"
+                };
+
+                for (const auto& p : candidates) {
+                    if (fs::exists(p)) {
+                        selectedConfigPath = p.string();
+                        break;
+                    }
+                }
+            }
+
+            if (selectedConfigPath.empty() || !fs::exists(selectedConfigPath)) {
+                throw std::runtime_error("Config file not found. Please pass --config or ensure config/scheduler_config.yaml exists.");
+            }
+
+            CLLM_INFO("Loading config from: {}", selectedConfigPath);
+            cllm::Config::instance().load(selectedConfigPath);
         }
         
         // 注册信号处理器
@@ -237,24 +262,89 @@ int main(int argc, char* argv[]) {
         
         // 初始化模型执行器
         CLLM_INFO("Initializing model executor...");
+
+        namespace fs = std::filesystem;
+
+        // modelPath 既可能是“模型目录”，也可能是“权重文件路径”。
+        const bool isDir = fs::is_directory(modelPath);
+
+        // 1) 解析 tokenizer 目录（优先 HuggingFace tokenizer.json）
+        std::string tokenizerModelDir;
+        if (isDir) {
+            fs::path dir(modelPath);
+            if (fs::exists(dir / "tokenizer.json")) {
+                tokenizerModelDir = dir.string();
+            } else if (fs::exists(dir / "Qwen3-0.6B" / "tokenizer.json")) {
+                tokenizerModelDir = (dir / "Qwen3-0.6B").string();
+            } else {
+                tokenizerModelDir = dir.string();
+            }
+        } else {
+            fs::path file(modelPath);
+            fs::path parent = file.parent_path();
+            if (fs::exists(parent / "tokenizer.json")) {
+                tokenizerModelDir = parent.string();
+            } else if (fs::exists(parent / "Qwen3-0.6B" / "tokenizer.json")) {
+                tokenizerModelDir = (parent / "Qwen3-0.6B").string();
+            } else {
+                tokenizerModelDir = parent.string();
+            }
+        }
+
+        // 2) 解析后端权重文件路径
+        std::string backendModelPath;
+        if (isDir) {
+            fs::path dir(modelPath);
+            if (useLibTorch) {
+                // LibTorch 需要 TorchScript .pt
+                fs::path pt = dir / "qwen3_0.6b_torchscript_fp32.pt";
+                if (!fs::exists(pt)) {
+                    throw std::runtime_error("LibTorch backend requires TorchScript model (.pt). Not found: " + pt.string());
+                }
+                backendModelPath = pt.string();
+            } else {
+                // Kylin 需要 .bin
+                fs::path bin;
+                if (quantization == "int8") {
+                    bin = dir / "qwen3_0.6b_cllm_int8.bin";
+                } else if (quantization == "fp32") {
+                    bin = dir / "qwen3_0.6b_cllm_fp32.bin";
+                } else {
+                    // 默认 fp16
+                    bin = dir / "qwen3_0.6b_cllm_fp16.bin";
+                }
+
+                if (!fs::exists(bin)) {
+                    throw std::runtime_error("Kylin backend requires model .bin. Not found: " + bin.string());
+                }
+                backendModelPath = bin.string();
+            }
+        } else {
+            backendModelPath = modelPath;
+        }
+
+        CLLM_INFO("Resolved paths:");
+        CLLM_INFO("  - Backend model file: {}", backendModelPath);
+        CLLM_INFO("  - Tokenizer dir: {}", tokenizerModelDir);
+
         g_modelExecutor = std::make_unique<cllm::ModelExecutor>(
-            modelPath,
+            backendModelPath,
             quantization,
             true,  // enableSIMD
             useLibTorch
         );
-        
-        // 加载模型
+
+        // 加载模型（实际权重加载由 InferenceEngine 后端负责，这里主要做 warmup / 标记）
         CLLM_INFO("Loading model...");
         g_modelExecutor->loadModel();
         CLLM_INFO("Model loaded successfully");
-        
-        // 初始化分词器
+
+        // 初始化分词器（TokenizerManager 会自动选择 HFTokenizer 或 NativeTokenizer）
         CLLM_INFO("Initializing tokenizer...");
-        std::string tokenizerPath = modelPath + "/tokenizer.model";
-        g_tokenizer = std::make_unique<cllm::Tokenizer>(tokenizerPath);
+        g_tokenizerManager = std::make_unique<cllm::TokenizerManager>(tokenizerModelDir, g_modelExecutor.get());
+        cllm::ITokenizer* tokenizer = g_tokenizerManager->getTokenizer();
         CLLM_INFO("Tokenizer initialized");
-        CLLM_INFO("  - Vocab size: {}", g_tokenizer->getVocabSize());
+        CLLM_INFO("  - Vocab size: {}", tokenizer->getVocabSize());
         
         // 初始化调度器
         CLLM_INFO("Initializing scheduler...");
@@ -281,7 +371,7 @@ int main(int argc, char* argv[]) {
         
         auto generateEndpoint = std::make_unique<cllm::GenerateEndpoint>(
             g_scheduler.get(),
-            g_tokenizer.get()
+            tokenizer
         );
         httpHandler->post("/generate", [endpoint = generateEndpoint.get()](const cllm::HttpRequest& req) {
             return endpoint->handle(req);
@@ -291,7 +381,7 @@ int main(int argc, char* argv[]) {
             return endpoint->handle(req);
         });
         
-        auto encodeEndpoint = std::make_unique<cllm::EncodeEndpoint>(g_tokenizer.get());
+        auto encodeEndpoint = std::make_unique<cllm::EncodeEndpoint>(tokenizer);
         httpHandler->post("/encode", [endpoint = encodeEndpoint.get()](const cllm::HttpRequest& req) {
             return endpoint->handle(req);
         });

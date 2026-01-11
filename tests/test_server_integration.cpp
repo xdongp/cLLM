@@ -19,7 +19,7 @@
 #include "cllm/http/encode_endpoint.h"
 #include "cllm/scheduler/scheduler.h"
 #include "cllm/model/executor.h"
-#include "cllm/tokenizer/tokenizer.h"
+#include "cllm/tokenizer/manager.h"
 
 namespace cllm {
 namespace test {
@@ -109,7 +109,7 @@ class ServerIntegrationTest : public ::testing::Test {
 protected:
     static std::unique_ptr<Scheduler> scheduler_;
     static std::unique_ptr<ModelExecutor> modelExecutor_;
-    static std::unique_ptr<Tokenizer> tokenizer_;
+    static std::unique_ptr<TokenizerManager> tokenizerManager_;
     static std::unique_ptr<HttpHandler> httpHandler_;
     static std::thread serverThread_;
     static std::string baseUrl_;
@@ -137,12 +137,9 @@ protected:
             // 使用占位模型路径（Kylin 后端支持）
             modelExecutor_ = std::make_unique<ModelExecutor>("", "", true, false);
             
-            // 创建模拟分词器
-            // 注意：这里需要一个有效的 tokenizer.model 文件
-            // 在实际测试中，可以使用测试用的 tokenizer.model
-            std::string tokenizerPath = "../tests/tokenizer.model";
-            // 如果tokenizer.model是一个文件,不是目录,需要传递父目录
-            tokenizer_ = std::make_unique<Tokenizer>("../tests");
+            // 创建模拟分词器（tests/ 目录里提供 tokenizer.model）
+            tokenizerManager_ = std::make_unique<TokenizerManager>("../tests", modelExecutor_.get());
+            ITokenizer* tokenizer = tokenizerManager_->getTokenizer();
             
             // 创建调度器
             scheduler_ = std::make_unique<Scheduler>(
@@ -162,13 +159,13 @@ protected:
             
             auto generateEndpoint = std::make_shared<GenerateEndpoint>(
                 scheduler_.get(),
-                tokenizer_.get()
+                tokenizer
             );
             httpHandler_->post("/generate", [generateEndpoint](const HttpRequest& req) {
                 return generateEndpoint->handle(req);
             });
             
-            auto encodeEndpoint = std::make_shared<EncodeEndpoint>(tokenizer_.get());
+            auto encodeEndpoint = std::make_shared<EncodeEndpoint>(tokenizer);
             httpHandler_->post("/encode", [encodeEndpoint](const HttpRequest& req) {
                 return encodeEndpoint->handle(req);
             });
@@ -211,7 +208,7 @@ protected:
         // 清理资源
         httpHandler_.reset();
         scheduler_.reset();
-        tokenizer_.reset();
+        tokenizerManager_.reset();
         modelExecutor_.reset();
         
         std::cout << "[TEST] Test server shutdown complete" << std::endl;
@@ -221,7 +218,7 @@ protected:
 // 静态成员初始化
 std::unique_ptr<Scheduler> ServerIntegrationTest::scheduler_;
 std::unique_ptr<ModelExecutor> ServerIntegrationTest::modelExecutor_;
-std::unique_ptr<Tokenizer> ServerIntegrationTest::tokenizer_;
+std::unique_ptr<TokenizerManager> ServerIntegrationTest::tokenizerManager_;
 std::unique_ptr<HttpHandler> ServerIntegrationTest::httpHandler_;
 std::thread ServerIntegrationTest::serverThread_;
 std::string ServerIntegrationTest::baseUrl_;

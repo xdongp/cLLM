@@ -386,22 +386,26 @@ TEST_F(BatchManagerTest, BatchInputClear) {
 
 TEST_F(BatchManagerTest, BatchOutputGetLogitsForRequest) {
     BatchOutput output;
-    output.logits = FloatArray(1000);
-    for (size_t i = 0; i < 1000; ++i) {
-        output.logits[i] = static_cast<float>(i);
+    // vocabSize = 32000, requestPositions = {{0, 500}, {500, 1000}}
+    // 需要 1000 * 32000 的 logits
+    size_t vocabSize = 32000;
+    output.logits = FloatArray(1000 * vocabSize);
+    for (size_t i = 0; i < output.logits.size(); ++i) {
+        output.logits[i] = static_cast<float>(i % vocabSize); // 每个位置存储 vocabSize 的值
     }
     output.requestPositions = {{0, 500}, {500, 1000}};
     output.sequenceIds = {1, 2};
     
+    // getLogitsForRequest 返回 vocabSize 维度的 logits
     FloatArray logits1 = output.getLogitsForRequest(0);
-    EXPECT_EQ(logits1.size(), 500);
-    EXPECT_EQ(logits1[0], 0.0f);
-    EXPECT_EQ(logits1[499], 499.0f);
+    EXPECT_EQ(logits1.size(), vocabSize);
+    EXPECT_EQ(logits1[0], 0.0f);  // 第一个token的logits
+    EXPECT_EQ(logits1[1], 1.0f);
     
     FloatArray logits2 = output.getLogitsForRequest(1);
-    EXPECT_EQ(logits2.size(), 500);
-    EXPECT_EQ(logits2[0], 500.0f);
-    EXPECT_EQ(logits2[499], 999.0f);
+    EXPECT_EQ(logits2.size(), vocabSize);
+    EXPECT_EQ(logits2[0], 0.0f);  // 第500个token的logits
+    EXPECT_EQ(logits2[1], 1.0f);
 }
 
 TEST_F(BatchManagerTest, BatchOutputGetLogitsForRequestInvalidIndex) {

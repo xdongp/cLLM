@@ -113,12 +113,43 @@ phase_0_preparation() {
     echo "Phase 0: 测试准备阶段"
     echo "========================================="
     
-    # P0.1: 检查模型
+    # P0.1: 检查模型（✅ 本项目默认已包含本地模型目录，避免重复下载）
+    if [ -z "$CLLM_TEST_MODEL_PATH" ]; then
+        # 自动探测默认 HF 模型目录（用于 HFTokenizer 测试）
+        local default_hf_dir="${PROJECT_ROOT}/model/Qwen/Qwen3-0.6B"
+        if [ -d "$default_hf_dir" ] && [ -f "$default_hf_dir/tokenizer.json" ]; then
+            export CLLM_TEST_MODEL_PATH="$default_hf_dir"
+            log_info "P0.1: 未设置 CLLM_TEST_MODEL_PATH，已自动设置为: $CLLM_TEST_MODEL_PATH"
+        fi
+    fi
+
     if [ -n "$CLLM_TEST_MODEL_PATH" ] && [ -d "$CLLM_TEST_MODEL_PATH" ]; then
-        log_success "P0.1: 模型已就绪: $CLLM_TEST_MODEL_PATH"
+        if [ -f "$CLLM_TEST_MODEL_PATH/tokenizer.json" ]; then
+            log_success "P0.1: HF tokenizer 模型目录就绪: $CLLM_TEST_MODEL_PATH"
+        else
+            log_warning "P0.1: 已设置 CLLM_TEST_MODEL_PATH，但缺少 tokenizer.json: $CLLM_TEST_MODEL_PATH"
+        fi
     else
-        log_warning "P0.1: 模型未准备，需要手动下载 Qwen3"
-        log_info "提示: huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct"
+        log_warning "P0.1: 未检测到可用的 HF 模型目录（不会自动下载）。"
+        log_info "请手动设置: export CLLM_TEST_MODEL_PATH=\"${PROJECT_ROOT}/model/Qwen/Qwen3-0.6B\""
+    fi
+
+    # 额外：检测 Kylin 扁平权重 bin（用于 test_inference_engine_qwen）
+    if [ -z "$CLLM_TEST_MODEL_BIN_DIR" ]; then
+        local default_bin_dir="${PROJECT_ROOT}/model/Qwen"
+        if [ -d "$default_bin_dir" ]; then
+            export CLLM_TEST_MODEL_BIN_DIR="$default_bin_dir"
+            log_info "P0.1: 已自动设置 CLLM_TEST_MODEL_BIN_DIR=$CLLM_TEST_MODEL_BIN_DIR"
+        fi
+    fi
+
+    if [ -n "$CLLM_TEST_MODEL_BIN_DIR" ]; then
+        local fp32_bin="$CLLM_TEST_MODEL_BIN_DIR/qwen3_0.6b_cllm_fp32.bin"
+        if [ -f "$fp32_bin" ]; then
+            log_success "P0.1: Kylin bin 权重就绪: $fp32_bin"
+        else
+            log_warning "P0.1: 未找到 Kylin bin 权重: $fp32_bin（相关测试将跳过或失败）"
+        fi
     fi
     
     # P0.2: 生成测试数据

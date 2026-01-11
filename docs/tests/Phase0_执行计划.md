@@ -1,9 +1,9 @@
 # Phase 0: 准备阶段 执行计划
 
 **负责Agent**: Agent-0  
-**预计耗时**: 3小时  
+**预计耗时**: 2小时5分钟  
 **依赖**: 无  
-**执行时间**: T+0h ~ T+3h  
+**执行时间**: T+0h ~ T+2h5m  
 
 ---
 
@@ -17,52 +17,50 @@
 
 | 任务ID | 任务名称 | 耗时 | 优先级 | 状态 |
 |--------|---------|------|--------|------|
-| P0.1 | 下载 Qwen3 模型 | 60min | 高 | ⏳ 待执行 |
+| P0.1 | 验证 Qwen3 模型 | 5min | 高 | ⏳ 待执行 |
 | P0.2 | 生成测试数据 | 30min | 高 | ⏳ 待执行 |
 | P0.3 | 配置环境变量 | 15min | 高 | ⏳ 待执行 |
 | P0.4 | 编译所有测试程序 | 60min | 高 | ⏳ 待执行 |
 | P0.5 | 验证环境就绪 | 15min | 高 | ⏳ 待执行 |
 
-**总计**: 5个任务，180分钟（3小时）
+**总计**: 5个任务，125分钟（2小时5分钟）
 
 ---
 
 ## 📝 详细任务说明
 
-### P0.1: 下载 Qwen3 模型 (60分钟)
+### P0.1: 验证 Qwen3 模型 (5分钟)
 
-**目标**: 下载 Qwen2-0.5B-Instruct 模型到本地
+**目标**: 验证本地已有的 Qwen3-0.6B 模型完整性
+
+**说明**: 本地已存在完整模型在 `model/Qwen/Qwen3-0.6B/` 目录，无需重新下载
 
 **执行命令**:
 ```bash
-# 创建模型目录
-mkdir -p model/qwen2-0.5b
+# 检查模型文件完整性
+MODEL_PATH="model/Qwen/Qwen3-0.6B"
 
-# 使用 huggingface-cli 下载
-huggingface-cli download Qwen/Qwen2-0.5B-Instruct \
-  --include "*.json" "*.safetensors" "*.bin" \
-  --local-dir model/qwen2-0.5b
+# 验证必要文件
+test -f "${MODEL_PATH}/tokenizer.json" && echo "✅ tokenizer.json"
+test -f "${MODEL_PATH}/tokenizer_config.json" && echo "✅ tokenizer_config.json"
+test -f "${MODEL_PATH}/config.json" && echo "✅ config.json"
+test -f "${MODEL_PATH}/model.safetensors" && echo "✅ model.safetensors"
+test -f "${MODEL_PATH}/vocab.json" && echo "✅ vocab.json"
+test -f "${MODEL_PATH}/merges.txt" && echo "✅ merges.txt"
 
-# 或手动下载（备选方案）
-cd model/qwen2-0.5b
-wget https://huggingface.co/Qwen/Qwen2-0.5B-Instruct/resolve/main/tokenizer.json
-wget https://huggingface.co/Qwen/Qwen2-0.5B-Instruct/resolve/main/tokenizer_config.json
-wget https://huggingface.co/Qwen/Qwen2-0.5B-Instruct/resolve/main/config.json
-# ... 其他必要文件
+# 检查模型大小
+du -sh "${MODEL_PATH}"
 ```
 
 **验证标准**:
 ```bash
-# 检查必要文件是否存在
-test -f model/qwen2-0.5b/tokenizer.json && echo "✅ tokenizer.json"
-test -f model/qwen2-0.5b/tokenizer_config.json && echo "✅ tokenizer_config.json"
-test -f model/qwen2-0.5b/config.json && echo "✅ config.json"
-test -f model/qwen2-0.5b/model.safetensors && echo "✅ model weights"
+# 所有必需文件必须存在
+# 模型大小约 1.5GB (model.safetensors 约 1.5GB)
 ```
 
 **输出**:
-- `model/qwen2-0.5b/` 目录包含完整模型文件
-- 模型大小约 1GB
+- `model/Qwen/Qwen3-0.6B/` 目录包含完整模型文件
+- 模型大小约 1.5GB
 
 ---
 
@@ -164,11 +162,11 @@ cat > test_env.sh << 'EOF'
 # 项目根目录
 export CLLM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 模型路径
-export CLLM_TEST_MODEL_PATH="${CLLM_ROOT}/model/qwen2-0.5b"
+# 模型路径 (使用本地已有的 Qwen3-0.6B 模型)
+export CLLM_TEST_MODEL_PATH="${CLLM_ROOT}/model/Qwen/Qwen3-0.6B"
 
 # 测试数据路径
-export CLLM_TEST_DATA_PATH="${CLLM_ROOT}/test_data"
+export CLLM_TEST_DATA_PATH="${CLLM_ROOT}/tests/data"
 
 # 测试报告路径
 export CLLM_TEST_REPORTS="${CLLM_ROOT}/test_reports"
@@ -426,7 +424,7 @@ echo "验证报告已保存: ${CLLM_TEST_REPORTS}/phase0_verification.txt"
 
 ### 必须完成
 
-- [ ] Qwen3 模型完整下载（包含 tokenizer.json、config.json、weights）
+- [ ] Qwen3-0.6B 模型完整性验证（包含 tokenizer.json、config.json、weights）
 - [ ] 5个测试数据文件生成
 - [ ] 环境变量正确配置
 - [ ] 至少16个测试程序编译成功
@@ -446,7 +444,7 @@ echo "验证报告已保存: ${CLLM_TEST_REPORTS}/phase0_verification.txt"
 **执行时间**: ________
 
 **完成情况**:
-- P0.1: ☐ 完成 / ☐ 失败
+- P0.1: ☐ 完成 / ☐ 失败 (模型验证)
 - P0.2: ☐ 完成 / ☐ 失败
 - P0.3: ☐ 完成 / ☐ 失败
 - P0.4: ☐ 完成 / ☐ 失败

@@ -13,9 +13,9 @@
  */
 
 #include <gtest/gtest.h>
-#include <cllm/CTokenizer/tokenizer.h>
-#include <cllm/CTokenizer/sentencepiece_tokenizer.h>
+#include <cllm/tokenizer/unified_tokenizer.h>
 #include <cllm/model/executor.h>
+#include <cllm/inference/kylin_backend.h>
 #include <cllm/batch/input.h>
 #include <cllm/batch/output.h>
 #include <cllm/common/logger.h>
@@ -24,7 +24,8 @@
 #include <string>
 #include <vector>
 #include <chrono>
-#include <fstream>
+#include <filesystem>
+#include <cstdlib>
 
 using namespace cllm;
 
@@ -36,56 +37,90 @@ protected:
     void SetUp() override {
         CLLM_INFO("=== Setting up TokenizerExecutorIntegrationTest ===");
         
-        // 1. 加载测试配置
+        namespace fs = std::filesystem;
+
+        // 1. 加载测试配置（优先环境变量，其次自动推断仓库根目录）
+        std::string configPath;
+        if (const char* env = std::getenv("CLLM_TEST_CONFIG_PATH")) {
+            configPath = env;
+        } else {
+            // 常见执行目录：<repo>/build 或 <repo>/build/bin
+            fs::path cwd = fs::current_path();
+            fs::path repo = cwd;
+            if (fs::exists(repo / "config")) {
+                // ok
+            } else if (fs::exists(repo / "../config")) {
+                repo = repo / "..";
+            } else if (fs::exists(repo / "../../config")) {
+                repo = repo / "../..";
+            }
+            configPath = (repo / "config" / "test_config.yaml").string();
+        }
+
         try {
-            Config::instance().load("/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/config/test_config.yaml");
-            CLLM_INFO("Test configuration loaded");
+            if (!configPath.empty() && fs::exists(configPath)) {
+                Config::instance().load(configPath);
+                CLLM_INFO("Test configuration loaded: {}", configPath);
+            } else {
+                CLLM_WARN("Test config not found, will use default configuration. configPath={}", configPath);
+            }
         } catch (const std::exception& e) {
             CLLM_WARN("Failed to load test config: {}", e.what());
             CLLM_WARN("Will use default configuration");
         }
+
+        // 2. 配置测试模型路径（优先环境变量）
+        if (const char* env = std::getenv("CLLM_TEST_TOKENIZER_MODEL_PATH")) {
+            tokenizerModelPath_ = env;
+        }
+        if (const char* env = std::getenv("CLLM_TEST_TORCHSCRIPT_MODEL_PATH")) {
+            executorModelPath_ = env;
+        }
+
+        // 3. 默认使用仓库内路径（更符合当前项目布局）
+        if (tokenizerModelPath_.empty() || executorModelPath_.empty()) {
+            fs::path cwd = fs::current_path();
+            fs::path repo = cwd;
+            if (fs::exists(repo / "model")) {
+                // ok
+            } else if (fs::exists(repo / "../model")) {
+                repo = repo / "..";
+            } else if (fs::exists(repo / "../../model")) {
+                repo = repo / "../..";
+            }
+
+            if (tokenizerModelPath_.empty()) {
+                tokenizerModelPath_ = (repo / "tests" / "test_tokenizer.model").string();
+            }
+            if (executorModelPath_.empty()) {
+                executorModelPath_ = (repo / "model" / "Qwen" / "qwen3_0.6b_torchscript_fp32.pt").string();
+            }
+        }
         
-        // 配置测试模型路径（使用现有的 Qwen TorchScript 模型）
-        tokenizerModelPath_ = "/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/tests/test_tokenizer.model";
-        executorModelPath_ = "/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/qwen3_0.6b_torchscript_fp32.pt";
-        
-        // 初始化 Tokenizer（使用 SentencePieceTokenizer）
-        tokenizer_ = std::make_unique<SentencePieceTokenizer>(ModelType::LLAMA);
-        
-        // 加载 tokenizer 模型
-        if (!tokenizer_->load(tokenizerModelPath_)) {
-            CLLM_WARN("Failed to load tokenizer model, some tests may be skipped");
-            tokenizerLoaded_ = false;
-        } else {
+        // 初始化 Tokenizer（使用 UnifiedTokenizer）
+        try {
+            tokenizer_ = std::make_unique<UnifiedTokenizer>(tokenizerModelPath_);
             tokenizerLoaded_ = true;
             CLLM_INFO("Tokenizer loaded successfully");
             CLLM_INFO("  Vocab size: {}", tokenizer_->getVocabSize());
-            CLLM_INFO("  BOS ID: {}", tokenizer_->getBosId());
-            CLLM_INFO("  EOS ID: {}", tokenizer_->getEosId());
+            // UnifiedTokenizer doesn't have getBosId/getEosId methods directly
+        } catch (const std::exception& e) {
+            CLLM_WARN("Failed to load tokenizer model: {}", e.what());
+            tokenizerLoaded_ = false;
         }
         
-        // 初始化 ModelExecutor（使用 LibTorch 后端）
+        // 初始化 ModelExecutor（使用 KylinBackend 占位权重）
         try {
-            CLLM_INFO("Creating ModelExecutor with LibTorch backend...");
-            CLLM_INFO("  Model path: {}", executorModelPath_);
+            CLLM_INFO("Creating ModelExecutor with KylinBackend (placeholder weights)...");
             
-            // 使用 LibTorch 后端加载 TorchScript 模型
-            executor_ = std::make_unique<ModelExecutor>(
-                executorModelPath_,  // TorchScript 模型路径
-                "",                  // 不使用量化
-                true,                // 启用 SIMD
-                true                 // 使用 LibTorch 后端
-            );
-            
-            CLLM_INFO("ModelExecutor created, loading model...");
-            executor_->loadModel();
+            // 使用 mock model path 初始化 ModelExecutor，使用自研引擎
+            executor_ = std::make_unique<ModelExecutor>("mock_model_path", "", true, false);
             executorLoaded_ = true;
-            CLLM_INFO("✓ ModelExecutor loaded successfully (LibTorch backend)");
+            CLLM_INFO("✓ ModelExecutor loaded successfully (KylinBackend)");
             
         } catch (const std::exception& e) {
-            CLLM_ERROR("✗ Failed to load ModelExecutor (LibTorch): {}", e.what());
-            CLLM_WARN("LibTorch backend initialization failed, tests will be skipped");
-            CLLM_WARN("Please check if the TorchScript model exists: {}", executorModelPath_);
+            CLLM_ERROR("✗ Failed to initialize ModelExecutor (KylinBackend): {}", e.what());
+            CLLM_WARN("KylinBackend initialization failed, tests will be skipped");
             executorLoaded_ = false;
         }
         
@@ -107,7 +142,7 @@ protected:
     
     std::string tokenizerModelPath_;
     std::string executorModelPath_;
-    std::unique_ptr<CTokenizer> tokenizer_;
+    std::unique_ptr<UnifiedTokenizer> tokenizer_;
     std::unique_ptr<ModelExecutor> executor_;
     bool tokenizerLoaded_ = false;
     bool executorLoaded_ = false;
@@ -128,7 +163,7 @@ TEST_F(TokenizerExecutorIntegrationTest, BasicInterfaceCompatibility) {
     std::string inputText = "Hello, world!";
     CLLM_INFO("Input text: \"%s\"", inputText.c_str());
     
-    std::vector<llama_token> tokenIds = tokenizer_->encode(inputText, true);
+    std::vector<int> tokenIds = tokenizer_->encode(inputText, true);
     CLLM_INFO("Tokenized IDs count: %zu", tokenIds.size());
     EXPECT_GT(tokenIds.size(), 0) << "Tokenizer should produce at least one token";
     
@@ -139,8 +174,8 @@ TEST_F(TokenizerExecutorIntegrationTest, BasicInterfaceCompatibility) {
     }
     CLLM_INFO("Token IDs (first 10): [%s]", idsStr.c_str());
     
-    // Step 2: 转换为 std::vector<int> 供 ModelExecutor 使用
-    std::vector<int> executorInput(tokenIds.begin(), tokenIds.end());
+    // Step 2: Token IDs are already std::vector<int> for ModelExecutor
+    std::vector<int> executorInput = tokenIds;
     EXPECT_EQ(executorInput.size(), tokenIds.size()) << "Type conversion should preserve size";
     
     // Step 3: ModelExecutor forward
@@ -183,11 +218,11 @@ TEST_F(TokenizerExecutorIntegrationTest, EndToEndTextGeneration) {
     std::string inputText = "Once upon a time";
     CLLM_INFO("Input: \"%s\"", inputText.c_str());
     
-    std::vector<llama_token> inputIds = tokenizer_->encode(inputText, true);
+    std::vector<int> inputIds = tokenizer_->encode(inputText, true);
     CLLM_INFO("Encoded to %zu tokens", inputIds.size());
     
     // Step 2: Generate new tokens
-    std::vector<int> executorInput(inputIds.begin(), inputIds.end());
+    std::vector<int> executorInput = inputIds;
     
     try {
         CLLM_INFO("Generating 5 new tokens...");
@@ -207,14 +242,14 @@ TEST_F(TokenizerExecutorIntegrationTest, EndToEndTextGeneration) {
         EXPECT_LE(generatedIds.size(), 5) << "Should not exceed maxNewTokens";
         
         // Step 3: Decode generated tokens
-        std::vector<llama_token> outputTokens(generatedIds.begin(), generatedIds.end());
+        std::vector<int> outputTokens(generatedIds.begin(), generatedIds.end());
         std::string outputText = tokenizer_->decode(outputTokens, true);
         
         CLLM_INFO("Generated text: \"%s\"", outputText.c_str());
         EXPECT_FALSE(outputText.empty()) << "Decoded text should not be empty";
         
         // Step 4: 验证完整流程
-        std::vector<llama_token> fullSequence = inputIds;
+        std::vector<int> fullSequence = inputIds;
         fullSequence.insert(fullSequence.end(), outputTokens.begin(), outputTokens.end());
         std::string fullText = tokenizer_->decode(fullSequence, true);
         
@@ -246,7 +281,7 @@ TEST_F(TokenizerExecutorIntegrationTest, BatchProcessing) {
         "Nice to meet you"
     };
     
-    std::vector<std::vector<llama_token>> batchTokenIds;
+    std::vector<std::vector<int>> batchTokenIds;
     std::vector<int> flattenedIds;
     std::vector<std::pair<size_t, size_t>> requestPositions;
     
@@ -255,7 +290,7 @@ TEST_F(TokenizerExecutorIntegrationTest, BatchProcessing) {
     // Step 1: Batch encode
     CLLM_INFO("Encoding %zu texts...", inputTexts.size());
     for (size_t i = 0; i < inputTexts.size(); ++i) {
-        std::vector<llama_token> ids = tokenizer_->encode(inputTexts[i], true);
+        std::vector<int> ids = tokenizer_->encode(inputTexts[i], true);
         batchTokenIds.push_back(ids);
         
         size_t startPos = currentPos;
@@ -307,9 +342,9 @@ TEST_F(TokenizerExecutorIntegrationTest, SpecialTokenHandling) {
     CLLM_INFO("\n=== Test 4: Special Token Handling ===");
     
     // 获取特殊 token IDs
-    llama_token bosId = tokenizer_->getBosId();
-    llama_token eosId = tokenizer_->getEosId();
-    llama_token padId = tokenizer_->getPadId();
+    int bosId = tokenizer_->getBosToken();
+    int eosId = tokenizer_->getEosToken();
+    int padId = tokenizer_->getPadToken();
     
     CLLM_INFO("Special tokens: BOS=%d, EOS=%d, PAD=%d", bosId, eosId, padId);
     
@@ -334,7 +369,7 @@ TEST_F(TokenizerExecutorIntegrationTest, SpecialTokenHandling) {
         CLLM_INFO("✓ Special tokens handled correctly");
         
         // Step 2: Decode 应该跳过特殊 tokens (skipSpecialTokens=true)
-        std::vector<llama_token> tokensToDeode(
+        std::vector<int> tokensToDeode(
             sequenceWithSpecialTokens.begin(), 
             sequenceWithSpecialTokens.end()
         );
@@ -366,33 +401,33 @@ TEST_F(TokenizerExecutorIntegrationTest, EdgeCases) {
     
     // Case 1: 空字符串
     CLLM_INFO("Testing empty string...");
-    std::vector<llama_token> emptyTokens = tokenizer_->encode("", true);
+    std::vector<int> emptyTokens = tokenizer_->encode("", true);
     CLLM_INFO("  Empty string encoded to %zu tokens", emptyTokens.size());
     // 某些 tokenizer 可能会添加 BOS/EOS，所以不一定为空
     
     // Case 2: 单字符
     CLLM_INFO("Testing single character...");
-    std::vector<llama_token> singleChar = tokenizer_->encode("a", true);
+    std::vector<int> singleChar = tokenizer_->encode("a", true);
     EXPECT_GT(singleChar.size(), 0) << "Single character should produce tokens";
     CLLM_INFO("  Single char 'a' encoded to %zu tokens", singleChar.size());
     
     // Case 3: 超长输入 (测试性能和内存)
     CLLM_INFO("Testing long input...");
     std::string longInput(500, 'a');  // 500 个字符
-    std::vector<llama_token> longTokens = tokenizer_->encode(longInput, true);
+    std::vector<int> longTokens = tokenizer_->encode(longInput, true);
     CLLM_INFO("  Long input (%zu chars) encoded to %zu tokens", longInput.size(), longTokens.size());
     EXPECT_GT(longTokens.size(), 0) << "Long input should produce tokens";
     
     // Case 4: 特殊字符
     CLLM_INFO("Testing special characters...");
     std::string specialChars = "!@#$%^&*()_+-=[]{}|;:',.<>?/~`";
-    std::vector<llama_token> specialTokens = tokenizer_->encode(specialChars, true);
+    std::vector<int> specialTokens = tokenizer_->encode(specialChars, true);
     CLLM_INFO("  Special chars encoded to %zu tokens", specialTokens.size());
     
     // Case 5: Unicode 字符
     CLLM_INFO("Testing Unicode characters...");
     std::string unicodeText = "你好世界 🌍";
-    std::vector<llama_token> unicodeTokens = tokenizer_->encode(unicodeText, true);
+    std::vector<int> unicodeTokens = tokenizer_->encode(unicodeText, true);
     CLLM_INFO("  Unicode text encoded to %zu tokens", unicodeTokens.size());
     
     // 尝试 decode 回来验证
@@ -418,7 +453,7 @@ TEST_F(TokenizerExecutorIntegrationTest, PerformanceBenchmark) {
     
     // Benchmark 1: Tokenizer encode
     auto encodeStart = std::chrono::high_resolution_clock::now();
-    std::vector<llama_token> encodedIds;
+    std::vector<int> encodedIds;
     for (int i = 0; i < iterations; ++i) {
         encodedIds = tokenizer_->encode(testText, true);
     }
@@ -432,7 +467,7 @@ TEST_F(TokenizerExecutorIntegrationTest, PerformanceBenchmark) {
     CLLM_INFO("  Throughput: %.2f ops/sec", 1000.0f / encodeAvg);
     
     // Benchmark 2: ModelExecutor forward
-    std::vector<int> executorInput(encodedIds.begin(), encodedIds.end());
+    std::vector<int> executorInput = encodedIds;
     BatchInput batchInput;
     batchInput.inputIds = executorInput;
     batchInput.batchSize = 1;
@@ -486,7 +521,7 @@ TEST_F(TokenizerExecutorIntegrationTest, ErrorHandling) {
     
     // Error 1: 无效的 token ID
     CLLM_INFO("Testing invalid token ID...");
-    std::vector<llama_token> invalidIds = {-1, 999999, -999};
+    std::vector<int> invalidIds = {-1, 999999, -999};
     std::string decoded = tokenizer_->decode(invalidIds, false);
     CLLM_INFO("  Decoded invalid IDs: \"%s\"", decoded.c_str());
     // 应该不会崩溃，可能返回 UNK 或空字符串

@@ -1,4 +1,5 @@
 #include "cllm/http/response.h"
+#include <nlohmann/json.hpp>
 #include <sstream>
 
 namespace cllm {
@@ -53,9 +54,10 @@ std::map<std::string, std::string> HttpResponse::getAllHeaders() const {
 void HttpResponse::setError(int code, const std::string& message) {
     setStatusCode(code);
     
-    std::ostringstream oss;
-    oss << "{\"error\":{\"code\":" << code << ",\"message\":\"" << message << "\"}}";
-    setBody(oss.str());
+    nlohmann::json errorJson;
+    errorJson["error"]["code"] = code;
+    errorJson["error"]["message"] = message;
+    setBody(errorJson.dump());
     setContentType("application/json");
 }
 

@@ -3,13 +3,13 @@
  * @brief P0 优先级特性测试
  * 
  * 测试内容：
- * 1. LlamaTokenizer 完整功能测试
+ * 1. QwenTokenizer 完整功能测试
  * 2. BatchTokenizer 批处理接口测试
  * 3. PerformanceMonitor 性能监控测试
  */
 
 #include <gtest/gtest.h>
-#include "cllm/CTokenizer/llama_tokenizer.h"
+#include "cllm/CTokenizer/qwen_tokenizer.h"
 #include "cllm/CTokenizer/batch_tokenizer.h"
 #include "cllm/CTokenizer/performance_monitor.h"
 #include <chrono>
@@ -17,30 +17,30 @@
 
 using namespace cllm;
 
-// ==================== LlamaTokenizer 测试 ====================
+// ==================== QwenTokenizer 测试 ====================
 
-class LlamaTokenizerTest : public ::testing::Test {
+class QwenTokenizerTest : public ::testing::Test {
 protected:
     void SetUp() override {
         // 注意：需要提供实际的模型路径
         // 这里使用环境变量或配置文件指定
-        modelPath_ = std::getenv("LLAMA_MODEL_PATH");
+        modelPath_ = std::getenv("CLLM_TEST_MODEL_PATH");
         if (modelPath_.empty()) {
-            GTEST_SKIP() << "LLAMA_MODEL_PATH not set, skipping LlamaTokenizer tests";
+            GTEST_SKIP() << "CLLM_TEST_MODEL_PATH not set, skipping QwenTokenizer tests";
         }
     }
     
     std::string modelPath_;
 };
 
-TEST_F(LlamaTokenizerTest, LoadModel) {
-    LlamaTokenizer tokenizer(ModelType::LLAMA);
+TEST_F(QwenTokenizerTest, LoadModel) {
+    QwenTokenizer tokenizer;
     EXPECT_TRUE(tokenizer.load(modelPath_));
     EXPECT_GT(tokenizer.getVocabSize(), 0);
 }
 
-TEST_F(LlamaTokenizerTest, EncodeDecodeBasic) {
-    LlamaTokenizer tokenizer(ModelType::LLAMA);
+TEST_F(QwenTokenizerTest, EncodeDecodeBasic) {
+    QwenTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.load(modelPath_));
     
     std::string text = "Hello, world!";
@@ -53,8 +53,8 @@ TEST_F(LlamaTokenizerTest, EncodeDecodeBasic) {
     EXPECT_FALSE(decoded.empty());
 }
 
-TEST_F(LlamaTokenizerTest, SpecialTokens) {
-    LlamaTokenizer tokenizer(ModelType::LLAMA);
+TEST_F(QwenTokenizerTest, SpecialTokens) {
+    QwenTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.load(modelPath_));
     
     // 验证特殊 token ID
@@ -67,8 +67,8 @@ TEST_F(LlamaTokenizerTest, SpecialTokens) {
     // padId 可能等于 eosId
 }
 
-TEST_F(LlamaTokenizerTest, VocabOperations) {
-    LlamaTokenizer tokenizer(ModelType::LLAMA);
+TEST_F(QwenTokenizerTest, VocabOperations) {
+    QwenTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.load(modelPath_));
     
     int vocabSize = tokenizer.getVocabSize();
@@ -82,8 +82,8 @@ TEST_F(LlamaTokenizerTest, VocabOperations) {
     }
 }
 
-TEST_F(LlamaTokenizerTest, ChineseText) {
-    LlamaTokenizer tokenizer(ModelType::LLAMA);
+TEST_F(QwenTokenizerTest, ChineseText) {
+    QwenTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.load(modelPath_));
     
     std::string chineseText = "你好，世界！";
@@ -96,8 +96,8 @@ TEST_F(LlamaTokenizerTest, ChineseText) {
     EXPECT_FALSE(decoded.empty());
 }
 
-TEST_F(LlamaTokenizerTest, EmptyText) {
-    LlamaTokenizer tokenizer(ModelType::LLAMA);
+TEST_F(QwenTokenizerTest, EmptyText) {
+    QwenTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.load(modelPath_));
     
     auto tokens = tokenizer.encode("", true);
@@ -110,17 +110,17 @@ TEST_F(LlamaTokenizerTest, EmptyText) {
 class BatchTokenizerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        modelPath_ = std::getenv("LLAMA_MODEL_PATH");
+        modelPath_ = std::getenv("CLLM_TEST_MODEL_PATH");
         if (modelPath_.empty()) {
-            GTEST_SKIP() << "LLAMA_MODEL_PATH not set";
+            GTEST_SKIP() << "CLLM_TEST_MODEL_PATH not set";
         }
         
-        tokenizer_ = std::make_unique<LlamaTokenizer>(ModelType::LLAMA);
+        tokenizer_ = std::make_unique<QwenTokenizer>();
         ASSERT_TRUE(tokenizer_->load(modelPath_));
     }
     
     std::string modelPath_;
-    std::unique_ptr<LlamaTokenizer> tokenizer_;
+    std::unique_ptr<QwenTokenizer> tokenizer_;
 };
 
 TEST_F(BatchTokenizerTest, BatchEncodeBasic) {
@@ -352,8 +352,8 @@ TEST(PerformanceTimerTest, AutoRecording) {
 
 // ==================== 集成测试 ====================
 
-TEST_F(LlamaTokenizerTest, WithPerformanceMonitor) {
-    LlamaTokenizer tokenizer(ModelType::LLAMA);
+TEST_F(QwenTokenizerTest, WithPerformanceMonitor) {
+    QwenTokenizer tokenizer;
     ASSERT_TRUE(tokenizer.load(modelPath_));
     
     // 启用性能监控

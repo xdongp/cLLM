@@ -149,6 +149,18 @@ target_link_libraries(test_deepseek_preprocessing_unit
     gtest_main
 )
 add_test(NAME test_deepseek_preprocessing_unit COMMAND test_deepseek_preprocessing_unit)
+
+# ModelExecutor inference tests
+add_executable(test_modelexecutor_inference
+    test_modelexecutor_inference.cpp
+)
+target_link_libraries(test_modelexecutor_inference
+    cllm_core
+    gtest
+    gtest_main
+    Threads::Threads
+)
+add_test(NAME test_modelexecutor_inference COMMAND test_modelexecutor_inference)
 set_tests_properties(test_deepseek_preprocessing_unit PROPERTIES LABELS "unit_test")
 
 # Qwen preprocessing unit tests (不需要模型文件)
@@ -277,4 +289,188 @@ if(CURL_FOUND)
     message(STATUS "Server integration tests enabled (CURL found)")
 else()
     message(WARNING "CURL not found, skipping server integration tests")
+endif()
+
+# HTTP Server Tokenize Integration Tests
+add_executable(test_http_server_tokenize
+    test_http_server_tokenize.cpp
+)
+target_link_libraries(test_http_server_tokenize
+    cllm_core
+    gtest
+    gtest_main
+    /opt/homebrew/lib/libjsoncpp.dylib
+)
+add_test(NAME test_http_server_tokenize COMMAND test_http_server_tokenize)
+set_tests_properties(test_http_server_tokenize PROPERTIES LABELS "integration_test;http_server")
+
+# HTTP Server Complete Integration Tests
+add_executable(test_http_server_complete
+    test_http_server_complete.cpp
+)
+target_link_libraries(test_http_server_complete
+    cllm_core
+    gtest
+    gtest_main
+    /opt/homebrew/lib/libjsoncpp.dylib
+)
+add_test(NAME test_http_server_complete COMMAND test_http_server_complete)
+set_tests_properties(test_http_server_complete PROPERTIES LABELS "integration_test;http_server")
+
+# ==================== Phase 2 模块集成测试 ====================
+
+# P2.1: HTTP + Tokenizer 集成测试
+add_executable(test_http_tokenizer_integration
+    test_http_tokenizer_integration.cpp
+)
+target_link_libraries(test_http_tokenizer_integration
+    cllm_core
+    gtest
+    gtest_main
+)
+add_test(NAME test_http_tokenizer_integration COMMAND test_http_tokenizer_integration)
+set_tests_properties(test_http_tokenizer_integration PROPERTIES LABELS "phase2;integration_test;priority_high")
+
+# P2.2: Tokenizer + Executor 集成测试
+add_executable(test_tokenizer_executor_integration_p2
+    test_tokenizer_executor_integration.cpp
+)
+target_link_libraries(test_tokenizer_executor_integration_p2
+    cllm_core
+    gtest
+    gtest_main
+)
+add_test(NAME test_tokenizer_executor_integration_p2 COMMAND test_tokenizer_executor_integration_p2)
+set_tests_properties(test_tokenizer_executor_integration_p2 PROPERTIES LABELS "phase2;integration_test;priority_high")
+
+# P2.3: Executor + Backend 集成测试
+add_executable(test_executor_backend_integration
+    test_executor_backend_integration.cpp
+)
+target_link_libraries(test_executor_backend_integration
+    cllm_core
+    gtest
+    gtest_main
+)
+add_test(NAME test_executor_backend_integration COMMAND test_executor_backend_integration)
+set_tests_properties(test_executor_backend_integration PROPERTIES LABELS "phase2;integration_test;priority_high")
+
+# P2.4: Backend + Qwen3 集成测试
+add_executable(test_backend_qwen3_integration
+    test_backend_qwen3_integration.cpp
+)
+target_link_libraries(test_backend_qwen3_integration
+    cllm_core
+    gtest
+    gtest_main
+)
+add_test(NAME test_backend_qwen3_integration COMMAND test_backend_qwen3_integration)
+set_tests_properties(test_backend_qwen3_integration PROPERTIES LABELS "phase2;integration_test;priority_high")
+
+# ==================== Phase 3 子系统测试 ====================
+
+# P3.1: 前端子系统测试
+add_executable(test_frontend_subsystem
+    test_frontend_subsystem.cpp
+)
+target_link_libraries(test_frontend_subsystem
+    cllm_core
+    gtest
+    gtest_main
+)
+add_test(NAME test_frontend_subsystem COMMAND test_frontend_subsystem)
+set_tests_properties(test_frontend_subsystem PROPERTIES LABELS "phase3;integration_test;priority_high")
+
+# P3.2: 推理子系统测试
+add_executable(test_inference_subsystem
+    test_inference_subsystem.cpp
+)
+target_link_libraries(test_inference_subsystem
+    cllm_core
+    gtest
+    gtest_main
+)
+add_test(NAME test_inference_subsystem COMMAND test_inference_subsystem)
+set_tests_properties(test_inference_subsystem PROPERTIES LABELS "phase3;integration_test;priority_high")
+
+# P3.3: E2E子系统测试
+add_executable(test_e2e_subsystem
+    test_e2e_subsystem.cpp
+)
+target_link_libraries(test_e2e_subsystem
+    cllm_core
+    gtest
+    gtest_main
+)
+add_test(NAME test_e2e_subsystem COMMAND test_e2e_subsystem)
+set_tests_properties(test_e2e_subsystem PROPERTIES LABELS "phase3;integration_test;priority_high")
+
+# ==================== Phase 4 系统功能测试 ====================
+
+# P4.1: 系统功能测试
+add_executable(test_system_functionality
+    test_system_functionality.cpp
+)
+target_link_libraries(test_system_functionality
+    cllm_core
+    gtest
+    gtest_main
+)
+add_test(NAME test_system_functionality COMMAND test_system_functionality)
+set_tests_properties(test_system_functionality PROPERTIES LABELS "phase4;system_test;priority_high")
+
+# P4.2: 性能基准测试
+add_executable(test_performance_benchmark
+    test_performance_benchmark.cpp
+)
+target_link_libraries(test_performance_benchmark
+    cllm_core
+    gtest
+    gtest_main
+)
+add_test(NAME test_performance_benchmark COMMAND test_performance_benchmark)
+set_tests_properties(test_performance_benchmark PROPERTIES LABELS "phase4;performance_test;priority_high")
+
+# P4.3: 压力和稳定性测试
+# 需要 libcurl 和 jsoncpp 支持
+find_package(CURL QUIET)
+if(CURL_FOUND)
+    add_executable(test_stress_stability
+        test_stress_stability.cpp
+    )
+    target_link_libraries(test_stress_stability
+        cllm_core
+        gtest
+        gtest_main
+        CURL::libcurl
+        /opt/homebrew/lib/libjsoncpp.dylib
+    )
+    add_test(NAME test_stress_stability COMMAND test_stress_stability)
+    set_tests_properties(test_stress_stability PROPERTIES LABELS "phase4;stress_test;stability_test;priority_high")
+    message(STATUS "Stress and stability tests enabled (CURL found)")
+else()
+    message(WARNING "CURL not found, skipping stress and stability tests")
+endif()
+
+# ==================== Phase 5 E2E 场景测试 ====================
+
+# P5: E2E 场景测试
+# 需要 libcurl 和 jsoncpp 支持
+find_package(CURL QUIET)
+if(CURL_FOUND)
+    add_executable(test_e2e_scenarios
+        test_e2e_scenarios.cpp
+    )
+    target_link_libraries(test_e2e_scenarios
+        cllm_core
+        gtest
+        gtest_main
+        CURL::libcurl
+        /opt/homebrew/lib/libjsoncpp.dylib
+    )
+    add_test(NAME test_e2e_scenarios COMMAND test_e2e_scenarios)
+    set_tests_properties(test_e2e_scenarios PROPERTIES LABELS "phase5;e2e_test;scenario_test;priority_high")
+    message(STATUS "E2E scenarios tests enabled (CURL found)")
+else()
+    message(WARNING "CURL not found, skipping E2E scenarios tests")
 endif()

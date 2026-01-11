@@ -6,7 +6,6 @@
 
 #include <chrono>
 #include <filesystem>
-#include <fstream>
 #include <string>
 
 using namespace cllm;
@@ -14,9 +13,45 @@ using namespace cllm::inference;
 
 namespace {
 
+std::string getEnvOrEmpty(const char* name) {
+    const char* v = std::getenv(name);
+    return v ? std::string(v) : std::string();
+}
+
+std::string detectProjectRoot() {
+    namespace fs = std::filesystem;
+    fs::path cwd = fs::current_path();
+
+    // 常见执行目录：
+    // - <repo>/build
+    // - <repo>/build/bin
+    // - <repo>
+    for (int up = 0; up <= 3; ++up) {
+        fs::path candidate = cwd;
+        for (int i = 0; i < up; ++i) {
+            candidate = candidate.parent_path();
+        }
+        if (fs::exists(candidate / "model") && fs::exists(candidate / "config")) {
+            return candidate.string();
+        }
+    }
+    return cwd.string();
+}
+
 std::string getModelBinPath(const std::string &dtype) {
-    const std::string basePath = "/Users/dannypan/PycharmProjects/xllm/model/Qwen/qwen3_0.6b_cllm_";
-    return basePath + dtype + ".bin";
+    // ✅ 优先使用环境变量（避免硬编码个人目录）
+    // - CLLM_TEST_MODEL_BIN_DIR: 指向包含 qwen3_0.6b_cllm_*.bin 的目录
+    const std::string envDir = getEnvOrEmpty("CLLM_TEST_MODEL_BIN_DIR");
+
+    std::string baseDir;
+    if (!envDir.empty()) {
+        baseDir = envDir;
+    } else {
+        // 默认使用当前仓库下的路径
+        baseDir = detectProjectRoot() + "/model/Qwen";
+    }
+
+    return baseDir + "/qwen3_0.6b_cllm_" + dtype + ".bin";
 }
 
 std::string getDefaultModelBinPath() {
@@ -24,8 +59,14 @@ std::string getDefaultModelBinPath() {
 }
 
 std::string getDefaultConfigJsonPath() {
-    // 对应 HF Qwen3-0.6B 模型目录下的 config.json
-    return "/Users/dannypan/PycharmProjects/xllm/model/Qwen/Qwen3-0.6B/config.json";
+    // ✅ 优先使用环境变量（HF 模型目录，包含 config.json/tokenizer.json）
+    // - CLLM_TEST_HF_MODEL_DIR: 例如 <repo>/model/Qwen/Qwen3-0.6B
+    const std::string hfDir = getEnvOrEmpty("CLLM_TEST_HF_MODEL_DIR");
+    if (!hfDir.empty()) {
+        return hfDir + "/config.json";
+    }
+
+    return detectProjectRoot() + "/model/Qwen/Qwen3-0.6B/config.json";
 }
 
 bool loadQwenConfig(ModelConfig &config) {
@@ -37,7 +78,7 @@ bool loadQwenConfig(ModelConfig &config) {
     config.numKeyValueHeads = 8;  // Qwen3 使用 GQA
     config.intermediateSize = 3072;
     config.maxSequenceLength = 40960;
-    
+
     config.modelType = "qwen";
     config.useKVCache = false;
     config.useQuantization = false;
@@ -53,7 +94,8 @@ TEST(InferenceEngineQwenTest, ForwardBasic_FP32) {
     const std::string binPath = getModelBinPath("fp32");
     if (!std::filesystem::exists(binPath)) {
         GTEST_SKIP() << "Qwen fp32 bin file not found at " << binPath
-                     << ", please run model/export_qwen_bin.py first.";
+                     << ", please ensure local model bins exist (see model/export_qwen_bin.py) "
+                     << "or set CLLM_TEST_MODEL_BIN_DIR.";
     }
 
     ModelConfig config;

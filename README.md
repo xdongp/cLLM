@@ -92,7 +92,7 @@ ctest --output-on-failure
 curl http://localhost:8080/health
 
 # 测试文本生成
-curl -X POST http://localhost:8080/v1/generate \
+curl -X POST http://localhost:8080/generate \
   -H "Content-Type: application/json" \
   -d '{"prompt": "你好", "max_tokens": 50}'
 ```
@@ -177,21 +177,48 @@ curl -X POST http://localhost:8080/v1/generate \
 
 #### 1. 健康检查
 ```bash
-GET /health
+curl http://localhost:18080/health
 ```
 
 #### 2. 文本生成
 ```bash
-POST /v1/generate
-Content-Type: application/json
+# 基本生成测试
+curl -X POST http://localhost:18080/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "hello",
+    "max_tokens": 50,
+    "temperature": 0.7,
+    "top_p": 0.9
+  }'
 
-{
-  "prompt": "你好，世界！",
-  "max_tokens": 100,
-  "temperature": 0.7,
-  "top_k": 50,
-  "top_p": 0.9
-}
+# 中文生成测试
+curl -X POST http://localhost:18080/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "你好",
+    "max_tokens": 50,
+    "temperature": 0.7
+  }'
+
+# 短文本生成（快速测试）
+curl -X POST http://localhost:18080/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "hello",
+    "max_tokens": 10,
+    "temperature": 0.7
+  }'
+
+# 带响应时间测量的生成测试
+time curl -X POST http://localhost:18080/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "hello",
+    "max_tokens": 50,
+    "temperature": 0.7,
+    "top_p": 0.9
+  }'
 ```
 
 #### 3. 流式生成
@@ -208,12 +235,19 @@ Content-Type: application/json
 
 #### 4. Token 编码
 ```bash
-POST /v1/encode
-Content-Type: application/json
+# 文本编码测试
+curl -X POST http://localhost:18080/encode \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "hello world"
+  }'
 
-{
-  "text": "Hello, world!"
-}
+# 中文编码测试
+curl -X POST http://localhost:18080/encode \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "你好世界"
+  }'
 ```
 
 **完整 API 文档**: 查看 [服务器使用指南](docs/guides/服务器使用指南.md)

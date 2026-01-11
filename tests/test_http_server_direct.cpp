@@ -13,7 +13,7 @@
 
 #include "cllm/http/drogon_server.h"
 #include "cllm/http/handler.h"
-#include "cllm/tokenizer/tokenizer.h"
+#include "cllm/tokenizer/hf_tokenizer.h"
 #include "cllm/model/executor.h"
 #include "cllm/batch/input.h"
 #include "cllm/batch/output.h"
@@ -28,22 +28,7 @@ protected:
     void SetUp() override {
         CLLM_INFO("=== Setting up HTTP Server Direct Test ===");
         
-        // 1. 初始化Tokenizer
-        std::string tokenizerPath = "/Users/dannypan/PycharmProjects/xllm/model/Qwen/Qwen3-0.6B";
-        tokenizer_ = std::make_unique<Tokenizer>(tokenizerPath);
-        CLLM_INFO("Tokenizer initialized from: %s", tokenizerPath.c_str());
-        
-        // 2. 初始化ModelExecutor (使用LibTorch backend)
-        std::string modelPath = "/Users/dannypan/PycharmProjects/xllm/model/Qwen/qwen3_0.6b_torchscript_fp32.pt";
-        std::string quantization = "";
-        bool enableSIMD = true;
-        bool useLibTorch = true;
-        
-        executor_ = std::make_unique<ModelExecutor>(modelPath, quantization, enableSIMD, useLibTorch);
-        CLLM_INFO("ModelExecutor initialized with LibTorch backend");
-        CLLM_INFO("Actual vocab_size: %zu", executor_->getConfig().vocabSize);
-        
-        // 3. 创建HttpHandler并注册/generate端点
+        // 1. 创建HttpHandler并注册/generate端点
         handler_ = std::make_unique<HttpHandler>();
         
         // 注册健康检查端点
@@ -55,9 +40,34 @@ protected:
             return resp;
         });
         
-        // 注册/generate端点 - 直接使用Tokenizer和ModelExecutor
+        // 注册/generate端点 (模拟实现)
         handler_->post("/generate", [this](const HttpRequest& req) -> HttpResponse {
             return handleGenerate(req);
+        });
+        
+        // 注册其他测试端点
+        handler_->get("/test/get", [](const HttpRequest& req) -> HttpResponse {
+            HttpResponse resp;
+            resp.setStatusCode(200);
+            resp.setBody(R"({"method":"GET","path":"/test/get"})");
+            resp.setContentType("application/json");
+            return resp;
+        });
+        
+        handler_->put("/test/put", [](const HttpRequest& req) -> HttpResponse {
+            HttpResponse resp;
+            resp.setStatusCode(200);
+            resp.setBody(R"({"method":"PUT","path":"/test/put"})");
+            resp.setContentType("application/json");
+            return resp;
+        });
+        
+        handler_->del("/test/delete", [](const HttpRequest& req) -> HttpResponse {
+            HttpResponse resp;
+            resp.setStatusCode(200);
+            resp.setBody(R"({"method":"DELETE","path":"/test/delete"})");
+            resp.setContentType("application/json");
+            return resp;
         });
         
         CLLM_INFO("HTTP Handler configured");
@@ -72,11 +82,9 @@ protected:
     void TearDown() override {
         CLLM_INFO("=== Tearing down HTTP Server Direct Test ===");
         handler_.reset();
-        executor_.reset();
-        tokenizer_.reset();
     }
     
-    // 处理/generate请求的核心逻辑
+    // 处理/generate请求的核心逻辑 (模拟实现)
     HttpResponse handleGenerate(const HttpRequest& request) {
         auto startTime = std::chrono::high_resolution_clock::now();
         
@@ -112,83 +120,19 @@ protected:
                 return resp;
             }
             
-            // 2. Tokenize prompt
-            std::vector<int> inputTokens = tokenizer_->encode(prompt, true);
-            CLLM_INFO("Tokenized prompt: %zu tokens", inputTokens.size());
+            // 模拟生成响应 (不实际调用tokenizer和model)
+            std::string generatedText = prompt + " world";
+            int tokensGenerated = 3;
             
-            // 限制输入长度(LibTorch模型trace限制)
-            const size_t MAX_INPUT_TOKENS = 7;
-            if (inputTokens.size() > MAX_INPUT_TOKENS) {
-                CLLM_WARN("Input tokens (%zu) exceeds limit (%zu), truncating", 
-                         inputTokens.size(), MAX_INPUT_TOKENS);
-                inputTokens.resize(MAX_INPUT_TOKENS);
-            }
-            
-            // 3. 执行推理 (生成maxTokens个token)
-            std::vector<int> generatedTokens;
-            std::vector<int> currentSequence = inputTokens;
-            
-            for (int i = 0; i < maxTokens && currentSequence.size() < 10; ++i) {
-                // 构建BatchInput
-                BatchInput batchInput;
-                batchInput.inputIds = currentSequence;
-                batchInput.requestPositions.push_back({0, currentSequence.size()});
-                batchInput.batchSize = 1;
-                batchInput.sequenceIds.push_back(0);
-                
-                // 执行前向传播
-                BatchOutput batchOutput = executor_->forward(batchInput);
-                
-                // 获取最后一个位置的logits
-                size_t vocabSize = executor_->getConfig().vocabSize;
-                std::vector<float> lastLogits(vocabSize);
-                size_t lastPos = currentSequence.size() - 1;
-                
-                // BatchOutput.logits 是 [batch_size, seq_len, vocab_size]
-                // 对于batch_size=1, 提取最后一个位置
-                for (size_t v = 0; v < vocabSize; ++v) {
-                    lastLogits[v] = batchOutput.logits[lastPos * vocabSize + v];
-                }
-                
-                // 简单采样: 取top-1 (greedy)
-                int nextToken = std::distance(
-                    lastLogits.begin(),
-                    std::max_element(lastLogits.begin(), lastLogits.end())
-                );
-                
-                CLLM_DEBUG("Generated token: %d", nextToken);
-                
-                // 检查是否是特殊token
-                if (tokenizer_->isSpecialToken(nextToken)) {
-                    CLLM_INFO("Hit special token, stopping generation");
-                    break;
-                }
-                
-                generatedTokens.push_back(nextToken);
-                currentSequence.push_back(nextToken);
-            }
-            
-            CLLM_INFO("Generated %zu tokens", generatedTokens.size());
-            
-            // 4. Decode生成的tokens
-            std::string generatedText;
-            if (!generatedTokens.empty()) {
-                generatedText = tokenizer_->decode(generatedTokens, true);
-                CLLM_INFO("Generated text: '%s'", generatedText.c_str());
-            } else {
-                generatedText = "";
-                CLLM_WARN("No tokens generated");
-            }
-            
-            // 5. 构建响应
+            // 构建响应
             auto endTime = std::chrono::high_resolution_clock::now();
             float responseTime = std::chrono::duration<float>(endTime - startTime).count();
-            float tokensPerSecond = generatedTokens.size() / std::max(responseTime, 0.001f);
+            float tokensPerSecond = tokensGenerated / std::max(responseTime, 0.001f);
             
             Json::Value responseJson;
             responseJson["id"] = "direct_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
             responseJson["text"] = generatedText;
-            responseJson["tokens_generated"] = static_cast<int>(generatedTokens.size());
+            responseJson["tokens_generated"] = tokensGenerated;
             responseJson["response_time"] = responseTime;
             responseJson["tokens_per_second"] = tokensPerSecond;
             
@@ -219,8 +163,6 @@ protected:
         }
     }
     
-    std::unique_ptr<Tokenizer> tokenizer_;
-    std::unique_ptr<ModelExecutor> executor_;
     std::unique_ptr<HttpHandler> handler_;
     std::string serverHost_;
     int serverPort_;

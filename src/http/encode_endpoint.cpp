@@ -1,11 +1,12 @@
 #include "cllm/http/encode_endpoint.h"
-#include "cllm/tokenizer/tokenizer.h"
+#include "cllm/tokenizer/i_tokenizer.h"
+#include "cllm/common/logger.h"
+#include <nlohmann/json.hpp>
 #include <sstream>
-#include <stdexcept>
 
 namespace cllm {
 
-EncodeEndpoint::EncodeEndpoint(Tokenizer* tokenizer)
+EncodeEndpoint::EncodeEndpoint(ITokenizer* tokenizer)
     : ApiEndpoint("encode", "/encode", "POST"),
       tokenizer_(tokenizer) {
 }
@@ -13,7 +14,7 @@ EncodeEndpoint::EncodeEndpoint(Tokenizer* tokenizer)
 EncodeEndpoint::~EncodeEndpoint() {
 }
 
-void EncodeEndpoint::setTokenizer(Tokenizer* tokenizer) {
+void EncodeEndpoint::setTokenizer(ITokenizer* tokenizer) {
     tokenizer_ = tokenizer;
 }
 
@@ -21,16 +22,16 @@ EncodeEndpoint::EncodeRequest EncodeEndpoint::parseRequest(const HttpRequest& re
     EncodeRequest req;
     
     std::string body = request.getBody();
-    
     req.text = "";
     
-    size_t textPos = body.find("\"text\"");
-    if (textPos != std::string::npos) {
-        size_t start = body.find("\"", textPos + 7);
-        size_t end = body.find("\"", start + 1);
-        if (start != std::string::npos && end != std::string::npos) {
-            req.text = body.substr(start + 1, end - start - 1);
+    try {
+        nlohmann::json jsonBody = nlohmann::json::parse(body);
+        
+        if (jsonBody.contains("text") && jsonBody["text"].is_string()) {
+            req.text = jsonBody["text"].get<std::string>();
         }
+    } catch (const nlohmann::json::exception& e) {
+        CLLM_WARN("Failed to parse JSON request body: %s, using empty text", e.what());
     }
     
     return req;

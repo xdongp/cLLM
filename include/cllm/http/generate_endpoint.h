@@ -15,7 +15,7 @@
 namespace cllm {
 
 class Scheduler;
-class Tokenizer;
+class ITokenizer;
 
 /**
  * @brief 文本生成端点类
@@ -30,7 +30,7 @@ public:
      * @param scheduler 调度器指针
      * @param tokenizer 分词器指针
      */
-    GenerateEndpoint(Scheduler* scheduler, Tokenizer* tokenizer);
+    GenerateEndpoint(Scheduler* scheduler, ITokenizer* tokenizer);
     
     /**
      * @brief 析构函数
@@ -54,7 +54,7 @@ public:
      * @brief 设置分词器
      * @param tokenizer 分词器指针
      */
-    void setTokenizer(Tokenizer* tokenizer);
+    void setTokenizer(ITokenizer* tokenizer);
     
 private:
     /**
@@ -74,7 +74,7 @@ private:
     HttpResponse handleStreaming(const GenerateRequest& req);  ///< 处理流式请求
     
     Scheduler* scheduler_;      ///< 调度器指针
-    Tokenizer* tokenizer_;      ///< 分词器指针
+    ITokenizer* tokenizer_;      ///< 分词器指针
 };
 
 }

@@ -1,8 +1,7 @@
 #include "cllm/http/drogon_server.h"
 #include "cllm/http/request.h"
 #include "cllm/http/response.h"
-#include "cllm/common/asio_handler.h"  // 添加Asio支持
-#include <json/json.h>
+#include <mutex>
 
 namespace cllm {
 
@@ -13,19 +12,55 @@ int DrogonServer::port_;
 std::mutex DrogonServer::handler_mutex_;
 
 void DrogonServer::init(const std::string& host, int port, HttpHandler* handler) {
-    std::lock_guard<std::mutex> lock(handler_mutex_);
-    handler_ = handler;
-    host_ = host;
-    port_ = port;
-    
+    {
+        std::lock_guard<std::mutex> lock(handler_mutex_);
+        handler_ = handler;
+        host_ = host;
+        port_ = port;
+    }
+
+    // 显式注册路由到 HttpHandler（避免依赖 Controller 自动注册失败导致 404）
+    drogon::app().registerHandler(
+        "/health",
+        [](const drogon::HttpRequestPtr& req,
+           std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            DrogonServer controller;
+            controller.health(req, std::move(callback));
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/generate",
+        [](const drogon::HttpRequestPtr& req,
+           std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            DrogonServer controller;
+            controller.generate(req, std::move(callback));
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/generate_stream",
+        [](const drogon::HttpRequestPtr& req,
+           std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            DrogonServer controller;
+            controller.generateStream(req, std::move(callback));
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        "/encode",
+        [](const drogon::HttpRequestPtr& req,
+           std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            DrogonServer controller;
+            controller.encode(req, std::move(callback));
+        },
+        {drogon::Post});
+
     drogon::app().addListener(host, port);
 }
 
 void DrogonServer::start() {
-    // 示例：在服务器启动时创建一个Asio处理器，满足技术栈要求
-    AsioHandler asioHandler;
-    
-    drogon::app().addListener(host_, port_);
+    // ⚠️ listener 已在 init() 中注册，避免重复 addListener 导致 EADDRINUSE
     drogon::app().run();
 }
 
@@ -52,31 +87,29 @@ void DrogonServer::health(const drogon::HttpRequestPtr& req,
     request.setMethod("GET");
     request.setPath("/health");
     
-    // 使用Asio异步处理请求，满足技术栈要求
-    AsioHandler asioHandler;
-    asioHandler.postTask([request, handler_ptr, callback]() {
-        HttpResponse response = handler_ptr->handleRequest(request);
-        
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
-        resp->setBody(response.getBody());
-        
-        // 注意：在实际应用中，我们需要以某种方式传递resp回Drogon回调
-        // 这里仅作示例说明Asio的使用
-    });
-    
-    // 立即返回响应（在实际应用中可能需要更复杂的异步处理）
-    HttpResponse response = handler_->handleRequest(request);
+    HttpResponse response = handler_ptr->handleRequest(request);
     
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
     resp->setBody(response.getBody());
+    
+    // 设置响应头
+    for (const auto& header : response.getAllHeaders()) {
+        resp->addHeader(header.first, header.second);
+    }
+    
     callback(resp);
 }
 
 void DrogonServer::generate(const drogon::HttpRequestPtr& req,
                            std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
-    if (!handler_) {
+    HttpHandler* handler_ptr;
+    {
+        std::lock_guard<std::mutex> lock(handler_mutex_);
+        handler_ptr = handler_;
+    }
+    
+    if (!handler_ptr) {
         auto resp = drogon::HttpResponse::newHttpResponse();
         resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
         callback(resp);
@@ -88,30 +121,29 @@ void DrogonServer::generate(const drogon::HttpRequestPtr& req,
     request.setPath("/generate");
     request.setBody(std::string(req->getBody()));
     
-    // 使用Asio异步处理生成请求，满足技术栈要求
-    AsioHandler asioHandler;
-    asioHandler.postTask([request, handler_ptr = handler_, callback]() {
-        HttpResponse response = handler_ptr->handleRequest(request);
-        
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
-        resp->setBody(response.getBody());
-        
-        // 在实际应用中需要解决异步回调的问题
-    });
-    
-    // 立即返回响应（在实际应用中可能需要更复杂的异步处理）
-    HttpResponse response = handler_->handleRequest(request);
+    HttpResponse response = handler_ptr->handleRequest(request);
     
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
     resp->setBody(response.getBody());
+    
+    // 设置响应头
+    for (const auto& header : response.getAllHeaders()) {
+        resp->addHeader(header.first, header.second);
+    }
+    
     callback(resp);
 }
 
 void DrogonServer::generateStream(const drogon::HttpRequestPtr& req,
                                  std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
-    if (!handler_) {
+    HttpHandler* handler_ptr;
+    {
+        std::lock_guard<std::mutex> lock(handler_mutex_);
+        handler_ptr = handler_;
+    }
+    
+    if (!handler_ptr) {
         auto resp = drogon::HttpResponse::newHttpResponse();
         resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
         callback(resp);
@@ -125,18 +157,29 @@ void DrogonServer::generateStream(const drogon::HttpRequestPtr& req,
     request.setPath("/generate_stream");
     request.setBody(std::string(req->getBody()));
     
-    HttpResponse response = handler_->handleRequest(request);
+    HttpResponse response = handler_ptr->handleRequest(request);
     
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
     resp->setBody(response.getBody());
+    
+    // 设置响应头
+    for (const auto& header : response.getAllHeaders()) {
+        resp->addHeader(header.first, header.second);
+    }
     
     callback(resp);
 }
 
 void DrogonServer::encode(const drogon::HttpRequestPtr& req,
                          std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
-    if (!handler_) {
+    HttpHandler* handler_ptr;
+    {
+        std::lock_guard<std::mutex> lock(handler_mutex_);
+        handler_ptr = handler_;
+    }
+    
+    if (!handler_ptr) {
         auto resp = drogon::HttpResponse::newHttpResponse();
         resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
         callback(resp);
@@ -148,11 +191,17 @@ void DrogonServer::encode(const drogon::HttpRequestPtr& req,
     request.setPath("/encode");
     request.setBody(std::string(req->getBody()));
     
-    HttpResponse response = handler_->handleRequest(request);
+    HttpResponse response = handler_ptr->handleRequest(request);
     
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
     resp->setBody(response.getBody());
+    
+    // 设置响应头
+    for (const auto& header : response.getAllHeaders()) {
+        resp->addHeader(header.first, header.second);
+    }
+    
     callback(resp);
 }
 

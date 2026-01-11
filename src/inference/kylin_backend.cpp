@@ -131,9 +131,16 @@ bool KylinBackend::initialize() {
 bool KylinBackend::loadRealWeights() {
     CLLM_INFO("[KylinBackend] Loading real weights...");
 
-    // 真实权重模式：使用外部完整配置
+    // 1) 使用 ModelLoader 加载（会读取 <model>.json 元数据）
+    if (!loader_->load()) {
+        CLLM_ERROR("[KylinBackend] Failed to load model weights via ModelLoader");
+        return false;
+    }
+
+    // 2) 用元数据中的真实结构参数覆盖外部配置（避免默认 llama 配置导致 shape mismatch）
+    externalConfig_ = loader_->getConfig();
     internalConfig_ = externalConfig_;
-    
+
     const size_t numLayers = internalConfig_.numLayers;
 
     // 确保权重容器大小正确
@@ -146,12 +153,6 @@ bool KylinBackend::loadRealWeights() {
     wDown_.resize(numLayers);
     norm1_.resize(numLayers);
     norm2_.resize(numLayers);
-
-    // 使用 ModelLoader 加载
-    if (!loader_->load()) {
-        CLLM_ERROR("[KylinBackend] Failed to load model weights via ModelLoader");
-        return false;
-    }
 
     if (!loader_->loadInto(
             embedding_,

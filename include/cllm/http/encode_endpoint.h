@@ -13,7 +13,7 @@
 
 namespace cllm {
 
-class Tokenizer;
+class ITokenizer;
 
 /**
  * @brief 文本编码API端点，用于将文本转换为令牌序列
@@ -26,7 +26,7 @@ public:
      * @brief 构造函数，创建一个编码端点
      * @param tokenizer 分词器指针，用于将文本转换为令牌
      */
-    EncodeEndpoint(Tokenizer* tokenizer);
+    EncodeEndpoint(ITokenizer* tokenizer);
     
     /**
      * @brief 析构函数
@@ -44,7 +44,7 @@ public:
      * @brief 设置分词器
      * @param tokenizer 分词器指针
      */
-    void setTokenizer(Tokenizer* tokenizer);
+    void setTokenizer(ITokenizer* tokenizer);
     
 private:
     /**
@@ -61,7 +61,7 @@ private:
      */
     EncodeRequest parseRequest(const HttpRequest& request);
     
-    Tokenizer* tokenizer_;  ///< 分词器指针，用于文本编码
+    ITokenizer* tokenizer_;  ///< 分词器指针，用于文本编码
 };
 
 }

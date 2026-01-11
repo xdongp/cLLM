@@ -220,6 +220,7 @@ add_library(cllm_core
     src/tokenizer/hf_tokenizer.cpp
     src/tokenizer/native_tokenizer.cpp
     src/tokenizer/unicode_utils.cpp
+    src/tokenizer/unified_tokenizer.cpp
     src/http/request.cpp
     src/http/response.cpp
     src/http/request_validator.cpp

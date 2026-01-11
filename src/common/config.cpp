@@ -140,22 +140,34 @@ std::string Config::serverQuantization() const {
 // 采样器配置
 float Config::samplerTemperature() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return config_["sampler"]["temperature"].as<float>(0.7f);
+    if (config_ && config_["sampler"]) {
+        return config_["sampler"]["temperature"].as<float>(0.7f);
+    }
+    return 0.7f;
 }
 
 int Config::samplerTopK() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return config_["sampler"]["top_k"].as<int>(50);
+    if (config_ && config_["sampler"]) {
+        return config_["sampler"]["top_k"].as<int>(50);
+    }
+    return 50;
 }
 
 float Config::samplerTopP() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return config_["sampler"]["top_p"].as<float>(0.9f);
+    if (config_ && config_["sampler"]) {
+        return config_["sampler"]["top_p"].as<float>(0.9f);
+    }
+    return 0.9f;
 }
 
 float Config::samplerGreedyThreshold() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return config_["sampler"]["greedy_threshold"].as<float>(0.1f);
+    if (config_ && config_["sampler"]) {
+        return config_["sampler"]["greedy_threshold"].as<float>(0.1f);
+    }
+    return 0.1f;
 }
 
 // 调度器其他配置

@@ -1,15 +1,15 @@
 #include "cllm/http/generate_endpoint.h"
 #include "cllm/scheduler/scheduler.h"
-#include "cllm/tokenizer/tokenizer.h"
+#include "cllm/tokenizer/i_tokenizer.h"
 #include "cllm/common/logger.h"
+#include <nlohmann/json.hpp>
 #include <sstream>
 #include <chrono>
 #include <random>
-#include <stdexcept>
 
 namespace cllm {
 
-GenerateEndpoint::GenerateEndpoint(Scheduler* scheduler, Tokenizer* tokenizer)
+GenerateEndpoint::GenerateEndpoint(Scheduler* scheduler, ITokenizer* tokenizer)
     : ApiEndpoint("generate", "/generate", "POST"),
       scheduler_(scheduler),
       tokenizer_(tokenizer) {
@@ -22,7 +22,7 @@ void GenerateEndpoint::setScheduler(Scheduler* scheduler) {
     scheduler_ = scheduler;
 }
 
-void GenerateEndpoint::setTokenizer(Tokenizer* tokenizer) {
+void GenerateEndpoint::setTokenizer(ITokenizer* tokenizer) {
     tokenizer_ = tokenizer;
 }
 
@@ -31,79 +31,37 @@ GenerateEndpoint::GenerateRequest GenerateEndpoint::parseRequest(const HttpReque
     
     std::string body = request.getBody();
     
+    // 默认值
     req.prompt = "";
     req.maxTokens = 3;  // 从 100 减少到 3，针对 TorchScript trace 限制优化
     req.temperature = 0.7f;
     req.topP = 0.9f;
     req.stream = false;
     
-    size_t promptPos = body.find("\"prompt\"");
-    if (promptPos != std::string::npos) {
-        size_t start = body.find("\"", promptPos + 9);
-        size_t end = body.find("\"", start + 1);
-        if (start != std::string::npos && end != std::string::npos) {
-            req.prompt = body.substr(start + 1, end - start - 1);
+    try {
+        nlohmann::json jsonBody = nlohmann::json::parse(body);
+        
+        if (jsonBody.contains("prompt") && jsonBody["prompt"].is_string()) {
+            req.prompt = jsonBody["prompt"].get<std::string>();
         }
-    }
-    
-    size_t maxTokensPos = body.find("\"max_tokens\"");
-    if (maxTokensPos != std::string::npos) {
-        size_t colon = body.find(":", maxTokensPos);
-        if (colon != std::string::npos) {
-            size_t comma = body.find(",", colon);
-            if (comma != std::string::npos) {
-                req.maxTokens = std::stoi(body.substr(colon + 1, comma - colon - 1));
-            } else {
-                req.maxTokens = std::stoi(body.substr(colon + 1));
-            }
+        
+        if (jsonBody.contains("max_tokens") && jsonBody["max_tokens"].is_number_integer()) {
+            req.maxTokens = jsonBody["max_tokens"].get<int>();
         }
-    }
-    
-    size_t temperaturePos = body.find("\"temperature\"");
-    if (temperaturePos != std::string::npos) {
-        size_t colon = body.find(":", temperaturePos);
-        if (colon != std::string::npos) {
-            size_t comma = body.find(",", colon);
-            if (comma != std::string::npos) {
-                req.temperature = std::stof(body.substr(colon + 1, comma - colon - 1));
-            } else {
-                req.temperature = std::stof(body.substr(colon + 1));
-            }
+        
+        if (jsonBody.contains("temperature") && jsonBody["temperature"].is_number()) {
+            req.temperature = jsonBody["temperature"].get<float>();
         }
-    }
-    
-    size_t topPPos = body.find("\"top_p\"");
-    if (topPPos != std::string::npos) {
-        size_t colon = body.find(":", topPPos);
-        if (colon != std::string::npos) {
-            size_t comma = body.find(",", colon);
-            if (comma != std::string::npos) {
-                req.topP = std::stof(body.substr(colon + 1, comma - colon - 1));
-            } else {
-                req.topP = std::stof(body.substr(colon + 1));
-            }
+        
+        if (jsonBody.contains("top_p") && jsonBody["top_p"].is_number()) {
+            req.topP = jsonBody["top_p"].get<float>();
         }
-    }
-    
-    size_t streamPos = body.find("\"stream\"");
-    if (streamPos != std::string::npos) {
-        size_t colon = body.find(":", streamPos);
-        if (colon != std::string::npos) {
-            size_t comma = body.find(",", colon);
-            size_t end = (comma != std::string::npos) ? comma : body.find("}", colon);
-            std::string value = body.substr(colon + 1, end - colon - 1);
-            
-            // 移除首尾的空格和引号
-            size_t start = value.find_first_not_of(" \t\n\r\"");
-            size_t endValue = value.find_last_not_of(" \t\n\r\"");
-            if (start != std::string::npos && endValue != std::string::npos) {
-                value = value.substr(start, endValue - start + 1);
-            }
-            
-            if (value == "true") {
-                req.stream = true;
-            }
+        
+        if (jsonBody.contains("stream") && jsonBody["stream"].is_boolean()) {
+            req.stream = jsonBody["stream"].get<bool>();
         }
+    } catch (const nlohmann::json::exception& e) {
+        CLLM_WARN("Failed to parse JSON request body: %s, using default values", e.what());
     }
     
     return req;
@@ -274,11 +232,20 @@ HttpResponse GenerateEndpoint::handleStreaming(const GenerateRequest& req) {
             // 生成ASCII字符
             nextToken = 32 + (rand() % 95); // 32-126是可打印ASCII字符
             
-            if (tokenizer_->isSpecialToken(nextToken)) {
+            // ITokenizer 没有 isSpecialToken()，这里做最小“特殊 token”保护
+            if (nextToken == tokenizer_->getEosId() ||
+                nextToken == tokenizer_->getPadId() ||
+                nextToken == tokenizer_->getBosId() ||
+                nextToken == tokenizer_->getUnkId()) {
                 break;
             }
-            
-            std::string tokenText = tokenizer_->decode({nextToken}, false);
+
+            std::string tokenText;
+            try {
+                tokenText = tokenizer_->decode({nextToken}, false);
+            } catch (...) {
+                break;
+            }
             generatedText += tokenText;
             
             std::ostringstream oss;

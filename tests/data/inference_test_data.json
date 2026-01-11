@@ -1,0 +1,82 @@
+{
+  "prompts": [
+    {
+      "id": "qa_factual_1",
+      "text": "What is the capital of France?",
+      "max_length": 50,
+      "temperature": 0.3,
+      "expected_keywords": [
+        "Paris"
+      ],
+      "category": "qa_factual"
+    },
+    {
+      "id": "qa_reasoning_1",
+      "text": "If it takes 5 machines 5 minutes to make 5 widgets, how long would it take 100 machines to make 100 widgets?",
+      "max_length": 100,
+      "temperature": 0.3,
+      "expected_keywords": [
+        "5 minutes"
+      ],
+      "category": "qa_reasoning"
+    },
+    {
+      "id": "chat_casual_1",
+      "text": "Hello! How are you today?",
+      "max_length": 100,
+      "temperature": 0.7,
+      "expected_keywords": [
+        "Hello",
+        "good",
+        "fine"
+      ],
+      "category": "chat_casual"
+    },
+    {
+      "id": "code_generation_1",
+      "text": "Write a Python function to calculate the factorial of a number",
+      "max_length": 200,
+      "temperature": 0.3,
+      "expected_keywords": [
+        "def",
+        "factorial",
+        "return"
+      ],
+      "category": "code_generation"
+    },
+    {
+      "id": "summarization_1",
+      "text": "Summarize the following text in one sentence: Artificial intelligence (AI) is intelligence demonstrated by machines, as opposed to natural intelligence displayed by animals including humans.",
+      "max_length": 50,
+      "temperature": 0.5,
+      "expected_keywords": [
+        "AI",
+        "machines",
+        "intelligence"
+      ],
+      "category": "summarization"
+    },
+    {
+      "id": "translation_1",
+      "text": "Translate to Chinese: Hello, how are you?",
+      "max_length": 50,
+      "temperature": 0.3,
+      "expected_keywords": [
+        "你好"
+      ],
+      "category": "translation"
+    },
+    {
+      "id": "chinese_1",
+      "text": "请介绍一下人工智能的发展历史",
+      "max_length": 200,
+      "temperature": 0.7,
+      "expected_keywords": [
+        "人工智能",
+        "发展",
+        "历史"
+      ],
+      "category": "chinese_qa"
+    }
+  ]
+}

@@ -47,14 +47,44 @@ bool ModelLoader::loadMetadata() {
         auto mcIt = obj.find("model_config");
         if (mcIt != obj.end()) {
             auto& mcObj = mcIt.value();
-            
+
+            // ✅ 读取真实结构参数（用于推导张量形状，避免依赖默认 ModelConfig）
+            auto vocabIt = mcObj.find("vocab_size");
+            if (vocabIt != mcObj.end()) {
+                config_.vocabSize = static_cast<size_t>(vocabIt.value());
+            }
+            auto hiddenIt = mcObj.find("hidden_size");
+            if (hiddenIt != mcObj.end()) {
+                config_.hiddenSize = static_cast<size_t>(hiddenIt.value());
+            }
+            auto layersIt = mcObj.find("num_layers");
+            if (layersIt != mcObj.end()) {
+                config_.numLayers = static_cast<size_t>(layersIt.value());
+            }
+            auto interIt = mcObj.find("intermediate_size");
+            if (interIt != mcObj.end()) {
+                config_.intermediateSize = static_cast<size_t>(interIt.value());
+            }
+            auto headsIt = mcObj.find("num_attention_heads");
+            if (headsIt != mcObj.end()) {
+                config_.numAttentionHeads = static_cast<size_t>(headsIt.value());
+            }
+            auto kvHeadsIt = mcObj.find("num_key_value_heads");
+            if (kvHeadsIt != mcObj.end()) {
+                config_.numKeyValueHeads = static_cast<size_t>(kvHeadsIt.value());
+            }
+
+            CLLM_INFO("ModelLoader: loaded model_config: vocab=%zu hidden=%zu layers=%zu heads=%zu kv_heads=%zu inter=%zu",
+                      config_.vocabSize, config_.hiddenSize, config_.numLayers,
+                      config_.numAttentionHeads, config_.numKeyValueHeads, config_.intermediateSize);
+
             // 读取实际投影维度
             auto qProjIt = mcObj.find("actual_q_proj_dim");
             if (qProjIt != mcObj.end()) {
                 actualQProjDim_ = static_cast<size_t>(qProjIt.value());
                 CLLM_INFO("ModelLoader: loaded actual_q_proj_dim=%zu", actualQProjDim_);
             }
-            
+
             auto kvProjIt = mcObj.find("actual_kv_proj_dim");
             if (kvProjIt != mcObj.end()) {
                 actualKVProjDim_ = static_cast<size_t>(kvProjIt.value());

@@ -79,44 +79,21 @@ void ModelExecutor::loadModel() {
         CLLM_WARN("Model already loaded");
         return;
     }
-    
-    try {
-        // 如果使用 LibTorch 后端，不需要加载 .bin 权重文件
-        if (useLibTorch_) {
-            CLLM_INFO("[ModelExecutor] Using LibTorch backend, model already loaded");
-            isModelLoaded_ = true;
-            return;
-        }
-        
-        // Kylin 后端 + 空路径 = 使用占位权重，不需要加载文件
-        if (!useLibTorch_ && modelPath_.empty()) {
-            CLLM_INFO("[ModelExecutor] Using Kylin backend with placeholder weights, skip loading file");
-            isModelLoaded_ = true;
-            return;
-        }
-        
-        // 自研引擎需要加载 .bin 权重
-        CLLM_INFO("Loading model from path: {} with quantization: {}", modelPath_.c_str(), quantization_.c_str());
-        
-        if (quantization_ == "int8") {
-            _loadInt8QuantizedModel();
-        } else if (quantization_ == "int4") {
-            _loadInt4QuantizedModel();
-        } else {
-            _loadFullPrecisionModel();
-        }
-        
-        CLLM_INFO("Model loaded successfully, size: {} bytes", modelSize_);
-        
+
+    // ✅ InferenceEngine 会在构造函数里完成 initialize()，并由后端负责权重加载：
+    // - KylinBackend: 通过 ModelLoader 读取 .bin
+    // - LibTorchBackend: 加载 TorchScript .pt
+    // 这里不再重复把整个权重文件读入内存，避免双份加载导致 OOM。
+    if (inferenceEngine_ && inferenceEngine_->isInitialized()) {
+        CLLM_INFO("[ModelExecutor] InferenceEngine already initialized, skipping raw weight loading");
         _applyInferenceOptimizations();
         _warmupModel();
-        
         isModelLoaded_ = true;
-        CLLM_INFO("Model initialization complete");
-    } catch (const std::exception& e) {
-        CLLM_ERROR("Failed to load model: %s", e.what());
-        throw;
+        return;
     }
+
+    // 回退路径：理论上不应发生
+    throw std::runtime_error("ModelExecutor: inference engine not initialized");
 }
 
 void ModelExecutor::unloadModel() {
