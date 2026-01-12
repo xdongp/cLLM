@@ -1,59 +1,92 @@
 #include "cllm/http/response_builder.h"
 #include "cllm/common/config.h"
-#include <nlohmann/json.hpp>
 
 namespace cllm {
 
-ResponseBuilder::ResponseBuilder() : statusCode_(200) {
+ResponseBuilder::ResponseBuilder() {
 }
 
 ResponseBuilder::~ResponseBuilder() {
 }
 
-ResponseBuilder& ResponseBuilder::setStatus(int code) {
-    statusCode_ = code;
-    return *this;
+HttpResponse ResponseBuilder::success(const nlohmann::json& data) {
+    nlohmann::json responseJson = {
+        {"success", true},
+        {"data", data}
+    };
+    
+    return json(responseJson, 200);
 }
 
-ResponseBuilder& ResponseBuilder::setHeader(const std::string& name, const std::string& value) {
-    headers_[name] = value;
-    return *this;
+HttpResponse ResponseBuilder::success(const std::string& message, const nlohmann::json& data) {
+    nlohmann::json responseJson = {
+        {"success", true},
+        {"message", message},
+        {"data", data}
+    };
+    
+    return json(responseJson, 200);
 }
 
-ResponseBuilder& ResponseBuilder::setBody(const std::string& body) {
-    body_ = body;
-    return *this;
+HttpResponse ResponseBuilder::error(int statusCode, const std::string& message) {
+    nlohmann::json responseJson = {
+        {"success", false},
+        {"error", message}
+    };
+    
+    return json(responseJson, statusCode);
 }
 
-HttpResponse ResponseBuilder::build() {
+HttpResponse ResponseBuilder::badRequest(const std::string& message) {
+    return error(400, message);
+}
+
+HttpResponse ResponseBuilder::unauthorized(const std::string& message) {
+    return error(401, message);
+}
+
+HttpResponse ResponseBuilder::forbidden(const std::string& message) {
+    return error(403, message);
+}
+
+HttpResponse ResponseBuilder::notFound(const std::string& message) {
+    return error(404, message);
+}
+
+HttpResponse ResponseBuilder::internalError(const std::string& message) {
+    return error(500, message);
+}
+
+HttpResponse ResponseBuilder::serviceUnavailable(const std::string& message) {
+    return error(503, message);
+}
+
+HttpResponse ResponseBuilder::json(const nlohmann::json& data, int statusCode) {
     HttpResponse response;
-    response.setStatusCode(statusCode_);
-    
-    for (const auto& header : headers_) {
-        response.setHeader(header.first, header.second);
-    }
-    
-    response.setBody(body_);
+    response.setStatusCode(statusCode);
+    response.setBody(data.dump());
+    response.setContentType(getContentType());
     return response;
 }
 
-ResponseBuilder ResponseBuilder::ok() {
-    ResponseBuilder builder;
-    builder.setStatus(200);
-    return builder;
+HttpResponse ResponseBuilder::text(const std::string& text, int statusCode) {
+    HttpResponse response;
+    response.setStatusCode(statusCode);
+    response.setBody(text);
+    response.setContentType("text/plain");
+    return response;
 }
 
-ResponseBuilder ResponseBuilder::error(int code, const std::string& message) {
-    ResponseBuilder builder;
-    builder.setStatus(code);
-    
-    nlohmann::json errorJson;
-    errorJson["error"]["code"] = code;
-    errorJson["error"]["message"] = message;
-    builder.setBody(errorJson.dump());
-    builder.setHeader("Content-Type", cllm::Config::instance().apiResponseContentTypeJson());
-    
-    return builder;
+HttpResponse ResponseBuilder::streaming(const std::string& data) {
+    HttpResponse response;
+    response.setStatusCode(200);
+    response.setBody(data);
+    response.setContentType("text/event-stream");
+    return response;
+}
+
+std::string ResponseBuilder::getContentType() {
+    return cllm::Config::instance().apiResponseContentTypeJson();
 }
 
 }

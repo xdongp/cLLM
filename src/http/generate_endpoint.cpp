@@ -1,4 +1,6 @@
 #include "cllm/http/generate_endpoint.h"
+#include "cllm/http/json_request_parser.h"
+#include "cllm/http/response_builder.h"
 #include "cllm/scheduler/scheduler.h"
 #include "cllm/tokenizer/i_tokenizer.h"
 #include "cllm/common/logger.h"
@@ -31,40 +33,17 @@ void GenerateEndpoint::setTokenizer(ITokenizer* tokenizer) {
 GenerateEndpoint::GenerateRequest GenerateEndpoint::parseRequest(const HttpRequest& request) {
     GenerateRequest req;
     
-    std::string body = request.getBody();
+    nlohmann::json jsonBody;
     
-    // 默认值
-    req.prompt = cllm::Config::instance().apiDefaultPrompt();
-    req.maxTokens = cllm::Config::instance().apiDefaultMaxTokens();
-    req.temperature = cllm::Config::instance().apiDefaultTemperature();
-    req.topP = cllm::Config::instance().apiDefaultTopP();
-    req.stream = false;
-    
-    try {
-        nlohmann::json jsonBody = nlohmann::json::parse(body);
-        
-        if (jsonBody.contains("prompt") && jsonBody["prompt"].is_string()) {
-            req.prompt = jsonBody["prompt"].get<std::string>();
-        }
-        
-        if (jsonBody.contains("max_tokens") && jsonBody["max_tokens"].is_number_integer()) {
-            req.maxTokens = jsonBody["max_tokens"].get<int>();
-        }
-        
-        if (jsonBody.contains("temperature") && jsonBody["temperature"].is_number()) {
-            req.temperature = jsonBody["temperature"].get<float>();
-        }
-        
-        if (jsonBody.contains("top_p") && jsonBody["top_p"].is_number()) {
-            req.topP = jsonBody["top_p"].get<float>();
-        }
-        
-        if (jsonBody.contains("stream") && jsonBody["stream"].is_boolean()) {
-            req.stream = jsonBody["stream"].get<bool>();
-        }
-    } catch (const nlohmann::json::exception& e) {
-        CLLM_WARN("Failed to parse JSON request body: %s, using default values", e.what());
+    if (!JsonRequestParser::validateJson(request.getBody(), jsonBody)) {
+        CLLM_WARN("Failed to parse JSON request body: %s, using default values", JsonRequestParser::getLastError().c_str());
     }
+    
+    JsonRequestParser::getFieldWithDefault(jsonBody, "prompt", req.prompt, cllm::Config::instance().apiDefaultPrompt());
+    JsonRequestParser::getFieldWithDefault(jsonBody, "max_tokens", req.maxTokens, cllm::Config::instance().apiDefaultMaxTokens());
+    JsonRequestParser::getFieldWithDefault(jsonBody, "temperature", req.temperature, cllm::Config::instance().apiDefaultTemperature());
+    JsonRequestParser::getFieldWithDefault(jsonBody, "top_p", req.topP, cllm::Config::instance().apiDefaultTopP());
+    JsonRequestParser::getFieldWithDefault(jsonBody, "stream", req.stream, false);
     
     return req;
 }
@@ -79,9 +58,7 @@ HttpResponse GenerateEndpoint::handle(const HttpRequest& request) {
             return handleNonStreaming(req);
         }
     } catch (const std::exception& e) {
-        HttpResponse response;
-        response.setError(500, std::string("Error handling request: ") + e.what());
-        return response;
+        return ResponseBuilder::internalError(std::string("Error handling request: ") + e.what());
     }
 }
 
@@ -233,12 +210,7 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
     resp["response_time"] = responseTime;
     resp["tokens_per_second"] = tokensPerSecond;
 
-    HttpResponse response;
-    response.setStatusCode(200);
-    response.setBody(resp.dump());
-    response.setContentType(cllm::Config::instance().apiResponseContentTypeJson());
-    
-    return response;
+    return ResponseBuilder::success(resp);
 }
 
 HttpResponse GenerateEndpoint::handleStreaming(const GenerateRequest& req) {

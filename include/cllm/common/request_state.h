@@ -34,7 +34,7 @@ struct RequestState {
     size_t arrivalTime = 0;                     ///< 请求到达时间
     size_t startTime = 0;                       ///< 开始处理时间
     size_t completionTime = 0;                  ///< 完成时间
-    size_t priority = 0;                        ///< 优先级
+    float priority = 0.0f;                      ///< 优先级
     bool isCompleted = false;                   ///< 是否已完成
     bool isRunning = false;                     ///< 是否正在运行
     bool isFailed = false;                      ///< 是否失败

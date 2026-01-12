@@ -399,8 +399,8 @@ TEST_F(RequestStateTest, RequestComparator) {
     req2.arrivalTime = 600;
     req2.priority = 1.0f;
     
-    EXPECT_TRUE(comparator(req1, req2));
-    EXPECT_FALSE(comparator(req2, req1));
+    EXPECT_FALSE(comparator(req1, req2)); // req1 has higher priority, so should not be placed below req2
+    EXPECT_TRUE(comparator(req2, req1));  // req2 has lower priority, so should be placed below req1
 }
 
 TEST_F(RequestStateTest, RequestComparatorSamePriority) {
@@ -418,6 +418,6 @@ TEST_F(RequestStateTest, RequestComparatorSamePriority) {
     req2.arrivalTime = 600;
     req2.priority = 1.0f;
     
-    EXPECT_TRUE(comparator(req1, req2));
-    EXPECT_FALSE(comparator(req2, req1));
+    EXPECT_FALSE(comparator(req1, req2)); // req1 has earlier arrival time, so should not be placed below req2
+    EXPECT_TRUE(comparator(req2, req1));  // req2 has later arrival time, so should be placed below req1
 }

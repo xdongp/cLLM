@@ -29,6 +29,10 @@ void HttpHandler::del(const std::string& path, HandlerFunc handler) {
     deleteHandlers_[normalizedPath] = handler;
 }
 
+void HttpHandler::addMiddleware(MiddlewareFunc middleware) {
+    middlewares_.push_back(middleware);
+}
+
 HttpResponse HttpHandler::handleRequest(const HttpRequest& request) {
     std::string method = request.getMethod();
     std::string path = normalizePath(request.getPath());
@@ -49,7 +53,13 @@ HttpResponse HttpHandler::handleRequest(const HttpRequest& request) {
     
     for (const auto& entry : *handlers) {
         if (matchPath(entry.first, path)) {
-            return entry.second(request);
+            // 如果没有中间件，直接调用处理函数
+            if (middlewares_.empty()) {
+                return entry.second(request);
+            }
+            
+            // 应用中间件链
+            return applyMiddleware(request, entry.second);
         }
     }
     
@@ -110,6 +120,18 @@ bool HttpHandler::matchPath(const std::string& pattern, const std::string& path)
     }
     
     return false;
+}
+
+HttpResponse HttpHandler::applyMiddleware(const HttpRequest& request, const HandlerFunc& handler, size_t middlewareIndex) {
+    // 如果所有中间件都已应用，调用最终处理函数
+    if (middlewareIndex >= middlewares_.size()) {
+        return handler(request);
+    }
+    
+    // 应用当前中间件，将下一个中间件作为参数传递
+    return middlewares_[middlewareIndex](request, [this, &request, &handler, middlewareIndex](const HttpRequest& req) {
+        return applyMiddleware(req, handler, middlewareIndex + 1);
+    });
 }
 
 }

@@ -15,6 +15,7 @@
 #include "cllm/common/logger.h"
 #include "cllm/common/config.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <cstring>  // for std::memcpy
 
@@ -68,13 +69,17 @@ bool LibTorchBackend::initialize() {
         try {
             torch::NoGradGuard no_grad;
 
-            const std::vector<int> candidates = cllm::Config::instance().backendLibTorchSeqLenCandidates();
+            std::vector<int> candidates = cllm::Config::instance().backendLibTorchSeqLenCandidates();
+            candidates.erase(std::remove_if(candidates.begin(), candidates.end(), [](int v) { return v <= 0; }), candidates.end());
+            std::sort(candidates.begin(), candidates.end());
+            candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+
+            // 关键：优先选择“最大的可用 seq_len”。
+            // 很多 traced 模型同时支持多个长度；若取最小值（如 16），会导致稍长 prompt 直接被裁剪，表现为生成异常/乱码。
             bool detected = false;
 
-            for (int len : candidates) {
-                if (len <= 0) {
-                    continue;
-                }
+            for (auto it = candidates.rbegin(); it != candidates.rend(); ++it) {
+                const int len = *it;
                 try {
                     auto test_input = torch::randint(0, 1000, {1, static_cast<int64_t>(len)}, torch::kLong).to(device_);
                     auto test_output = model_.forward({test_input}).toTensor();
@@ -106,7 +111,7 @@ bool LibTorchBackend::initialize() {
 
                     break;  // 探测成功
                 } catch (const std::exception& e) {
-                    // 尝试下一个候选长度
+                    // 尝试更小的候选长度
                     CLLM_DEBUG("[LibTorchBackend] seq_len {} not supported by traced model: {}", len, e.what());
                 }
             }
@@ -258,9 +263,9 @@ Tensor LibTorchBackend::forward(const std::vector<int> &inputIds) {
             CLLM_DEBUG("[LibTorchBackend] Padded input from {} to {} tokens", 
                        originalLen, tracedLen);
         } else if (originalLen > tracedLen) {
-            // 裁剪到 tracedLen（不建议，但作为临时方案）
-            paddedInputIds.resize(tracedLen);
-            CLLM_WARN("[LibTorchBackend] WARNING: Truncated input from {} to {} tokens", 
+            // 裁剪到 tracedLen：保留末尾 token（更贴近“上下文窗口”语义）
+            paddedInputIds.erase(paddedInputIds.begin(), paddedInputIds.end() - static_cast<std::ptrdiff_t>(tracedLen));
+            CLLM_WARN("[LibTorchBackend] WARNING: Truncated input from {} to {} tokens (kept last tokens)",
                       originalLen, tracedLen);
         }
         
@@ -366,33 +371,35 @@ Tensor LibTorchBackend::forwardBatch(const std::vector<int> &flatInputIds,
             throw std::runtime_error("LibTorchBackend::forwardBatch: vocab size mismatch");
         }
         
-        // 由于 TorchScript trace 限制，输出长度可能不等于输入长度
-        // 我们只拷贝可用的 tokens
+        // 由于 TorchScript trace 限制，输出长度可能不等于输入长度。
+        // forward(inputIds) 在超长输入时会保留“尾部窗口”，因此这里必须把 logits 对齐到请求末尾，
+        // 否则最后一个 token 位置 logits 会是 0，采样会退化成随机噪声（表现为乱码）。
         const size_t tokensToUse = std::min(len, actualOutputLen);
+        const size_t offsetInRequest = (len > tokensToUse) ? (len - tokensToUse) : 0;
 
-        // 拷贝到输出张量
         const float *src = requestLogits.data();
         float *dst = logits.data();
 
-        for (size_t t = 0; t < tokensToUse; ++t) {
-            size_t globalRow = start + t;
-            size_t srcOffset = t * vocab;
-            size_t dstOffset = globalRow * vocab;
-            for (size_t v = 0; v < vocab; ++v) {
-                dst[dstOffset + v] = src[srcOffset + v];
-            }
-        }
-        
-        // 如果输出被裁剪，填充剩余位置为0
-        if (tokensToUse < len) {
-            CLLM_WARN("[LibTorchBackend] WARNING: Output truncated from {} to {} tokens, filling rest with zeros", 
-                      len, tokensToUse);
-            for (size_t t = tokensToUse; t < len; ++t) {
+        // 先把前缀（没有 logits 的部分）置 0
+        if (offsetInRequest > 0) {
+            CLLM_WARN("[LibTorchBackend] Output truncated: request len {} > output len {}, aligning logits to tail (offset={})",
+                      len, tokensToUse, offsetInRequest);
+            for (size_t t = 0; t < offsetInRequest; ++t) {
                 size_t globalRow = start + t;
                 size_t dstOffset = globalRow * vocab;
                 for (size_t v = 0; v < vocab; ++v) {
                     dst[dstOffset + v] = 0.0f;
                 }
+            }
+        }
+
+        // 将可用 logits 拷贝到请求的末尾区间 [start+offset, end)
+        for (size_t t = 0; t < tokensToUse; ++t) {
+            size_t globalRow = start + offsetInRequest + t;
+            size_t srcOffset = t * vocab;
+            size_t dstOffset = globalRow * vocab;
+            for (size_t v = 0; v < vocab; ++v) {
+                dst[dstOffset + v] = src[srcOffset + v];
             }
         }
     }

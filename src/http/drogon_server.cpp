@@ -83,8 +83,12 @@ void DrogonServer::stop() {
     drogon::app().quit();
 }
 
-void DrogonServer::health(const drogon::HttpRequestPtr& req,
-                         std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+template<typename Func>
+void DrogonServer::handleRequest(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+    Func requestSetup
+) {
     HttpHandler* handler_ptr;
     {
         std::lock_guard<std::mutex> lock(handler_mutex_);
@@ -99,8 +103,8 @@ void DrogonServer::health(const drogon::HttpRequestPtr& req,
     }
 
     HttpRequest request;
-    request.setMethod("GET");
-    request.setPath(cllm::Config::instance().apiEndpointHealthPath());
+    requestSetup(request);
+    request.setBody(std::string(req->getBody()));
     
     HttpResponse response = handler_ptr->handleRequest(request);
     
@@ -108,116 +112,43 @@ void DrogonServer::health(const drogon::HttpRequestPtr& req,
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
     resp->setBody(response.getBody());
     
-    // 设置响应头
     for (const auto& header : response.getAllHeaders()) {
         resp->addHeader(header.first, header.second);
     }
     
     callback(resp);
+}
+
+void DrogonServer::health(const drogon::HttpRequestPtr& req,
+                         std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+    handleRequest(req, std::move(callback), [](HttpRequest& request) {
+        request.setMethod("GET");
+        request.setPath(cllm::Config::instance().apiEndpointHealthPath());
+    });
 }
 
 void DrogonServer::generate(const drogon::HttpRequestPtr& req,
                            std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
-    HttpHandler* handler_ptr;
-    {
-        std::lock_guard<std::mutex> lock(handler_mutex_);
-        handler_ptr = handler_;
-    }
-    
-    if (!handler_ptr) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
-        callback(resp);
-        return;
-    }
-
-    HttpRequest request;
-    request.setMethod("POST");
-    request.setPath(cllm::Config::instance().apiEndpointGeneratePath());
-    request.setBody(std::string(req->getBody()));
-    
-    HttpResponse response = handler_ptr->handleRequest(request);
-    
-    auto resp = drogon::HttpResponse::newHttpResponse();
-    resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
-    resp->setBody(response.getBody());
-    
-    // 设置响应头
-    for (const auto& header : response.getAllHeaders()) {
-        resp->addHeader(header.first, header.second);
-    }
-    
-    callback(resp);
+    handleRequest(req, std::move(callback), [](HttpRequest& request) {
+        request.setMethod("POST");
+        request.setPath(cllm::Config::instance().apiEndpointGeneratePath());
+    });
 }
 
 void DrogonServer::generateStream(const drogon::HttpRequestPtr& req,
                                  std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
-    HttpHandler* handler_ptr;
-    {
-        std::lock_guard<std::mutex> lock(handler_mutex_);
-        handler_ptr = handler_;
-    }
-    
-    if (!handler_ptr) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
-        callback(resp);
-        return;
-    }
-
-    // For streaming response, we'll just call the handler normally
-    // Streaming implementation would be more complex and depend on the actual handler implementation
-    HttpRequest request;
-    request.setMethod("POST");
-    request.setPath(cllm::Config::instance().apiEndpointGenerateStreamPath());
-    request.setBody(std::string(req->getBody()));
-    
-    HttpResponse response = handler_ptr->handleRequest(request);
-    
-    auto resp = drogon::HttpResponse::newHttpResponse();
-    resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
-    resp->setBody(response.getBody());
-    
-    // 设置响应头
-    for (const auto& header : response.getAllHeaders()) {
-        resp->addHeader(header.first, header.second);
-    }
-    
-    callback(resp);
+    handleRequest(req, std::move(callback), [](HttpRequest& request) {
+        request.setMethod("POST");
+        request.setPath(cllm::Config::instance().apiEndpointGenerateStreamPath());
+    });
 }
 
 void DrogonServer::encode(const drogon::HttpRequestPtr& req,
                          std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
-    HttpHandler* handler_ptr;
-    {
-        std::lock_guard<std::mutex> lock(handler_mutex_);
-        handler_ptr = handler_;
-    }
-    
-    if (!handler_ptr) {
-        auto resp = drogon::HttpResponse::newHttpResponse();
-        resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
-        callback(resp);
-        return;
-    }
-
-    HttpRequest request;
-    request.setMethod("POST");
-    request.setPath(cllm::Config::instance().apiEndpointEncodePath());
-    request.setBody(std::string(req->getBody()));
-    
-    HttpResponse response = handler_ptr->handleRequest(request);
-    
-    auto resp = drogon::HttpResponse::newHttpResponse();
-    resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
-    resp->setBody(response.getBody());
-    
-    // 设置响应头
-    for (const auto& header : response.getAllHeaders()) {
-        resp->addHeader(header.first, header.second);
-    }
-    
-    callback(resp);
+    handleRequest(req, std::move(callback), [](HttpRequest& request) {
+        request.setMethod("POST");
+        request.setPath(cllm::Config::instance().apiEndpointEncodePath());
+    });
 }
 
 } // namespace cllm

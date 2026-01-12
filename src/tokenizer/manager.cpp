@@ -17,6 +17,9 @@ namespace cllm {
 namespace {
     bool hasTokenizerJson(const std::string& modelPath) {
         namespace fs = std::filesystem;
+        if (modelPath.empty()) {
+            return false;
+        }
         if (fs::is_directory(modelPath)) {
             return fs::exists(fs::path(modelPath) / "tokenizer.json");
         }
@@ -25,6 +28,9 @@ namespace {
     
     bool hasTokenizerModel(const std::string& modelPath) {
         namespace fs = std::filesystem;
+        if (modelPath.empty()) {
+            return false;
+        }
         if (fs::is_directory(modelPath)) {
             return fs::exists(fs::path(modelPath) / "tokenizer.model");
         }
@@ -35,6 +41,11 @@ namespace {
 // 检测模型类型辅助函数
 ModelType detectModelType(const std::string& modelPath) {
     namespace fs = std::filesystem;
+    
+    if (modelPath.empty()) {
+        // 如果模型路径为空，返回默认模型类型
+        return ModelType::SPM;
+    }
     
     // 读取config.json
     fs::path configPath = fs::path(modelPath) / "config.json";

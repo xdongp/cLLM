@@ -10,10 +10,16 @@
 #include <string>
 #include <map>
 #include <functional>
+#include <vector>
 #include "cllm/http/request.h"
 #include "cllm/http/response.h"
 
 namespace cllm {
+
+/**
+ * @brief HTTP中间件函数类型定义
+ */
+typedef std::function<HttpResponse(const HttpRequest&, const std::function<HttpResponse(const HttpRequest&)>&)> MiddlewareFunc;
 
 /**
  * @brief HTTP请求处理器，用于注册和处理HTTP请求
@@ -67,6 +73,12 @@ public:
     void del(const std::string& path, HandlerFunc handler);
     
     /**
+     * @brief 添加中间件
+     * @param middleware 中间件函数
+     */
+    void addMiddleware(MiddlewareFunc middleware);
+    
+    /**
      * @brief 处理HTTP请求
      * @param request HTTP请求对象
      * @return HTTP响应对象
@@ -97,12 +109,22 @@ private:
      */
     bool matchPath(const std::string& pattern, const std::string& path) const;
     
+    /**
+     * @brief 应用中间件链
+     * @param request HTTP请求对象
+     * @param handler 最终处理函数
+     * @param middlewareIndex 当前中间件索引
+     * @return HTTP响应对象
+     */
+    HttpResponse applyMiddleware(const HttpRequest& request, const HandlerFunc& handler, size_t middlewareIndex = 0);
+    
     std::map<std::string, HandlerFunc> getHandlers_;     ///< GET请求处理器映射
     std::map<std::string, HandlerFunc> postHandlers_;    ///< POST请求处理器映射
     std::map<std::string, HandlerFunc> putHandlers_;     ///< PUT请求处理器映射
     std::map<std::string, HandlerFunc> deleteHandlers_;  ///< DELETE请求处理器映射
+    std::vector<MiddlewareFunc> middlewares_;            ///< 中间件列表
 };
 
-}
+} // namespace cllm
 
 #endif

@@ -45,11 +45,14 @@ cLLM项目当前使用Drogon框架作为HTTP服务器，通过自定义的HttpHa
 
 #### 2.2.1 DrogonServer
 
-[DrogonServer](file:///Users/dannypan/PycharmProjects/xllm/cpp/cLLM/include/cllm/http/drogon_server.h)是HTTP服务器的核心封装类，负责：
+[DrogonServer](file:///d:/cLLM/include/cllm/http/drogon_server.h)是HTTP服务器的核心封装类，负责启动和停止服务，并注册HTTP端点。它继承自Drogon框架的HttpController基类，利用Drogon的宏机制实现端点注册。
+
+**核心实现：**
 
 ```cpp
 class DrogonServer : public drogon::HttpController<DrogonServer> {
 public:
+    // Drogon端点注册宏 - 使用编译时路由注册机制
     METHOD_LIST_BEGIN
     METHOD_ADD(DrogonServer::health, "/health", drogon::Get);
     METHOD_ADD(DrogonServer::generate, "/generate", drogon::Post);
@@ -57,27 +60,148 @@ public:
     METHOD_ADD(DrogonServer::encode, "/encode", drogon::Post);
     METHOD_LIST_END
 
+    // 服务器生命周期管理
     static void init(const std::string& host, int port, HttpHandler* handler);
     static void start();
     static void stop();
+
+    // HTTP请求处理方法 - 对应METHOD_ADD注册的端点
+    void health(const drogon::HttpRequestPtr& req,
+                std::function<void(const drogon::HttpResponsePtr&)>&& callback);
+    
+    void generate(const drogon::HttpRequestPtr& req,
+                 std::function<void(const drogon::HttpResponsePtr&)>&& callback);
+    
+    void generateStream(const drogon::HttpRequestPtr& req,
+                       std::function<void(const drogon::HttpResponsePtr&)>&& callback);
+    
+    void encode(const drogon::HttpRequestPtr& req,
+               std::function<void(const drogon::HttpResponsePtr&)>&& callback);
+
+private:
+    static std::mutex handler_mutex_;  // 保护handler_的互斥锁
+    static HttpHandler* handler_;      // 请求处理器指针
+    static std::string host_;          // 监听主机地址
+    static int port_;                  // 监听端口
 };
 ```
 
+**Drogon端点注册机制详解：**
+
+Drogon框架使用特殊的宏机制在编译时注册HTTP端点：
+
+1. **METHOD_LIST_BEGIN / METHOD_LIST_END**: 这两个宏定义了端点注册块的开始和结束，在编译时会自动生成路由注册代码
+
+2. **METHOD_ADD**: 用于注册单个端点，参数包括：
+   - 第一个参数：成员函数指针（如`DrogonServer::health`）
+   - 第二个参数：URL路径（如`"/health"`）
+   - 第三个参数：HTTP方法（如`drogon::Get`、`drogon::Post`）
+
+3. **编译时注册**: 这些宏在编译时展开，自动将端点注册到Drogon的路由表中，无需运行时手动注册
+
+**双重路由注册机制：**
+
+在实际实现中，DrogonServer采用了双重路由注册机制以确保可靠性：
+
+```cpp
+void DrogonServer::init(const std::string& host, int port, HttpHandler* handler) {
+    // ... 初始化代码 ...
+
+    // 显式注册路由到 HttpHandler（避免依赖 Controller 自动注册失败导致 404）
+    drogon::app().registerHandler(
+        cllm::Config::instance().apiEndpointHealthPath(),
+        [](const drogon::HttpRequestPtr& req,
+           std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            DrogonServer controller;
+            controller.health(req, std::move(callback));
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        cllm::Config::instance().apiEndpointGeneratePath(),
+        [](const drogon::HttpRequestPtr& req,
+           std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            DrogonServer controller;
+            controller.generate(req, std::move(callback));
+        },
+        {drogon::Post});
+
+    // ... 其他端点注册 ...
+
+    drogon::app().addListener(host, port);
+}
+```
+
+这种双重注册机制提供了：
+- **编译时注册**: METHOD_ADD宏在编译时注册，提供类型安全和编译期检查
+- **运行时注册**: registerHandler()在运行时注册，提供灵活性和容错能力
+- **容错性**: 即使Controller自动注册失败，显式注册也能保证端点可用
+
+**请求处理流程：**
+
+每个端点的处理方法都遵循相同的模式：
+
+```cpp
+void DrogonServer::health(const drogon::HttpRequestPtr& req,
+                         std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+    // 1. 获取handler指针（线程安全）
+    HttpHandler* handler_ptr;
+    {
+        std::lock_guard<std::mutex> lock(handler_mutex_);
+        handler_ptr = handler_;
+    }
+    
+    // 2. 错误检查
+    if (!handler_ptr) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+        callback(resp);
+        return;
+    }
+
+    // 3. 转换Drogon请求为内部请求格式
+    HttpRequest request;
+    request.setMethod("GET");
+    request.setPath(cllm::Config::instance().apiEndpointHealthPath());
+    
+    // 4. 调用HttpHandler处理请求
+    HttpResponse response = handler_ptr->handleRequest(request);
+    
+    // 5. 转换内部响应为Drogon响应格式
+    auto resp = drogon::HttpResponse::newHttpResponse();
+    resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
+    resp->setBody(response.getBody());
+    
+    // 6. 设置响应头
+    for (const auto& header : response.getAllHeaders()) {
+        resp->addHeader(header.first, header.second);
+    }
+    
+    // 7. 异步返回响应
+    callback(resp);
+}
+```
+
 **特点：**
-- 使用Drogon的HttpController机制注册路由
+- 使用Drogon的HttpController机制和宏系统注册路由
+- 采用双重路由注册机制（编译时+运行时）确保可靠性
 - 通过静态方法管理服务器生命周期
 - 使用互斥锁保护handler指针，确保线程安全
 - 显式配置线程数，保证健康检查等轻量请求可并发响应
+- 将Drogon的请求/响应格式转换为内部格式，解耦框架依赖
 
 **优点：**
 - Drogon框架提供成熟的HTTP服务器功能
 - 支持异步处理和流式响应
 - 内置连接池和线程管理
+- 宏机制提供编译时类型安全和路由检查
+- 双重注册机制提高系统可靠性
 
 **缺点：**
 - 缺少请求队列管理
 - 没有限流机制
 - 健康检查功能较为简单
+- Drogon框架与业务逻辑耦合度较高
 
 #### 2.2.2 HttpHandler
 

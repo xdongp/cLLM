@@ -242,10 +242,15 @@ int main(int argc, char* argv[]) {
         }
 
         // 检查必需参数（允许从配置提供 model.path）
-        if (modelPath.empty() || modelPath == "/path/to/model") {
+        // 允许空模型路径用于测试目的（将使用占位权重）
+        if (modelPath == "/path/to/model") {
             CLLM_ERROR("Model path is required. Use --model-path or set model.path in config");
             printUsage(argv[0]);
             return 1;
+        }
+        
+        if (modelPath.empty()) {
+            CLLM_INFO("Using empty model path - will use placeholder weights for testing");
         }
 
         CLLM_INFO("========================================");
@@ -281,119 +286,127 @@ int main(int argc, char* argv[]) {
 
         namespace fs = std::filesystem;
 
-        // modelPath 既可能是“模型目录”，也可能是“权重文件路径”。
-        const bool isDir = fs::is_directory(modelPath);
-
-        // 1) 解析 tokenizer 目录（优先 HuggingFace tokenizer.json）
-        auto resolveTokenizerDir = [](const fs::path& baseDir) -> std::string {
-            if (fs::exists(baseDir / "tokenizer.json")) {
-                return baseDir.string();
-            }
-
-            std::vector<fs::path> matches;
-            for (const auto& ent : fs::directory_iterator(baseDir)) {
-                if (!ent.is_directory()) {
-                    continue;
-                }
-                const fs::path cand = ent.path() / "tokenizer.json";
-                if (fs::exists(cand)) {
-                    matches.push_back(ent.path());
-                }
-            }
-
-            if (matches.size() == 1) {
-                return matches.front().string();
-            }
-
-            // 回退：用 baseDir（TokenizerManager 会再尝试其他方式/或给出错误）
-            return baseDir.string();
-        };
-
         std::string tokenizerModelDir;
-        if (isDir) {
-            tokenizerModelDir = resolveTokenizerDir(fs::path(modelPath));
-        } else {
-            fs::path file(modelPath);
-            tokenizerModelDir = resolveTokenizerDir(file.parent_path());
-        }
-
-        // 2) 解析后端权重文件路径
-        auto listFilesWithExt = [](const fs::path& dir, const std::string& ext) -> std::vector<fs::path> {
-            std::vector<fs::path> out;
-            for (const auto& ent : fs::directory_iterator(dir)) {
-                if (!ent.is_regular_file()) {
-                    continue;
-                }
-                const fs::path p = ent.path();
-                if (p.extension() == ext) {
-                    out.push_back(p);
-                }
-            }
-            return out;
-        };
-
         std::string backendModelPath;
-        if (isDir) {
-            fs::path dir(modelPath);
 
-            if (useLibTorch) {
-                // LibTorch 需要 TorchScript .pt
-                auto pts = listFilesWithExt(dir, ".pt");
-                if (pts.size() == 1) {
-                    backendModelPath = pts.front().string();
+        if (modelPath.empty()) {
+            // Empty model path case - use placeholder weights and default tokenizer
+            CLLM_INFO("Empty model path provided - using placeholder weights and default tokenizer");
+            tokenizerModelDir = "";
+            backendModelPath = "";
+        } else {
+            // 1) Check if model path is a directory
+            const bool isDir = fs::is_directory(modelPath);
+
+            // 2) 解析 tokenizer 目录（优先 HuggingFace tokenizer.json）
+            auto resolveTokenizerDir = [](const fs::path& baseDir) -> std::string {
+                if (fs::exists(baseDir / "tokenizer.json")) {
+                    return baseDir.string();
+                }
+
+                std::vector<fs::path> matches;
+                for (const auto& ent : fs::directory_iterator(baseDir)) {
+                    if (!ent.is_directory()) {
+                        continue;
+                    }
+                    const fs::path cand = ent.path() / "tokenizer.json";
+                    if (fs::exists(cand)) {
+                        matches.push_back(ent.path());
+                    }
+                }
+
+                if (matches.size() == 1) {
+                    return matches.front().string();
+                }
+
+                // 回退：用 baseDir（TokenizerManager 会再尝试其他方式/或给出错误）
+                return baseDir.string();
+            };
+
+            if (isDir) {
+                tokenizerModelDir = resolveTokenizerDir(fs::path(modelPath));
+            } else {
+                fs::path file(modelPath);
+                tokenizerModelDir = resolveTokenizerDir(file.parent_path());
+            }
+
+            // 3) 解析后端权重文件路径
+            auto listFilesWithExt = [](const fs::path& dir, const std::string& ext) -> std::vector<fs::path> {
+                std::vector<fs::path> out;
+                for (const auto& ent : fs::directory_iterator(dir)) {
+                    if (!ent.is_regular_file()) {
+                        continue;
+                    }
+                    const fs::path p = ent.path();
+                    if (p.extension() == ext) {
+                        out.push_back(p);
+                    }
+                }
+                return out;
+            };
+
+            if (isDir) {
+                fs::path dir(modelPath);
+
+                if (useLibTorch) {
+                    // LibTorch 需要 TorchScript .pt
+                    auto pts = listFilesWithExt(dir, ".pt");
+                    if (pts.size() == 1) {
+                        backendModelPath = pts.front().string();
+                    } else {
+                        std::string msg = "LibTorch backend requires exactly one .pt in directory (or pass a .pt path). Found: ";
+                        msg += std::to_string(pts.size());
+                        if (!pts.empty()) {
+                            msg += " (";
+                            for (const auto& p : pts) {
+                                msg += p.filename().string();
+                                msg += " ";
+                            }
+                            msg += ")";
+                        }
+                        throw std::runtime_error(msg);
+                    }
                 } else {
-                    std::string msg = "LibTorch backend requires exactly one .pt in directory (or pass a .pt path). Found: ";
-                    msg += std::to_string(pts.size());
-                    if (!pts.empty()) {
-                        msg += " (";
-                        for (const auto& p : pts) {
+                    // Kylin 需要 .bin
+                    auto bins = listFilesWithExt(dir, ".bin");
+                    if (bins.empty()) {
+                        throw std::runtime_error("Kylin backend requires .bin model file. No .bin found in: " + dir.string());
+                    }
+
+                    // 若目录下只有一个 .bin，直接用；否则按 quantization 关键词筛选
+                    std::vector<fs::path> filtered;
+                    if (bins.size() == 1) {
+                        filtered = bins;
+                    } else {
+                        for (const auto& p : bins) {
+                            const std::string name = p.filename().string();
+                            if (quantization == "fp16" && name.find("fp16") != std::string::npos) {
+                                filtered.push_back(p);
+                            } else if (quantization == "fp32" && name.find("fp32") != std::string::npos) {
+                                filtered.push_back(p);
+                            } else if (quantization == "int8" && name.find("int8") != std::string::npos) {
+                                filtered.push_back(p);
+                            } else if (quantization == "int4" && name.find("int4") != std::string::npos) {
+                                filtered.push_back(p);
+                            }
+                        }
+                    }
+
+                    if (filtered.size() == 1) {
+                        backendModelPath = filtered.front().string();
+                    } else {
+                        std::string msg = "Could not uniquely select .bin for quantization=" + quantization +
+                                          ". Pass a .bin path directly via --model-path. Candidates: ";
+                        for (const auto& p : bins) {
                             msg += p.filename().string();
                             msg += " ";
                         }
-                        msg += ")";
+                        throw std::runtime_error(msg);
                     }
-                    throw std::runtime_error(msg);
                 }
             } else {
-                // Kylin 需要 .bin
-                auto bins = listFilesWithExt(dir, ".bin");
-                if (bins.empty()) {
-                    throw std::runtime_error("Kylin backend requires .bin model file. No .bin found in: " + dir.string());
-                }
-
-                // 若目录下只有一个 .bin，直接用；否则按 quantization 关键词筛选
-                std::vector<fs::path> filtered;
-                if (bins.size() == 1) {
-                    filtered = bins;
-                } else {
-                    for (const auto& p : bins) {
-                        const std::string name = p.filename().string();
-                        if (quantization == "fp16" && name.find("fp16") != std::string::npos) {
-                            filtered.push_back(p);
-                        } else if (quantization == "fp32" && name.find("fp32") != std::string::npos) {
-                            filtered.push_back(p);
-                        } else if (quantization == "int8" && name.find("int8") != std::string::npos) {
-                            filtered.push_back(p);
-                        } else if (quantization == "int4" && name.find("int4") != std::string::npos) {
-                            filtered.push_back(p);
-                        }
-                    }
-                }
-
-                if (filtered.size() == 1) {
-                    backendModelPath = filtered.front().string();
-                } else {
-                    std::string msg = "Could not uniquely select .bin for quantization=" + quantization +
-                                      ". Pass a .bin path directly via --model-path. Candidates: ";
-                    for (const auto& p : bins) {
-                        msg += p.filename().string();
-                        msg += " ";
-                    }
-                    throw std::runtime_error(msg);
-                }
+                backendModelPath = modelPath;
             }
-        } else {
-            backendModelPath = modelPath;
         }
 
         CLLM_INFO("Resolved paths:");
@@ -475,14 +488,13 @@ int main(int argc, char* argv[]) {
         CLLM_INFO("Press Ctrl+C to stop the server");
         CLLM_INFO("========================================");
         
-        // 启动服务器（阻塞）
+        // Start server (blocking)
         cllm::DrogonServer::start();
         
-        // 保持端点对象生命周期
+        // Keep endpoint objects alive
         healthEndpoint.reset();
         generateEndpoint.reset();
         encodeEndpoint.reset();
-        
     } catch (const std::exception& e) {
         CLLM_ERROR("Failed to start server: {}", e.what());
         cllm::Logger::instance().flush();

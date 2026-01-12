@@ -29,9 +29,12 @@ struct RequestComparator {
      */
     bool operator()(const RequestState& a, const RequestState& b) const {
         if (a.priority != b.priority) {
-            return a.priority > b.priority;
+            return a.priority < b.priority; // Higher priority first
         }
-        return a.arrivalTime > b.arrivalTime;
+        if (a.arrivalTime != b.arrivalTime) {
+            return a.arrivalTime > b.arrivalTime; // Earlier arrival first
+        }
+        return a.requestId > b.requestId; // Lower request ID first as tiebreaker
     }
 };
 

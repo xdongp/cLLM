@@ -29,8 +29,8 @@ bool RequestQueue::addRequest(const RequestState& request) {
     auto currentTime = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()
     ).count();
-    req.priority = req.calculatePriority(currentTime);
     req.arrivalTime = currentTime;
+    req.priority = req.calculatePriority(currentTime);
     
     queue_.push(req);
     totalRequests_++;

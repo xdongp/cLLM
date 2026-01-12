@@ -1,0 +1,41 @@
+# 测试配置文件 - 用于集成测试
+# 最小配置,仅包含必需字段
+
+model:
+  vocab_size: 151936  # Qwen3 model vocab size
+  max_sequence_length: 2048
+
+sampler:
+  temperature: 0.7
+  top_k: 50
+  top_p: 0.9
+  greedy_threshold: 0.0
+
+server:
+  port: 8080
+  host: "0.0.0.0"
+
+resources:
+  max_batch_size: 8
+  max_context_length: 2048
+  kv_cache_max_size: 100
+  kv_cache_max_memory_mb: 4096
+  memory_limit_mb: 16384
+  num_threads: 8
+
+queue:
+  max_size: 1000
+  priority_weight: 1.0
+
+memory:
+  cache_limit_mb: 2048
+  monitor_interval_ms: 1000
+
+profiling:
+  enable: false
+  output_dir: "./profiling_results"
+  detailed_metrics: false
+scheduler:
+  max_iterations: 1000
+  batch_timeout_ms: 500
+  max_batch_size: 32

@@ -54,6 +54,10 @@ private:
     // 模型路径
     std::string modelPath_;
     
+    // 测试模式词汇表
+    std::unordered_map<std::string, int> vocab_;
+    std::unordered_map<int, std::string> idToToken_;
+    
     // 缓存
     mutable std::unordered_map<std::string, std::vector<int>> encodeCache_;
     mutable std::shared_mutex cacheMutex_;

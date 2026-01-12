@@ -1,4 +1,6 @@
 #include "cllm/http/encode_endpoint.h"
+#include "cllm/http/json_request_parser.h"
+#include "cllm/http/response_builder.h"
 #include "cllm/tokenizer/i_tokenizer.h"
 #include "cllm/common/logger.h"
 #include "cllm/common/config.h"
@@ -22,18 +24,13 @@ void EncodeEndpoint::setTokenizer(ITokenizer* tokenizer) {
 EncodeEndpoint::EncodeRequest EncodeEndpoint::parseRequest(const HttpRequest& request) {
     EncodeRequest req;
     
-    std::string body = request.getBody();
-    req.text = "";
+    nlohmann::json jsonBody;
     
-    try {
-        nlohmann::json jsonBody = nlohmann::json::parse(body);
-        
-        if (jsonBody.contains("text") && jsonBody["text"].is_string()) {
-            req.text = jsonBody["text"].get<std::string>();
-        }
-    } catch (const nlohmann::json::exception& e) {
-        CLLM_WARN("Failed to parse JSON request body: %s, using empty text", e.what());
+    if (!JsonRequestParser::validateJson(request.getBody(), jsonBody)) {
+        CLLM_WARN("Failed to parse JSON request body: %s, using empty text", JsonRequestParser::getLastError().c_str());
     }
+    
+    JsonRequestParser::getFieldWithDefault(jsonBody, "text", req.text, std::string(""));
     
     return req;
 }
@@ -43,36 +40,23 @@ HttpResponse EncodeEndpoint::handle(const HttpRequest& request) {
         EncodeRequest req = parseRequest(request);
         
         if (req.text.empty()) {
-            return HttpResponse::badRequest("Missing required field: text");
+            return ResponseBuilder::badRequest("Missing required field: text");
         }
         
         if (tokenizer_ == nullptr) {
-            return HttpResponse::internalError("Tokenizer is not initialized");
+            return ResponseBuilder::internalError("Tokenizer is not initialized");
         }
         
         std::vector<int> tokens = tokenizer_->encode(req.text, true);
         
-        std::ostringstream oss;
-        oss << "{";
-        oss << "\"tokens\":[";
-        for (size_t i = 0; i < tokens.size(); ++i) {
-            if (i > 0) {
-                oss << ",";
-            }
-            oss << tokens[i];
-        }
-        oss << "],";
-        oss << "\"length\":" << tokens.size();
-        oss << "}";
+        nlohmann::json responseJson = {
+            {"tokens", tokens},
+            {"length", tokens.size()}
+        };
         
-        HttpResponse response;
-        response.setStatusCode(200);
-        response.setBody(oss.str());
-        response.setContentType(cllm::Config::instance().apiResponseContentTypeJson());
-        
-        return response;
+        return ResponseBuilder::success(responseJson);
     } catch (const std::exception& e) {
-        return HttpResponse::internalError(e.what());
+        return ResponseBuilder::internalError(e.what());
     }
 }
 

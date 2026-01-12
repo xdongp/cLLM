@@ -32,6 +32,13 @@ public:
                std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
 private:
+    template<typename Func>
+    void handleRequest(
+        const drogon::HttpRequestPtr& req,
+        std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+        Func requestSetup
+    );
+
     static std::mutex handler_mutex_;
     static HttpHandler* handler_;
     static std::string host_;
