@@ -1,13 +1,14 @@
 #include "cllm/http/encode_endpoint.h"
 #include "cllm/tokenizer/i_tokenizer.h"
 #include "cllm/common/logger.h"
+#include "cllm/common/config.h"
 #include <nlohmann/json.hpp>
 #include <sstream>
 
 namespace cllm {
 
 EncodeEndpoint::EncodeEndpoint(ITokenizer* tokenizer)
-    : ApiEndpoint("encode", "/encode", "POST"),
+    : ApiEndpoint(cllm::Config::instance().apiEndpointEncodeName(), cllm::Config::instance().apiEndpointEncodePath(), cllm::Config::instance().apiEndpointEncodeMethod()),
       tokenizer_(tokenizer) {
 }
 
@@ -67,7 +68,7 @@ HttpResponse EncodeEndpoint::handle(const HttpRequest& request) {
         HttpResponse response;
         response.setStatusCode(200);
         response.setBody(oss.str());
-        response.setContentType("application/json");
+        response.setContentType(cllm::Config::instance().apiResponseContentTypeJson());
         
         return response;
     } catch (const std::exception& e) {

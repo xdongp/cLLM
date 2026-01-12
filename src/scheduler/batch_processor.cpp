@@ -5,6 +5,7 @@
 #include "cllm/sampler.h"
 #include "cllm/model/executor.h"
 #include "cllm/common/logger.h"
+#include "cllm/common/config.h"
 #include <algorithm>
 
 namespace cllm {
@@ -21,7 +22,7 @@ SchedulerBatchProcessor::~SchedulerBatchProcessor() {
 }
 
 void SchedulerBatchProcessor::processBatch(std::vector<RequestState>& batch) {
-    const int MAX_ITERATIONS = 1000; // 防止无限循环
+    const int MAX_ITERATIONS = Config::instance().schedulerMaxIterations(); // 防止无限循环
     int iterationCount = 0;
     
     while (!isBatchComplete(batch)) {

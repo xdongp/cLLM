@@ -2,15 +2,17 @@
 #include "cllm/scheduler/scheduler.h"
 #include "cllm/tokenizer/i_tokenizer.h"
 #include "cllm/common/logger.h"
+#include "cllm/common/config.h"
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <chrono>
 #include <random>
+#include <algorithm>
 
 namespace cllm {
 
 GenerateEndpoint::GenerateEndpoint(Scheduler* scheduler, ITokenizer* tokenizer)
-    : ApiEndpoint("generate", "/generate", "POST"),
+    : ApiEndpoint(cllm::Config::instance().apiEndpointGenerateName(), cllm::Config::instance().apiEndpointGeneratePath(), cllm::Config::instance().apiEndpointGenerateMethod()),
       scheduler_(scheduler),
       tokenizer_(tokenizer) {
 }
@@ -32,10 +34,10 @@ GenerateEndpoint::GenerateRequest GenerateEndpoint::parseRequest(const HttpReque
     std::string body = request.getBody();
     
     // 默认值
-    req.prompt = "";
-    req.maxTokens = 3;  // 从 100 减少到 3，针对 TorchScript trace 限制优化
-    req.temperature = 0.7f;
-    req.topP = 0.9f;
+    req.prompt = cllm::Config::instance().apiDefaultPrompt();
+    req.maxTokens = cllm::Config::instance().apiDefaultMaxTokens();
+    req.temperature = cllm::Config::instance().apiDefaultTemperature();
+    req.topP = cllm::Config::instance().apiDefaultTopP();
     req.stream = false;
     
     try {
@@ -125,11 +127,14 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
             
             // 控制输入长度：TorchScript trace 可能固化 seq_len（当前模型为 128），过长输入会导致推理开销变大
             // 这里做一个温和的上限，避免超长 prompt 把 CPU 推理拖垮；真正的裁剪/填充由后端按 traced seq_len 处理
-            const size_t MAX_INPUT_TOKENS = 120;
-            if (requestState.tokenizedPrompt.size() > MAX_INPUT_TOKENS) {
-                CLLM_WARN("Input tokens (%zu) exceeds limit (%zu), truncating",
-                          requestState.tokenizedPrompt.size(), MAX_INPUT_TOKENS);
-                requestState.tokenizedPrompt.resize(MAX_INPUT_TOKENS);
+            const int maxInputTokens = cllm::Config::instance().httpMaxInputTokens();
+            if (maxInputTokens > 0) {
+                const size_t MAX_INPUT_TOKENS = static_cast<size_t>(maxInputTokens);
+                if (requestState.tokenizedPrompt.size() > MAX_INPUT_TOKENS) {
+                    CLLM_WARN("Input tokens (%zu) exceeds limit (%zu), truncating",
+                              requestState.tokenizedPrompt.size(), MAX_INPUT_TOKENS);
+                    requestState.tokenizedPrompt.resize(MAX_INPUT_TOKENS);
+                }
             }
             
             if (!requestState.tokenizedPrompt.empty()) {
@@ -152,7 +157,10 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
             CLLM_DEBUG("Request added with ID: %zu", reqId);
             
             // 等待请求完成
-            const float timeoutSec = std::max(60.0f, std::min(600.0f, static_cast<float>(req.maxTokens) * 10.0f));
+            const float timeoutMin = cllm::Config::instance().apiTimeoutMin();
+            const float timeoutMax = cllm::Config::instance().apiTimeoutMax();
+            const float tokenFactor = cllm::Config::instance().apiTimeoutTokenFactor();
+            const float timeoutSec = std::max(timeoutMin, std::min(timeoutMax, static_cast<float>(req.maxTokens) * tokenFactor));
             CLLM_DEBUG("Waiting for request completion (timeout=%.1fs)...", timeoutSec);
             if (scheduler_->waitForRequest(reqId, timeoutSec)) {
                 CLLM_DEBUG("Request completed, retrieving result...");
@@ -228,7 +236,7 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
     HttpResponse response;
     response.setStatusCode(200);
     response.setBody(resp.dump());
-    response.setContentType("application/json");
+    response.setContentType(cllm::Config::instance().apiResponseContentTypeJson());
     
     return response;
 }
@@ -239,9 +247,9 @@ HttpResponse GenerateEndpoint::handleStreaming(const GenerateRequest& req) {
     HttpResponse response;
     response.setStatusCode(200);
     response.enableStreaming();
-    response.setContentType("text/event-stream");
-    response.setHeader("Cache-Control", "no-cache");
-    response.setHeader("Connection", "keep-alive");
+    response.setContentType(cllm::Config::instance().apiResponseContentTypeStream());
+    response.setHeader("Cache-Control", cllm::Config::instance().apiResponseHeaderCacheControl());
+    response.setHeader("Connection", cllm::Config::instance().apiResponseHeaderConnection());
     
     if (tokenizer_ != nullptr) {
         std::vector<int> inputTokens = tokenizer_->encode(req.prompt, true);

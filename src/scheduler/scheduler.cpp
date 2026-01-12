@@ -35,7 +35,10 @@ Scheduler::Scheduler(
     config_.idleLoopInterval = Config::instance().schedulerIdleLoopInterval();
     config_.contextUsageThreshold = Config::instance().schedulerContextUsageThreshold();
     
-    kvCache_ = new KVCache(maxContextLength_, 10000);
+    kvCache_ = new KVCache(
+        static_cast<size_t>(Config::instance().serverKvCacheMaxSize()),
+        static_cast<size_t>(Config::instance().serverKvCacheMaxMemoryMb())
+    );
     
     // 验证模型已加载
     if (!modelExecutor_->isLoaded()) {
@@ -68,7 +71,10 @@ Scheduler::Scheduler(
     config_.contextUsageThreshold = Config::instance().schedulerContextUsageThreshold();
     
     modelExecutor_ = new ModelExecutor(modelPath, quantization);
-    kvCache_ = new KVCache(maxContextLength_, 10000);
+    kvCache_ = new KVCache(
+        static_cast<size_t>(Config::instance().serverKvCacheMaxSize()),
+        static_cast<size_t>(Config::instance().serverKvCacheMaxMemoryMb())
+    );
     
     // 加载模型
     modelExecutor_->loadModel();
@@ -206,7 +212,7 @@ bool Scheduler::waitForRequest(size_t requestId, float timeout) {
             return false;
         }
         
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(Config::instance().schedulerWaitPollIntervalMs()));
     }
     
     return false;

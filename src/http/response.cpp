@@ -1,6 +1,6 @@
 #include "cllm/http/response.h"
+#include "cllm/common/config.h"
 #include <nlohmann/json.hpp>
-#include <sstream>
 
 namespace cllm {
 
@@ -58,7 +58,7 @@ void HttpResponse::setError(int code, const std::string& message) {
     errorJson["error"]["code"] = code;
     errorJson["error"]["message"] = message;
     setBody(errorJson.dump());
-    setContentType("application/json");
+    setContentType(cllm::Config::instance().apiResponseContentTypeJson());
 }
 
 HttpResponse HttpResponse::ok(const std::string& body) {
@@ -89,9 +89,9 @@ HttpResponse HttpResponse::internalError(const std::string& message) {
 // Streaming support methods
 void HttpResponse::enableStreaming() {
     streaming_ = true;
-    setContentType("text/event-stream");
-    setHeader("Cache-Control", "no-cache");
-    setHeader("Connection", "keep-alive");
+    setContentType(cllm::Config::instance().apiResponseContentTypeStream());
+    setHeader("Cache-Control", cllm::Config::instance().apiResponseHeaderCacheControl());
+    setHeader("Connection", cllm::Config::instance().apiResponseHeaderConnection());
 }
 
 bool HttpResponse::isStreaming() const {

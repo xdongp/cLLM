@@ -1,6 +1,5 @@
 #include "cllm/common/config.h"
 #include "cllm/common/logger.h"
-#include <fstream>
 
 namespace cllm {
 
@@ -19,12 +18,12 @@ void Config::load(const std::string& configPath) {
 // HTTP配置
 int Config::httpMaxInputTokens() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return config_["http"]["max_input_tokens"].as<int>(7);
+    return config_["http"]["max_input_tokens"].as<int>(120);
 }
 
-int Config::httpPort() const {
+int Config::serverPort() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return config_["http"]["port"].as<int>(8080);
+    return config_["server"]["port"].as<int>(8080);
 }
 
 int Config::httpTimeoutMs() const {
@@ -124,7 +123,12 @@ int Config::serverMemoryLimitMb() const {
 
 int Config::serverNumThreads() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return config_["resources"]["num_threads"].as<int>(8);
+    return config_["server"]["num_threads"].as<int>(4);
+}
+
+int Config::serverMinThreads() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["server"]["min_threads"].as<int>(2);
 }
 
 std::string Config::serverModelPath() const {
@@ -135,6 +139,11 @@ std::string Config::serverModelPath() const {
 std::string Config::serverQuantization() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return config_["model"]["quantization"].as<std::string>("fp16");
+}
+
+bool Config::serverUseLibTorch() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["server"]["use_libtorch"].as<bool>(false);
 }
 
 // 采样器配置
@@ -203,12 +212,17 @@ float Config::schedulerRequestTimeout() const {
 
 int Config::schedulerLoopInterval() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return config_["scheduler"]["loop_interval"].as<int>(100);
+    return config_["scheduler"]["loop_interval"].as<int>(10);
 }
 
 int Config::schedulerIdleLoopInterval() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return config_["scheduler"]["idle_loop_interval"].as<int>(10000);
+    return config_["scheduler"]["idle_loop_interval"].as<int>(100);
+}
+
+int Config::schedulerWaitPollIntervalMs() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["scheduler"]["wait_poll_interval_ms"].as<int>(10);
 }
 
 // 缓存配置
@@ -245,6 +259,168 @@ float Config::cacheEvictionThreshold() const {
 int Config::cacheCleanupInterval() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return config_["cache"]["cleanup_interval"].as<int>(1000);
+}
+
+// 服务器配置
+std::string Config::serverHost() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["server"]["host"].as<std::string>("0.0.0.0");
+}
+
+// LibTorch后端配置
+std::vector<int> Config::backendLibTorchSeqLenCandidates() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    std::vector<int> out;
+    auto node = config_["backend"]["libtorch"]["seq_len_candidates"];
+    if (node && node.IsSequence()) {
+        out.reserve(node.size());
+        for (const auto& v : node) {
+            out.push_back(v.as<int>());
+        }
+    }
+
+    if (out.empty()) {
+        out = {8, 16, 32, 64, 128, 256};
+    }
+    return out;
+}
+
+int Config::backendLibTorchFallbackSeqLen() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["backend"]["libtorch"]["fallback_seq_len"].as<int>(8);
+}
+
+// API端点配置
+std::string Config::apiEndpointHealthName() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["endpoints"]["health"]["name"].as<std::string>("health");
+}
+
+std::string Config::apiEndpointHealthPath() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["endpoints"]["health"]["path"].as<std::string>("/health");
+}
+
+std::string Config::apiEndpointHealthMethod() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["endpoints"]["health"]["method"].as<std::string>("GET");
+}
+
+std::string Config::apiEndpointGenerateName() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["endpoints"]["generate"]["name"].as<std::string>("generate");
+}
+
+std::string Config::apiEndpointGeneratePath() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["endpoints"]["generate"]["path"].as<std::string>("/generate");
+}
+
+std::string Config::apiEndpointGenerateMethod() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["endpoints"]["generate"]["method"].as<std::string>("POST");
+}
+
+std::string Config::apiEndpointGenerateStreamName() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["endpoints"]["generate_stream"]["name"].as<std::string>("generate_stream");
+}
+
+std::string Config::apiEndpointGenerateStreamPath() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["endpoints"]["generate_stream"]["path"].as<std::string>("/generate_stream");
+}
+
+std::string Config::apiEndpointGenerateStreamMethod() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["endpoints"]["generate_stream"]["method"].as<std::string>("POST");
+}
+
+std::string Config::apiEndpointEncodeName() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["endpoints"]["encode"]["name"].as<std::string>("encode");
+}
+
+std::string Config::apiEndpointEncodePath() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["endpoints"]["encode"]["path"].as<std::string>("/encode");
+}
+
+std::string Config::apiEndpointEncodeMethod() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["endpoints"]["encode"]["method"].as<std::string>("POST");
+}
+
+// API默认参数
+std::string Config::apiDefaultPrompt() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["defaults"]["prompt"].as<std::string>("");
+}
+
+int Config::apiDefaultMaxTokens() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // API 默认 max_tokens：优先 api.defaults.max_tokens；否则回退到 model.default_max_tokens
+    const int modelDefault = config_["model"]["default_max_tokens"].as<int>(100);
+    return config_["api"]["defaults"]["max_tokens"].as<int>(modelDefault);
+}
+
+float Config::apiDefaultTemperature() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["defaults"]["temperature"].as<float>(0.7f);
+}
+
+float Config::apiDefaultTopP() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["defaults"]["top_p"].as<float>(0.9f);
+}
+
+// API响应配置
+std::string Config::apiResponseContentTypeJson() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["response"]["content_type"]["json"].as<std::string>("application/json");
+}
+
+std::string Config::apiResponseContentTypeStream() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["response"]["content_type"]["stream"].as<std::string>("text/event-stream");
+}
+
+std::string Config::apiResponseHeaderCacheControl() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["response"]["headers"]["cache_control"].as<std::string>("no-cache");
+}
+
+std::string Config::apiResponseHeaderConnection() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["response"]["headers"]["connection"].as<std::string>("keep-alive");
+}
+
+// 超时和限制
+float Config::apiTimeoutMin() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["timeouts"]["min"].as<float>(60.0f);
+}
+
+float Config::apiTimeoutMax() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["timeouts"]["max"].as<float>(600.0f);
+}
+
+float Config::apiTimeoutTokenFactor() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["api"]["timeouts"]["token_factor"].as<float>(10.0f);
+}
+
+// 日志配置
+std::string Config::loggingLevel() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["logging"]["level"].as<std::string>("info");
+}
+
+std::string Config::loggingFile() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["logging"]["file"].as<std::string>("");
 }
 
 } // namespace cllm

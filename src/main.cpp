@@ -13,6 +13,8 @@
 #include <memory>
 #include <string>
 #include <filesystem>
+#include <optional>
+#include <vector>
 
 #include "cllm/http/handler.h"
 #include "cllm/http/health_endpoint.h"
@@ -101,17 +103,19 @@ int main(int argc, char* argv[]) {
     // 初始化日志系统
     cllm::Logger::instance().setLevel(spdlog::level::info);
     
-    // 配置参数
-    std::string modelPath;
-    std::string host = "0.0.0.0";
-    int port = 8080;
-    std::string quantization = "fp16";
-    size_t maxBatchSize = 8;
-    size_t maxContextLength = 2048;
-    bool useLibTorch = false;
+    // 配置参数（先收集 CLI 覆盖项；Config 文件加载后再计算最终值）
+    std::optional<std::string> modelPathOpt;
+    std::optional<std::string> hostOpt;
+    std::optional<int> portOpt;
+    std::optional<std::string> quantizationOpt;
+    std::optional<size_t> maxBatchSizeOpt;
+    std::optional<size_t> maxContextLengthOpt;
+    bool useLibTorchOpt = false;
+    bool useLibTorchOptSet = false;
+    std::optional<std::string> logLevelOpt;
+    std::optional<std::string> logFileOpt;
+
     std::string configPath;
-    std::string logLevel = "info";
-    std::string logFile;
     
     // 解析命令行参数
     static struct option long_options[] = {
@@ -135,34 +139,35 @@ int main(int argc, char* argv[]) {
                               long_options, &option_index)) != -1) {
         switch (opt) {
             case 'm':
-                modelPath = optarg;
+                modelPathOpt = optarg;
                 break;
             case 'p':
-                port = std::atoi(optarg);
+                portOpt = std::atoi(optarg);
                 break;
             case 'h':
-                host = optarg;
+                hostOpt = optarg;
                 break;
             case 'q':
-                quantization = optarg;
+                quantizationOpt = optarg;
                 break;
             case 'b':
-                maxBatchSize = std::atoi(optarg);
+                maxBatchSizeOpt = static_cast<size_t>(std::atoi(optarg));
                 break;
             case 'c':
-                maxContextLength = std::atoi(optarg);
+                maxContextLengthOpt = static_cast<size_t>(std::atoi(optarg));
                 break;
             case 'l':
-                useLibTorch = true;
+                useLibTorchOpt = true;
+                useLibTorchOptSet = true;
                 break;
             case 'f':
                 configPath = optarg;
                 break;
             case 'L':
-                logLevel = optarg;
+                logLevelOpt = optarg;
                 break;
             case 'F':
-                logFile = optarg;
+                logFileOpt = optarg;
                 break;
             case '?':
                 printUsage(argv[0]);
@@ -173,50 +178,10 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    // 设置日志级别
-    if (logLevel == "trace") {
-        cllm::Logger::instance().setLevel(spdlog::level::trace);
-    } else if (logLevel == "debug") {
-        cllm::Logger::instance().setLevel(spdlog::level::debug);
-    } else if (logLevel == "info") {
-        cllm::Logger::instance().setLevel(spdlog::level::info);
-    } else if (logLevel == "warn") {
-        cllm::Logger::instance().setLevel(spdlog::level::warn);
-    } else if (logLevel == "error") {
-        cllm::Logger::instance().setLevel(spdlog::level::err);
-    }
-    
-    // 设置日志文件
-    if (!logFile.empty()) {
-        cllm::Logger::instance().addFileSink(logFile);
-        CLLM_INFO("Logging to file: {}", logFile);
-    }
-    
-    // 检查必需参数
-    if (modelPath.empty()) {
-        CLLM_ERROR("Model path is required. Use --model-path to specify");
-        printUsage(argv[0]);
-        return 1;
-    }
-    
     printBanner();
-    
-    CLLM_INFO("========================================");
-    CLLM_INFO("cLLM - High-Performance LLM Inference Engine");
-    CLLM_INFO("========================================");
-    CLLM_INFO("Starting cLLM Server...");
-    CLLM_INFO("Configuration:");
-    CLLM_INFO("  - Model Path: {}", modelPath);
-    CLLM_INFO("  - Host: {}", host);
-    CLLM_INFO("  - Port: {}", port);
-    CLLM_INFO("  - Quantization: {}", quantization);
-    CLLM_INFO("  - Max Batch Size: {}", maxBatchSize);
-    CLLM_INFO("  - Max Context Length: {}", maxContextLength);
-    CLLM_INFO("  - Backend: {}", useLibTorch ? "LibTorch" : "Kylin");
-    CLLM_INFO("  - Log Level: {}", logLevel);
-    
+
     try {
-        // 加载配置文件：优先使用 --config，否则自动加载 config/scheduler_config.yaml
+        // 加载配置文件：优先使用 --config，否则自动加载 config/config.yaml
         {
             namespace fs = std::filesystem;
             std::string selectedConfigPath;
@@ -225,9 +190,9 @@ int main(int argc, char* argv[]) {
                 selectedConfigPath = configPath;
             } else {
                 const fs::path candidates[] = {
-                    fs::path("config") / "scheduler_config.yaml",
-                    fs::path("../config") / "scheduler_config.yaml",
-                    fs::path("../../config") / "scheduler_config.yaml"
+                    fs::path("config") / "config.yaml",
+                    fs::path("../config") / "config.yaml",
+                    fs::path("../../config") / "config.yaml"
                 };
 
                 for (const auto& p : candidates) {
@@ -239,13 +204,64 @@ int main(int argc, char* argv[]) {
             }
 
             if (selectedConfigPath.empty() || !fs::exists(selectedConfigPath)) {
-                throw std::runtime_error("Config file not found. Please pass --config or ensure config/scheduler_config.yaml exists.");
+                throw std::runtime_error("Config file not found. Please pass --config or ensure config/config.yaml exists.");
             }
 
             CLLM_INFO("Loading config from: {}", selectedConfigPath);
             cllm::Config::instance().load(selectedConfigPath);
         }
-        
+
+        // 计算最终配置（Config + CLI 覆盖）
+        std::string modelPath = modelPathOpt.value_or(cllm::Config::instance().serverModelPath());
+        std::string host = hostOpt.value_or(cllm::Config::instance().serverHost());
+        int port = portOpt.value_or(cllm::Config::instance().serverPort());
+        std::string quantization = quantizationOpt.value_or(cllm::Config::instance().serverQuantization());
+        size_t maxBatchSize = maxBatchSizeOpt.value_or(static_cast<size_t>(cllm::Config::instance().serverMaxBatchSize()));
+        size_t maxContextLength = maxContextLengthOpt.value_or(static_cast<size_t>(cllm::Config::instance().serverMaxContextLength()));
+        bool useLibTorch = useLibTorchOptSet ? useLibTorchOpt : cllm::Config::instance().serverUseLibTorch();
+        std::string logLevel = logLevelOpt.value_or(cllm::Config::instance().loggingLevel());
+        std::string logFile = logFileOpt.value_or(cllm::Config::instance().loggingFile());
+
+        // 设置日志级别（使用最终值）
+        if (logLevel == "trace") {
+            cllm::Logger::instance().setLevel(spdlog::level::trace);
+        } else if (logLevel == "debug") {
+            cllm::Logger::instance().setLevel(spdlog::level::debug);
+        } else if (logLevel == "info") {
+            cllm::Logger::instance().setLevel(spdlog::level::info);
+        } else if (logLevel == "warn") {
+            cllm::Logger::instance().setLevel(spdlog::level::warn);
+        } else if (logLevel == "error") {
+            cllm::Logger::instance().setLevel(spdlog::level::err);
+        }
+
+        // 设置日志文件
+        if (!logFile.empty()) {
+            cllm::Logger::instance().addFileSink(logFile);
+            CLLM_INFO("Logging to file: {}", logFile);
+        }
+
+        // 检查必需参数（允许从配置提供 model.path）
+        if (modelPath.empty() || modelPath == "/path/to/model") {
+            CLLM_ERROR("Model path is required. Use --model-path or set model.path in config");
+            printUsage(argv[0]);
+            return 1;
+        }
+
+        CLLM_INFO("========================================");
+        CLLM_INFO("cLLM - High-Performance LLM Inference Engine");
+        CLLM_INFO("========================================");
+        CLLM_INFO("Starting cLLM Server...");
+        CLLM_INFO("Configuration:");
+        CLLM_INFO("  - Model Path: {}", modelPath);
+        CLLM_INFO("  - Host: {}", host);
+        CLLM_INFO("  - Port: {}", port);
+        CLLM_INFO("  - Quantization: {}", quantization);
+        CLLM_INFO("  - Max Batch Size: {}", maxBatchSize);
+        CLLM_INFO("  - Max Context Length: {}", maxContextLength);
+        CLLM_INFO("  - Backend: {}", useLibTorch ? "LibTorch" : "Kylin");
+        CLLM_INFO("  - Log Level: {}", logLevel);
+
         // 注册信号处理器
         signal(SIGINT, signalHandler);
         signal(SIGTERM, signalHandler);
@@ -269,55 +285,112 @@ int main(int argc, char* argv[]) {
         const bool isDir = fs::is_directory(modelPath);
 
         // 1) 解析 tokenizer 目录（优先 HuggingFace tokenizer.json）
+        auto resolveTokenizerDir = [](const fs::path& baseDir) -> std::string {
+            if (fs::exists(baseDir / "tokenizer.json")) {
+                return baseDir.string();
+            }
+
+            std::vector<fs::path> matches;
+            for (const auto& ent : fs::directory_iterator(baseDir)) {
+                if (!ent.is_directory()) {
+                    continue;
+                }
+                const fs::path cand = ent.path() / "tokenizer.json";
+                if (fs::exists(cand)) {
+                    matches.push_back(ent.path());
+                }
+            }
+
+            if (matches.size() == 1) {
+                return matches.front().string();
+            }
+
+            // 回退：用 baseDir（TokenizerManager 会再尝试其他方式/或给出错误）
+            return baseDir.string();
+        };
+
         std::string tokenizerModelDir;
         if (isDir) {
-            fs::path dir(modelPath);
-            if (fs::exists(dir / "tokenizer.json")) {
-                tokenizerModelDir = dir.string();
-            } else if (fs::exists(dir / "Qwen3-0.6B" / "tokenizer.json")) {
-                tokenizerModelDir = (dir / "Qwen3-0.6B").string();
-            } else {
-                tokenizerModelDir = dir.string();
-            }
+            tokenizerModelDir = resolveTokenizerDir(fs::path(modelPath));
         } else {
             fs::path file(modelPath);
-            fs::path parent = file.parent_path();
-            if (fs::exists(parent / "tokenizer.json")) {
-                tokenizerModelDir = parent.string();
-            } else if (fs::exists(parent / "Qwen3-0.6B" / "tokenizer.json")) {
-                tokenizerModelDir = (parent / "Qwen3-0.6B").string();
-            } else {
-                tokenizerModelDir = parent.string();
-            }
+            tokenizerModelDir = resolveTokenizerDir(file.parent_path());
         }
 
         // 2) 解析后端权重文件路径
+        auto listFilesWithExt = [](const fs::path& dir, const std::string& ext) -> std::vector<fs::path> {
+            std::vector<fs::path> out;
+            for (const auto& ent : fs::directory_iterator(dir)) {
+                if (!ent.is_regular_file()) {
+                    continue;
+                }
+                const fs::path p = ent.path();
+                if (p.extension() == ext) {
+                    out.push_back(p);
+                }
+            }
+            return out;
+        };
+
         std::string backendModelPath;
         if (isDir) {
             fs::path dir(modelPath);
+
             if (useLibTorch) {
                 // LibTorch 需要 TorchScript .pt
-                fs::path pt = dir / "qwen3_0.6b_torchscript_fp32.pt";
-                if (!fs::exists(pt)) {
-                    throw std::runtime_error("LibTorch backend requires TorchScript model (.pt). Not found: " + pt.string());
+                auto pts = listFilesWithExt(dir, ".pt");
+                if (pts.size() == 1) {
+                    backendModelPath = pts.front().string();
+                } else {
+                    std::string msg = "LibTorch backend requires exactly one .pt in directory (or pass a .pt path). Found: ";
+                    msg += std::to_string(pts.size());
+                    if (!pts.empty()) {
+                        msg += " (";
+                        for (const auto& p : pts) {
+                            msg += p.filename().string();
+                            msg += " ";
+                        }
+                        msg += ")";
+                    }
+                    throw std::runtime_error(msg);
                 }
-                backendModelPath = pt.string();
             } else {
                 // Kylin 需要 .bin
-                fs::path bin;
-                if (quantization == "int8") {
-                    bin = dir / "qwen3_0.6b_cllm_int8.bin";
-                } else if (quantization == "fp32") {
-                    bin = dir / "qwen3_0.6b_cllm_fp32.bin";
-                } else {
-                    // 默认 fp16
-                    bin = dir / "qwen3_0.6b_cllm_fp16.bin";
+                auto bins = listFilesWithExt(dir, ".bin");
+                if (bins.empty()) {
+                    throw std::runtime_error("Kylin backend requires .bin model file. No .bin found in: " + dir.string());
                 }
 
-                if (!fs::exists(bin)) {
-                    throw std::runtime_error("Kylin backend requires model .bin. Not found: " + bin.string());
+                // 若目录下只有一个 .bin，直接用；否则按 quantization 关键词筛选
+                std::vector<fs::path> filtered;
+                if (bins.size() == 1) {
+                    filtered = bins;
+                } else {
+                    for (const auto& p : bins) {
+                        const std::string name = p.filename().string();
+                        if (quantization == "fp16" && name.find("fp16") != std::string::npos) {
+                            filtered.push_back(p);
+                        } else if (quantization == "fp32" && name.find("fp32") != std::string::npos) {
+                            filtered.push_back(p);
+                        } else if (quantization == "int8" && name.find("int8") != std::string::npos) {
+                            filtered.push_back(p);
+                        } else if (quantization == "int4" && name.find("int4") != std::string::npos) {
+                            filtered.push_back(p);
+                        }
+                    }
                 }
-                backendModelPath = bin.string();
+
+                if (filtered.size() == 1) {
+                    backendModelPath = filtered.front().string();
+                } else {
+                    std::string msg = "Could not uniquely select .bin for quantization=" + quantization +
+                                      ". Pass a .bin path directly via --model-path. Candidates: ";
+                    for (const auto& p : bins) {
+                        msg += p.filename().string();
+                        msg += " ";
+                    }
+                    throw std::runtime_error(msg);
+                }
             }
         } else {
             backendModelPath = modelPath;
@@ -365,7 +438,7 @@ int main(int argc, char* argv[]) {
         
         // 注册端点
         auto healthEndpoint = std::make_unique<cllm::HealthEndpoint>();
-        httpHandler->get("/health", [endpoint = healthEndpoint.get()](const cllm::HttpRequest& req) {
+        httpHandler->get(cllm::Config::instance().apiEndpointHealthPath(), [endpoint = healthEndpoint.get()](const cllm::HttpRequest& req) {
             return endpoint->handle(req);
         });
         
@@ -373,24 +446,24 @@ int main(int argc, char* argv[]) {
             g_scheduler.get(),
             tokenizer
         );
-        httpHandler->post("/generate", [endpoint = generateEndpoint.get()](const cllm::HttpRequest& req) {
+        httpHandler->post(cllm::Config::instance().apiEndpointGeneratePath(), [endpoint = generateEndpoint.get()](const cllm::HttpRequest& req) {
             return endpoint->handle(req);
         });
         
-        httpHandler->post("/generate_stream", [endpoint = generateEndpoint.get()](const cllm::HttpRequest& req) {
+        httpHandler->post(cllm::Config::instance().apiEndpointGenerateStreamPath(), [endpoint = generateEndpoint.get()](const cllm::HttpRequest& req) {
             return endpoint->handle(req);
         });
         
         auto encodeEndpoint = std::make_unique<cllm::EncodeEndpoint>(tokenizer);
-        httpHandler->post("/encode", [endpoint = encodeEndpoint.get()](const cllm::HttpRequest& req) {
+        httpHandler->post(cllm::Config::instance().apiEndpointEncodePath(), [endpoint = encodeEndpoint.get()](const cllm::HttpRequest& req) {
             return endpoint->handle(req);
         });
         
         CLLM_INFO("Registered endpoints:");
-        CLLM_INFO("  - GET  /health");
-        CLLM_INFO("  - POST /generate");
-        CLLM_INFO("  - POST /generate_stream");
-        CLLM_INFO("  - POST /encode");
+        CLLM_INFO("  - GET  %s", cllm::Config::instance().apiEndpointHealthPath().c_str());
+        CLLM_INFO("  - POST %s", cllm::Config::instance().apiEndpointGeneratePath().c_str());
+        CLLM_INFO("  - POST %s", cllm::Config::instance().apiEndpointGenerateStreamPath().c_str());
+        CLLM_INFO("  - POST %s", cllm::Config::instance().apiEndpointEncodePath().c_str());
         
         // 初始化并启动 Drogon 服务器
         CLLM_INFO("Initializing Drogon HTTP server...");

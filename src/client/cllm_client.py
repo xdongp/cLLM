@@ -1,3 +1,4 @@
+import os
 import requests
 import json
 import time
@@ -9,7 +10,9 @@ from typing import Dict, Any, Optional
 class CLLMClient:
     """cLLM 客户端类"""
     
-    def __init__(self, server_url: str = "http://localhost:18080"):
+    def __init__(self, server_url: str = None):
+        if server_url is None:
+            server_url = os.environ.get("CLLM_SERVER_URL", "http://localhost:8080")
         self.server_url = server_url
         self.session = requests.Session()
         self.default_params = {
@@ -23,7 +26,7 @@ class CLLMClient:
     def check_server_health(self) -> bool:
         """检查服务器健康状态"""
         try:
-            response = self.session.get(f"{self.server_url}/health", timeout=5)
+            response = self.session.get(f"{self.server_url}/health", timeout=float(os.environ.get("CLLM_CLIENT_HEALTH_TIMEOUT", "5")))
             return response.status_code == 200
         except Exception:
             return False
@@ -55,7 +58,7 @@ class CLLMClient:
                     f"{self.server_url}/generate",
                     headers={"Content-Type": "application/json"},
                     data=json.dumps(params),
-                    timeout=60  # 60秒超时
+                    timeout=float(os.environ.get("CLLM_CLIENT_GENERATE_TIMEOUT", "60"))
                 )
                 
                 if response.status_code == 200:

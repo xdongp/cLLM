@@ -13,6 +13,7 @@
 
 #include "cllm/inference/libtorch_backend.h"
 #include "cllm/common/logger.h"
+#include "cllm/common/config.h"
 
 #include <stdexcept>
 #include <cstring>  // for std::memcpy
@@ -67,10 +68,13 @@ bool LibTorchBackend::initialize() {
         try {
             torch::NoGradGuard no_grad;
 
-            const std::vector<size_t> candidates = {8, 16, 32, 64, 128, 256};
+            const std::vector<int> candidates = cllm::Config::instance().backendLibTorchSeqLenCandidates();
             bool detected = false;
 
-            for (size_t len : candidates) {
+            for (int len : candidates) {
+                if (len <= 0) {
+                    continue;
+                }
                 try {
                     auto test_input = torch::randint(0, 1000, {1, static_cast<int64_t>(len)}, torch::kLong).to(device_);
                     auto test_output = model_.forward({test_input}).toTensor();
@@ -86,7 +90,7 @@ bool LibTorchBackend::initialize() {
                         detected_vocab_size = static_cast<size_t>(output_sizes[1]);
                     }
 
-                    tracedSeqLen_ = len;
+                    tracedSeqLen_ = static_cast<size_t>(len);
                     detected = true;
 
                     CLLM_INFO("[LibTorchBackend] Detected traced seq_len: {}", tracedSeqLen_);
@@ -112,8 +116,8 @@ bool LibTorchBackend::initialize() {
             }
         } catch (const std::exception& e) {
             CLLM_WARN("[LibTorchBackend] Could not detect traced seq_len / vocab_size: {}", e.what());
-            CLLM_WARN("[LibTorchBackend] Fallback to config vocab_size: {} and seq_len=8", config_.vocabSize);
-            tracedSeqLen_ = 8;
+            CLLM_WARN("[LibTorchBackend] Fallback to config vocab_size: {} and seq_len={}", config_.vocabSize, cllm::Config::instance().backendLibTorchFallbackSeqLen());
+            tracedSeqLen_ = cllm::Config::instance().backendLibTorchFallbackSeqLen();
         }
         
         // 5. 应用图优化（可选）
