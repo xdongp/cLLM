@@ -14,7 +14,7 @@
 
 #include "cllm/inference/backend_interface.h"
 #include "cllm/kylin/transformer_model.h"
-#include "cllm/kylin/model_loader.h"
+#include "cllm/model/loader_interface.h"
 #include "cllm/kylin/tensor.h"
 #include "cllm/model/config.h"
 
@@ -107,6 +107,14 @@ public:
      * @brief 获取后端配置
      */
     const ModelConfig &getConfig() const override { return externalConfig_; }
+    
+    /**
+     * @brief 从 ModelWeights 加载权重到 Kylin 后端
+     * 
+     * @param weights 通用权重数据结构
+     * @return true 成功，false 失败
+     */
+    bool loadFromModelWeights(const model::ModelWeights &weights);
 
 private:
     // ========== 配置和状态 ==========
@@ -129,7 +137,7 @@ private:
     kylin::TransformerModel model_;
     
     /// 模型加载器（仅在有真实权重时创建）
-    std::unique_ptr<kylin::ModelLoader> loader_;
+    std::unique_ptr<IModelLoader> loader_;
 
     // ========== 权重存储 ==========
     

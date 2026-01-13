@@ -2,6 +2,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <cstdarg>
+#include <cstdio>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/basic_file_sink.h>
@@ -12,34 +14,47 @@ class Logger {
 public:
     static Logger& instance();
     
-    template<typename... Args>
-    void trace(const char* fmt, const Args&... args) {
-        logger_->trace(fmt, args...);
+    // printf风格的格式化支持
+    void trace(const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        log_with_printf_style(spdlog::level::trace, fmt, args);
+        va_end(args);
     }
     
-    template<typename... Args>
-    void debug(const char* fmt, const Args&... args) {
-        logger_->debug(fmt, args...);
+    void debug(const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        log_with_printf_style(spdlog::level::debug, fmt, args);
+        va_end(args);
     }
     
-    template<typename... Args>
-    void info(const char* fmt, const Args&... args) {
-        logger_->info(fmt, args...);
+    void info(const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        log_with_printf_style(spdlog::level::info, fmt, args);
+        va_end(args);
     }
     
-    template<typename... Args>
-    void warn(const char* fmt, const Args&... args) {
-        logger_->warn(fmt, args...);
+    void warn(const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        log_with_printf_style(spdlog::level::warn, fmt, args);
+        va_end(args);
     }
     
-    template<typename... Args>
-    void error(const char* fmt, const Args&... args) {
-        logger_->error(fmt, args...);
+    void error(const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        log_with_printf_style(spdlog::level::err, fmt, args);
+        va_end(args);
     }
     
-    template<typename... Args>
-    void critical(const char* fmt, const Args&... args) {
-        logger_->critical(fmt, args...);
+    void critical(const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        log_with_printf_style(spdlog::level::critical, fmt, args);
+        va_end(args);
     }
     
     void setLevel(spdlog::level::level_enum level);
@@ -48,6 +63,7 @@ public:
 
 private:
     Logger();
+    void log_with_printf_style(spdlog::level::level_enum level, const char* fmt, va_list args);
     std::shared_ptr<spdlog::logger> logger_;
 };
 

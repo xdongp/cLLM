@@ -40,7 +40,7 @@ ModelExecutor::ModelExecutor(
     , inputBuffer_()
     , inferenceEngine_(nullptr) {
     
-    CLLM_INFO("[ModelExecutor] Initializing with {} backend", 
+    CLLM_INFO("[ModelExecutor] Initializing with %s backend", 
               (useLibTorch_ ? "LibTorch" : "Kylin"));
     
     sampler_ = std::make_unique<Sampler>();
@@ -65,7 +65,7 @@ ModelExecutor::ModelExecutor(
     // 同步backend更新后的config(例如LibTorch自动检测vocab_size)
     config_ = inferenceEngine_->getConfig();
     CLLM_INFO("[ModelExecutor] Config synchronized from InferenceEngine");
-    CLLM_INFO("[ModelExecutor]   vocab_size: {}", config_.vocabSize);
+    CLLM_INFO("[ModelExecutor]   vocab_size: %u", config_.vocabSize);
     
     _optimizeMemoryUsage();
 }

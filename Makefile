@@ -1,4 +1,4 @@
-.PHONY: all build clean rebuild test run start stop help install-deps setup-env check-model
+.PHONY: all build clean rebuild test run start stop help install-deps setup-env check-model test-gguf-e2e test-curl
 
 # 激活虚拟环境
 SHELL := /bin/bash
@@ -15,11 +15,14 @@ BUILD_DIR = build
 BUILD_TYPE = Release
 NUM_JOBS = $(shell sysctl -n hw.ncpu)
 MODEL_PATH ?= /Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/qwen3_0.6b_torchscript_fp32.pt
+GGUF_MODEL_PATH ?= /Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/qwen3-0.6b-q8_0.gguf
 PORT ?= 18080
+GGUF_PORT ?= 18081
 QUANTIZATION ?= fp16
 MAX_BATCH_SIZE ?= 8
 MAX_CONTEXT_LENGTH ?= 2048
 USE_LIBTORCH ?= true
+USE_GGUF ?= false
 
 all: build
 
@@ -74,29 +77,55 @@ check-model:
 
 start: build
 	@echo "Starting cLLM server..."
-	@echo "Configuration:"
-	@echo "  Model Path: $(MODEL_PATH)"
-	@echo "  Port: $(PORT)"
-	@echo "  Quantization: $(QUANTIZATION)"
-	@echo "  Max Batch Size: $(MAX_BATCH_SIZE)"
-	@echo "  Max Context Length: $(MAX_CONTEXT_LENGTH)"
-	@echo "  Backend: $(if $(filter true,$(USE_LIBTORCH)),LibTorch,Kylin)"
-	@echo ""
-	@if [ -f $(BUILD_DIR)/bin/cllm_server ]; then \
-		$(BUILD_DIR)/bin/cllm_server \
-			--model-path $(MODEL_PATH) \
-			--port $(PORT) \
-			--quantization $(QUANTIZATION) \
-			--max-batch-size $(MAX_BATCH_SIZE) \
-			--max-context-length $(MAX_CONTEXT_LENGTH) \
-			$(if $(filter true,$(USE_LIBTORCH)),--use-libtorch,); \
+	@echo "Configuration:";
+	@if [ "$(USE_GGUF)" = "true" ]; then \
+		MODEL_PATH_TO_USE=$(GGUF_MODEL_PATH); \
+		PORT_TO_USE=$(GGUF_PORT); \
+		echo "  Model Path: $$MODEL_PATH_TO_USE"; \
+		echo "  Model Type: GGUF"; \
+		echo "  Port: $$PORT_TO_USE"; \
 	else \
-		echo "Error: cllm_server executable not found."; \
-		echo "Note: The main server executable is not yet implemented."; \
-		echo "Current status: Only unit tests are available."; \
-		echo "Run 'make test' to execute unit tests."; \
+		MODEL_PATH_TO_USE=$(MODEL_PATH); \
+		PORT_TO_USE=$(PORT); \
+		echo "  Model Path: $$MODEL_PATH_TO_USE"; \
+		echo "  Model Type: $(if $(filter true,$(USE_LIBTORCH)),TorchScript,Kylin)"; \
+		echo "  Port: $$PORT_TO_USE"; \
+	fi;
+	@echo "  Quantization: $(QUANTIZATION)";
+	@echo "  Max Batch Size: $(MAX_BATCH_SIZE)";
+	@echo "  Max Context Length: $(MAX_CONTEXT_LENGTH)";
+	@echo "  Backend: $(if $(filter true,$(USE_LIBTORCH)),LibTorch,Kylin)";
+	@echo "";
+	@if [ -f $(BUILD_DIR)/bin/cllm_server ]; then \
+		if [ "$(USE_GGUF)" = "true" ]; then \
+			$(BUILD_DIR)/bin/cllm_server \
+				--model-path $(GGUF_MODEL_PATH) \
+				--port $(GGUF_PORT) \
+				--quantization $(QUANTIZATION) \
+				--max-batch-size $(MAX_BATCH_SIZE) \
+				--max-context-length $(MAX_CONTEXT_LENGTH) \
+				$(if $(filter true,$(USE_LIBTORCH)),--use-libtorch,); \
+		else \
+			$(BUILD_DIR)/bin/cllm_server \
+				--model-path $(MODEL_PATH) \
+				--port $(PORT) \
+				--quantization $(QUANTIZATION) \
+				--max-batch-size $(MAX_BATCH_SIZE) \
+				--max-context-length $(MAX_CONTEXT_LENGTH) \
+				$(if $(filter true,$(USE_LIBTORCH)),--use-libtorch,); \
+		fi; \
+	else \
+		echo "Error: cllm_server executable not found.";
+		echo "Note: The main server executable is not yet implemented.";
+		echo "Current status: Only unit tests are available.";
+		echo "Run 'make test' to execute unit tests.";
 		exit 1; \
 	fi
+
+# 专门用于GGUF模型的启动目标
+start-gguf: build
+	@echo "Starting cLLM server with GGUF model..."
+	@make start USE_GGUF=true USE_LIBTORCH=$(USE_LIBTORCH)
 
 # 后台启动（不会阻塞当前终端/CI，适合脚本化 E2E 测试）
 # 用法：make start-bg MODEL_PATH=... PORT=18080 QUANTIZATION=fp16
@@ -104,21 +133,120 @@ start-bg:
 	@echo "Starting cLLM server in background..."
 	@mkdir -p logs
 	@if [ -f $(BUILD_DIR)/bin/cllm_server ]; then \
+		if [ "$(USE_GGUF)" = "true" ]; then \
+			MODEL_PATH_TO_USE=$(GGUF_MODEL_PATH); \
+			PORT_TO_USE=$(GGUF_PORT); \
+		else \
+			MODEL_PATH_TO_USE=$(MODEL_PATH); \
+			PORT_TO_USE=$(PORT); \
+		fi; \
+		echo "Configuration:"; \
+		echo "  Model Path: $$MODEL_PATH_TO_USE"; \
+		echo "  Model Type: $(if $(filter true,$(USE_GGUF)),GGUF,$(if $(filter true,$(USE_LIBTORCH)),TorchScript,Kylin))"; \
+		echo "  Port: $$PORT_TO_USE"; \
+		echo "  Log: logs/cllm_server_$$PORT_TO_USE.log"; \
+		echo ""; \
 		nohup $(BUILD_DIR)/bin/cllm_server \
-			--model-path $(MODEL_PATH) \
-			--port $(PORT) \
+			--model-path $$MODEL_PATH_TO_USE \
+			--port $$PORT_TO_USE \
 			--quantization $(QUANTIZATION) \
 			--max-batch-size $(MAX_BATCH_SIZE) \
 			--max-context-length $(MAX_CONTEXT_LENGTH) \
 			$(if $(filter true,$(USE_LIBTORCH)),--use-libtorch,) \
-			> logs/cllm_server_$(PORT).log 2>&1 & \
-		echo $$! > /tmp/cllm_server_$(PORT).pid; \
-		echo "PID: $$(cat /tmp/cllm_server_$(PORT).pid)"; \
-		echo "Log: logs/cllm_server_$(PORT).log"; \
+			> logs/cllm_server_$$PORT_TO_USE.log 2>&1 & \
+		echo $$! > /tmp/cllm_server_$$PORT_TO_USE.pid; \
+		echo "PID: $$(cat /tmp/cllm_server_$$PORT_TO_USE.pid)"; \
+		echo "Log: logs/cllm_server_$$PORT_TO_USE.log"; \
 	else \
 		echo "Error: cllm_server executable not found. Run 'make build' first."; \
 		exit 1; \
 	fi
+
+# 专门用于GGUF模型的后台启动目标
+start-gguf-bg:
+	@echo "Starting cLLM server with GGUF model in background..."
+	@make start-bg USE_GGUF=true USE_LIBTORCH=$(USE_LIBTORCH)
+
+# GGUF 端到端测试 - 使用 Kylin Backend (方案1)
+# 用法: make test-gguf-e2e
+# 注意: 此目标使用 Kylin backend (不使用 --use-libtorch)
+test-gguf-e2e: build
+	@echo "=========================================="
+	@echo "GGUF 格式端到端测试 (Kylin Backend)"
+	@echo "=========================================="
+	@echo "模型: $(GGUF_MODEL_PATH)"
+	@echo "端口: $(GGUF_PORT)"
+	@echo "后端: Kylin (不使用 LibTorch)"
+	@echo ""
+	@if [ ! -f "$(GGUF_MODEL_PATH)" ]; then \
+		echo "❌ 错误: 模型文件不存在: $(GGUF_MODEL_PATH)"; \
+		exit 1; \
+	fi
+	@if [ ! -f $(BUILD_DIR)/bin/cllm_server ]; then \
+		echo "❌ 错误: cllm_server 可执行文件不存在"; \
+		echo "请先运行: make build"; \
+		exit 1; \
+	fi
+	@echo "✅ 启动服务器 (Kylin Backend)..."
+	@mkdir -p logs
+	@nohup $(BUILD_DIR)/bin/cllm_server \
+		--model-path $(GGUF_MODEL_PATH) \
+		--port $(GGUF_PORT) \
+		--host 0.0.0.0 \
+		--log-level info \
+		> logs/cllm_server_gguf_test.log 2>&1 & \
+	echo $$! > /tmp/cllm_server_$(GGUF_PORT).pid; \
+	echo "服务器 PID: $$(cat /tmp/cllm_server_$(GGUF_PORT).pid)"; \
+	echo "日志: logs/cllm_server_gguf_test.log"; \
+	echo ""; \
+	echo "等待服务器启动..."; \
+	for i in 1 2 3 4 5 6 7 8 9 10; do \
+		sleep 1; \
+		if curl -s http://localhost:$(GGUF_PORT)/health > /dev/null 2>&1; then \
+			echo "✅ 服务器已启动 ($$i秒)"; \
+			break; \
+		fi; \
+		if [ $$i -eq 10 ]; then \
+			echo "❌ 服务器启动超时"; \
+			echo "查看日志:"; \
+			tail -30 logs/cllm_server_gguf_test.log; \
+			kill $$(cat /tmp/cllm_server_$(GGUF_PORT).pid) 2>/dev/null || true; \
+			exit 1; \
+		fi; \
+	done; \
+	echo ""; \
+	echo "=========================================="; \
+	echo "测试 /generate 接口"; \
+	echo "=========================================="; \
+	echo "输入: hello"; \
+	echo ""; \
+	RESPONSE=$$(curl -s -X POST http://localhost:$(GGUF_PORT)/generate \
+		-H "Content-Type: application/json" \
+		-d '{"prompt": "hello", "max_tokens": 50, "temperature": 0.7}'); \
+	echo "响应:"; \
+	echo "$$RESPONSE" | python3 -m json.tool 2>/dev/null || echo "$$RESPONSE"; \
+	echo ""; \
+	GENERATED_TEXT=$$(echo "$$RESPONSE" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('text', data.get('generated_text', 'N/A')))" 2>/dev/null || echo "N/A"); \
+	if [ "$$GENERATED_TEXT" != "N/A" ] && [ -n "$$GENERATED_TEXT" ]; then \
+		echo "✅ 生成成功!"; \
+		echo "生成的文本: $$GENERATED_TEXT"; \
+	else \
+		echo "⚠️  警告: 无法解析生成的文本"; \
+	fi; \
+	echo ""; \
+	echo "停止服务器..."; \
+	kill $$(cat /tmp/cllm_server_$(GGUF_PORT).pid) 2>/dev/null || true; \
+	sleep 2; \
+	echo "✅ 测试完成"; \
+	echo "完整日志: logs/cllm_server_gguf_test.log"
+
+# 快速测试 curl 命令（需要服务器已启动）
+test-curl:
+	@echo "测试 /generate 接口..."
+	@curl -X POST http://localhost:$(GGUF_PORT)/generate \
+		-H "Content-Type: application/json" \
+		-d '{"prompt": "hello", "max_tokens": 50, "temperature": 0.7}' \
+		| python3 -m json.tool || echo "请求失败，请确保服务器已启动"
 
 run: start
 
@@ -175,41 +303,56 @@ help:
 	@echo "  test-all          - Run all tests (unit + integration)"
 	@echo "=================="
 	@echo ""
-	@echo "Available targets:"
-	@echo "  all              - Build the project (default)"
-	@echo "  build            - Build the project in Release mode"
-	@echo "  build-debug      - Build the project in Debug mode"
-	@echo "  clean            - Remove build directory"
-	@echo "  rebuild          - Clean and build"
-	@echo "  test             - Run unit tests"
-	@echo "  start            - Start cLLM server (use MODEL_PATH to specify model)"
-	@echo "  run              - Alias for start"
-	@echo "  stop             - Stop cLLM server"
-	@echo "  check-model      - Verify model path exists"
-	@echo "  install-deps     - Install required dependencies"
-	@echo "  setup-env        - Setup build environment (download dependencies)"
-	@echo "  check-env        - Check build environment status"
-	@echo "  help             - Show this help message"
-	@echo ""
-	@echo "Configuration Variables:"
-	@echo "  MODEL_PATH           - Path to model file (default: /Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/qwen3_0.6b_torchscript_fp32.pt)"
-	@echo "  PORT                 - Server port (default: 18080)"
-	@echo "  QUANTIZATION         - Quantization type: fp16, int8 (default: fp16)"
-	@echo "  MAX_BATCH_SIZE       - Maximum batch size (default: 8)"
-	@echo "  MAX_CONTEXT_LENGTH   - Maximum context length (default: 2048)"
-	@echo "  USE_LIBTORCH         - Use LibTorch backend: true, false (default: true)"
-	@echo ""
-	@echo "Examples:"
-	@echo "  make                 - Build the project"
-	@echo "  make clean           - Clean build files"
-	@echo "  make rebuild         - Clean and rebuild"
-	@echo "  make test            - Run all unit tests"
-	@echo "  make start           - Start server with default configuration"
-	@echo "  make start MODEL_PATH=/path/to/model PORT=9000"
-	@echo "  make start USE_LIBTORCH=false"
-	@echo "  make stop            - Stop the server"
-	@echo ""
-	@echo "Note:"
-	@echo "  - Default model uses LibTorch backend with TorchScript format (.pt)"
-	@echo "  - Set USE_LIBTORCH=false to use Kylin backend with .bin format"
+	@echo "Available targets:";
+	@echo "  all              - Build the project (default)";
+	@echo "  build            - Build the project in Release mode";
+	@echo "  build-debug      - Build the project in Debug mode";
+	@echo "  clean            - Remove build directory";
+	@echo "  rebuild          - Clean and build";
+	@echo "  test             - Run unit tests";
+	@echo "  start            - Start cLLM server (use MODEL_PATH to specify model)";
+	@echo "  start-gguf       - Start cLLM server with GGUF model";
+	@echo "  start-bg         - Start cLLM server in background";
+	@echo "  start-gguf-bg    - Start cLLM server with GGUF model in background";
+	@echo "  test-gguf-e2e    - Run GGUF end-to-end test (Kylin backend)";
+	@echo "  test-curl        - Test /generate endpoint with curl (server must be running)";
+	@echo "  run              - Alias for start";
+	@echo "  stop             - Stop cLLM server";
+	@echo "  check-model      - Verify model path exists";
+	@echo "  install-deps     - Install required dependencies";
+	@echo "  setup-env        - Setup build environment (download dependencies)";
+	@echo "  check-env        - Check build environment status";
+	@echo "  help             - Show this help message";
+	@echo "";
+	@echo "Configuration Variables:";
+	@echo "  MODEL_PATH           - Path to model file (default: /Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/qwen3_0.6b_torchscript_fp32.pt)";
+	@echo "  GGUF_MODEL_PATH      - Path to GGUF model file (default: /Users/dannypan/PycharmProjects/xllm/cpp/cLLM/test_gguf_model.gguf)";
+	@echo "  PORT                 - Server port (default: 18080)";
+	@echo "  GGUF_PORT            - Server port for GGUF model (default: 18081)";
+	@echo "  QUANTIZATION         - Quantization type: fp16, int8 (default: fp16)";
+	@echo "  MAX_BATCH_SIZE       - Maximum batch size (default: 8)";
+	@echo "  MAX_CONTEXT_LENGTH   - Maximum context length (default: 2048)";
+	@echo "  USE_LIBTORCH         - Use LibTorch backend: true, false (default: true)";
+	@echo "  USE_GGUF             - Use GGUF model: true, false (default: false)";
+	@echo "";
+	@echo "Examples:";
+	@echo "  make                 - Build the project";
+	@echo "  make clean           - Clean build files";
+	@echo "  make rebuild         - Clean and rebuild";
+	@echo "  make test            - Run all unit tests";
+	@echo "  make start           - Start server with default configuration";
+	@echo "  make start MODEL_PATH=/path/to/model PORT=9000";
+	@echo "  make start-gguf      - Start server with GGUF model";
+	@echo "  make start-gguf GGUF_MODEL_PATH=/path/to/model.gguf GGUF_PORT=9000";
+	@echo "  make start-bg        - Start server in background";
+	@echo "  make start-gguf-bg   - Start server with GGUF model in background";
+	@echo "  make test-gguf-e2e   - Run GGUF end-to-end test (auto start/stop server)";
+	@echo "  make test-curl      - Test /generate endpoint (server must be running)";
+	@echo "  make start USE_LIBTORCH=false";
+	@echo "  make stop            - Stop the server";
+	@echo "";
+	@echo "Note:";
+	@echo "  - Default model uses LibTorch backend with TorchScript format (.pt)";
+	@echo "  - Set USE_LIBTORCH=false to use Kylin backend with .bin format";
+	@echo "  - Set USE_GGUF=true to use GGUF model format (.gguf)";
 	@echo "  - Main server executable (cllm_server) is implemented and ready to use"

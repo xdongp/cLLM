@@ -12,7 +12,9 @@ namespace cllm {
 
 QuantizationManager::QuantizationManager(const std::string& quantizationType)
     : quantizationType_(quantizationType) {
-    if (quantizationType != "int8" && quantizationType != "int4" && quantizationType != "fp16") {
+    // 支持的量化类型
+    if (quantizationType != "int8" && quantizationType != "int4" && quantizationType != "fp16" &&
+        quantizationType != "q8_0" && quantizationType != "q4_k_m" && quantizationType != "q5_k_m") {
         throw std::invalid_argument("Unsupported quantization type: " + quantizationType);
     }
 }

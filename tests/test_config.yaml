@@ -1,0 +1,86 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  model_path: ""
+  quantization: "fp16"
+  max_batch_size: 8
+  max_context_length: 2048
+  use_libtorch: false
+
+model:
+  path: ""
+  vocab_size: 3
+  seq_len: 2048
+  quantized: true
+  quantization: "fp16"
+  max_context_length: 2048
+  default_max_tokens: 100
+  temperature: 0.7
+  top_k: 50
+  top_p: 0.9
+
+http:
+  max_input_tokens: 120
+  timeout_ms: 30000
+
+resources:
+  max_batch_size: 8
+  max_context_length: 2048
+  kv_cache_max_size: 100
+  kv_cache_max_memory_mb: 4096
+  memory_limit_mb: 16384
+
+sampler:
+  temperature: 0.7
+  top_k: 50
+  top_p: 0.9
+  greedy_threshold: 0.1
+
+api:
+  endpoints:
+    health:
+      name: "health"
+      path: "/health"
+      method: "GET"
+    generate:
+      name: "generate"
+      path: "/generate"
+      method: "POST"
+    generate_stream:
+      name: "generate_stream"
+      path: "/generate_stream"
+      method: "POST"
+    encode:
+      name: "encode"
+      path: "/encode"
+      method: "POST"
+  response:
+    content_type:
+      json: "application/json"
+      stream: "text/event-stream"
+    headers:
+      cache_control: "no-cache"
+      connection: "keep-alive"
+  defaults:
+    prompt: ""
+    max_tokens: 3
+    temperature: 0.7
+    top_p: 0.9
+  timeouts:
+    read: 30000
+    write: 30000
+    connect: 5000
+
+logging:
+  level: "info"
+  file: ""
+  format: "text"
+  rotation:
+    max_size_mb: 100
+    max_files: 5
+    interval_days: 1
+
+metrics:
+  enabled: false
+  port: 9090
+  path: "/metrics"

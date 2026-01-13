@@ -37,7 +37,7 @@ static std::unique_ptr<cllm::TokenizerManager> g_tokenizerManager;
  * @param signal 信号编号
  */
 void signalHandler(int signal) {
-    CLLM_INFO("Received signal {}, shutting down gracefully...", signal);
+    CLLM_INFO("Received signal %d, shutting down gracefully...", signal);
     
     // 停止调度器
     if (g_scheduler) {
@@ -59,7 +59,7 @@ void signalHandler(int signal) {
  * @param programName 程序名称
  */
 void printUsage(const char* programName) {
-    CLLM_INFO("Usage: {} [options]", programName);
+    CLLM_INFO("Usage: %s [options]", programName);
     CLLM_INFO("");
     CLLM_INFO("Options:");
     CLLM_INFO("  --model-path PATH        Path to model directory (required)");
@@ -75,8 +75,8 @@ void printUsage(const char* programName) {
     CLLM_INFO("  --help                   Show this help message");
     CLLM_INFO("");
     CLLM_INFO("Examples:");
-    CLLM_INFO("  {} --model-path /path/to/model", programName);
-    CLLM_INFO("  {} --model-path /path/to/model --port 9000 --use-libtorch", programName);
+    CLLM_INFO("  %s --model-path /path/to/model", programName);
+    CLLM_INFO("  %s --model-path /path/to/model --port 9000 --use-libtorch", programName);
 }
 
 /**
@@ -203,12 +203,12 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            if (selectedConfigPath.empty() || !fs::exists(selectedConfigPath)) {
+            if (selectedConfigPath.empty() || !fs::exists(selectedConfigPath.c_str())) {
                 throw std::runtime_error("Config file not found. Please pass --config or ensure config/config.yaml exists.");
             }
 
-            CLLM_INFO("Loading config from: {}", selectedConfigPath);
-            cllm::Config::instance().load(selectedConfigPath);
+            CLLM_INFO("Loading config from: %s", selectedConfigPath.c_str());
+            cllm::Config::instance().load(selectedConfigPath.c_str());
         }
 
         // 计算最终配置（Config + CLI 覆盖）
@@ -237,8 +237,8 @@ int main(int argc, char* argv[]) {
 
         // 设置日志文件
         if (!logFile.empty()) {
-            cllm::Logger::instance().addFileSink(logFile);
-            CLLM_INFO("Logging to file: {}", logFile);
+            cllm::Logger::instance().addFileSink(logFile.c_str());
+            CLLM_INFO("Logging to file: %s", logFile.c_str());
         }
 
         // 检查必需参数（允许从配置提供 model.path）
@@ -258,14 +258,14 @@ int main(int argc, char* argv[]) {
         CLLM_INFO("========================================");
         CLLM_INFO("Starting cLLM Server...");
         CLLM_INFO("Configuration:");
-        CLLM_INFO("  - Model Path: {}", modelPath);
-        CLLM_INFO("  - Host: {}", host);
-        CLLM_INFO("  - Port: {}", port);
-        CLLM_INFO("  - Quantization: {}", quantization);
-        CLLM_INFO("  - Max Batch Size: {}", maxBatchSize);
-        CLLM_INFO("  - Max Context Length: {}", maxContextLength);
-        CLLM_INFO("  - Backend: {}", useLibTorch ? "LibTorch" : "Kylin");
-        CLLM_INFO("  - Log Level: {}", logLevel);
+        CLLM_INFO("  - Model Path: %s", modelPath.c_str());
+        CLLM_INFO("  - Host: %s", host.c_str());
+        CLLM_INFO("  - Port: %d", port);
+        CLLM_INFO("  - Quantization: %s", quantization.c_str());
+        CLLM_INFO("  - Max Batch Size: %zu", maxBatchSize);
+        CLLM_INFO("  - Max Context Length: %zu", maxContextLength);
+        CLLM_INFO("  - Backend: %s", (useLibTorch ? "LibTorch" : "Kylin"));
+        CLLM_INFO("  - Log Level: %s", logLevel.c_str());
 
         // 注册信号处理器
         signal(SIGINT, signalHandler);
@@ -274,7 +274,7 @@ int main(int argc, char* argv[]) {
         // 初始化 Asio 处理器（满足技术栈要求）
         CLLM_INFO("Initializing Asio handler...");
         cllm::AsioHandler asioHandler;
-        CLLM_INFO("Asio thread pool size: {}", asioHandler.getThreadPoolSize());
+        CLLM_INFO("Asio thread pool size: %zu", asioHandler.getThreadPoolSize());
         
         // 提交一个异步任务作为示例
         asioHandler.postTask([]() {
@@ -410,8 +410,8 @@ int main(int argc, char* argv[]) {
         }
 
         CLLM_INFO("Resolved paths:");
-        CLLM_INFO("  - Backend model file: {}", backendModelPath);
-        CLLM_INFO("  - Tokenizer dir: {}", tokenizerModelDir);
+        CLLM_INFO("  - Backend model file: %s", backendModelPath.c_str());
+        CLLM_INFO("  - Tokenizer dir: %s", tokenizerModelDir.c_str());
 
         g_modelExecutor = std::make_unique<cllm::ModelExecutor>(
             backendModelPath,
@@ -430,7 +430,7 @@ int main(int argc, char* argv[]) {
         g_tokenizerManager = std::make_unique<cllm::TokenizerManager>(tokenizerModelDir, g_modelExecutor.get());
         cllm::ITokenizer* tokenizer = g_tokenizerManager->getTokenizer();
         CLLM_INFO("Tokenizer initialized");
-        CLLM_INFO("  - Vocab size: {}", tokenizer->getVocabSize());
+        CLLM_INFO("  - Vocab size: %zu", tokenizer->getVocabSize());
         
         // 初始化调度器
         CLLM_INFO("Initializing scheduler...");
@@ -484,7 +484,7 @@ int main(int argc, char* argv[]) {
         
         CLLM_INFO("========================================");
         CLLM_INFO("✓ cLLM Server is ready!");
-        CLLM_INFO("Listening on http://{}:{}", host, port);
+        CLLM_INFO("Listening on http://%s:%d", host.c_str(), port);
         CLLM_INFO("Press Ctrl+C to stop the server");
         CLLM_INFO("========================================");
         
@@ -496,7 +496,7 @@ int main(int argc, char* argv[]) {
         generateEndpoint.reset();
         encodeEndpoint.reset();
     } catch (const std::exception& e) {
-        CLLM_ERROR("Failed to start server: {}", e.what());
+        CLLM_ERROR("Failed to start server: %s", e.what());
         cllm::Logger::instance().flush();
         return 1;
     }

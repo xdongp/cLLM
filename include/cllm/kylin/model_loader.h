@@ -40,6 +40,9 @@ public:
     const ModelConfig &getConfig() const { return config_; }
     const std::string &getModelPath() const { return modelPath_; }
     WeightDType getDType() const { return dtype_; }
+    
+    /// 获取加载的原始权重数据
+    const std::vector<float>& getWeights() const { return weights_; }
 
     /// 将权重填充进调用方提供的张量中，张量形状由调用方根据 ModelConfig 预先分配
     ///

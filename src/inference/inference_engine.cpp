@@ -53,7 +53,7 @@ bool InferenceEngine::initialize() {
     
     CLLM_INFO("[InferenceEngine] Backend initialized successfully");
     CLLM_INFO("[InferenceEngine] Backend type: %s", backend_->getName().c_str());
-    CLLM_INFO("[InferenceEngine] Config vocab_size: {}", config_.vocabSize);
+    CLLM_INFO("[InferenceEngine] Config vocab_size: %u", config_.vocabSize);
     return true;
 }
 

@@ -29,13 +29,13 @@ LibTorchBackend::LibTorchBackend(const std::string &modelPath, const ModelConfig
     , initialized_(false) {
     
     CLLM_INFO("[LibTorchBackend] Constructing LibTorch backend");
-    CLLM_INFO("[LibTorchBackend] Model path: {}", modelPath_);
-    CLLM_INFO("[LibTorchBackend] Device: {}", (device_.is_cpu() ? "CPU" : "CUDA"));
+    CLLM_INFO("[LibTorchBackend] Model path: %s", modelPath_.c_str());
+    CLLM_INFO("[LibTorchBackend] Device: %s", (device_.is_cpu() ? "CPU" : "CUDA"));
     
     // 检查 CUDA 可用性
     if (torch::cuda::is_available()) {
-        CLLM_INFO("[LibTorchBackend] CUDA is available, {} device(s) found", 
-                  torch::cuda::device_count());
+        CLLM_INFO("[LibTorchBackend] CUDA is available, %d device(s) found", 
+                  static_cast<int>(torch::cuda::device_count()));
     } else {
         CLLM_INFO("[LibTorchBackend] CUDA not available, using CPU");
     }
@@ -49,7 +49,7 @@ bool LibTorchBackend::initialize() {
 
     try {
         CLLM_INFO("[LibTorchBackend] ========== Initializing LibTorch Backend ==========");
-        CLLM_INFO("[LibTorchBackend] Loading TorchScript model from: {}", modelPath_);
+        CLLM_INFO("[LibTorchBackend] Loading TorchScript model from: %s", modelPath_.c_str());
 
         // 1. 加载 TorchScript 模型
         model_ = torch::jit::load(modelPath_);
@@ -57,7 +57,7 @@ bool LibTorchBackend::initialize() {
         
         // 2. 移动到目标设备
         model_.to(device_);
-        CLLM_INFO("[LibTorchBackend] Model moved to {}", 
+        CLLM_INFO("[LibTorchBackend] Model moved to %s", 
                   (device_.is_cpu() ? "CPU" : "CUDA"));
         
         // 3. 设置为推理模式（禁用 dropout 等）
@@ -98,21 +98,21 @@ bool LibTorchBackend::initialize() {
                     tracedSeqLen_ = static_cast<size_t>(len);
                     detected = true;
 
-                    CLLM_INFO("[LibTorchBackend] Detected traced seq_len: {}", tracedSeqLen_);
+                    CLLM_INFO("[LibTorchBackend] Detected traced seq_len: %d", tracedSeqLen_);
 
                     if (detected_vocab_size > 0 && detected_vocab_size != config_.vocabSize) {
-                        CLLM_INFO("[LibTorchBackend] Detected vocab_size from model: {} (config has: {})",
+                        CLLM_INFO("[LibTorchBackend] Detected vocab_size from model: %zu (config has: %u)",
                                   detected_vocab_size, config_.vocabSize);
                         config_.vocabSize = detected_vocab_size;
-                        CLLM_INFO("[LibTorchBackend] Updated config vocab_size to {}", config_.vocabSize);
+                        CLLM_INFO("[LibTorchBackend] Updated config vocab_size to %u", config_.vocabSize);
                     } else {
-                        CLLM_INFO("[LibTorchBackend] Vocab size: {}", config_.vocabSize);
+                        CLLM_INFO("[LibTorchBackend] Vocab size: %u", config_.vocabSize);
                     }
 
                     break;  // 探测成功
                 } catch (const std::exception& e) {
                     // 尝试更小的候选长度
-                    CLLM_DEBUG("[LibTorchBackend] seq_len {} not supported by traced model: {}", len, e.what());
+                    CLLM_DEBUG("[LibTorchBackend] seq_len %zu not supported by traced model: %s", len, e.what());
                 }
             }
 
@@ -120,8 +120,8 @@ bool LibTorchBackend::initialize() {
                 throw std::runtime_error("failed to detect traced seq_len from candidates");
             }
         } catch (const std::exception& e) {
-            CLLM_WARN("[LibTorchBackend] Could not detect traced seq_len / vocab_size: {}", e.what());
-            CLLM_WARN("[LibTorchBackend] Fallback to config vocab_size: {} and seq_len={}", config_.vocabSize, cllm::Config::instance().backendLibTorchFallbackSeqLen());
+            CLLM_WARN("[LibTorchBackend] Could not detect traced seq_len / vocab_size: %s", e.what());
+            CLLM_WARN("[LibTorchBackend] Fallback to config vocab_size: %u and seq_len=%d", config_.vocabSize, cllm::Config::instance().backendLibTorchFallbackSeqLen());
             tracedSeqLen_ = cllm::Config::instance().backendLibTorchFallbackSeqLen();
         }
         
@@ -135,10 +135,10 @@ bool LibTorchBackend::initialize() {
         return true;
 
     } catch (const c10::Error &e) {
-        CLLM_ERROR("[LibTorchBackend] Failed to load model: {}", e.what());
+        CLLM_ERROR("[LibTorchBackend] Failed to load model: %s", e.what());
         return false;
     } catch (const std::exception &e) {
-        CLLM_ERROR("[LibTorchBackend] Error: {}", e.what());
+        CLLM_ERROR("[LibTorchBackend] Error: %s", e.what());
         return false;
     }
 }
@@ -210,7 +210,7 @@ void LibTorchBackend::setDevice(bool useCuda, int deviceId) {
     if (useCuda) {
         if (torch::cuda::is_available()) {
             device_ = torch::Device(torch::kCUDA, deviceId);
-            CLLM_INFO("[LibTorchBackend] Device set to CUDA:{}", deviceId);
+            CLLM_INFO("[LibTorchBackend] Device set to CUDA:%d", deviceId);
         } else {
             CLLM_WARN("[LibTorchBackend] WARNING: CUDA requested but not available, using CPU");
             device_ = torch::kCPU;
@@ -224,7 +224,7 @@ void LibTorchBackend::setDevice(bool useCuda, int deviceId) {
 void LibTorchBackend::setNumThreads(int numThreads) {
     if (numThreads > 0) {
         torch::set_num_threads(numThreads);
-        CLLM_INFO("[LibTorchBackend] Set num_threads to {}", numThreads);
+        CLLM_INFO("[LibTorchBackend] Set num_threads to %d", numThreads);
     }
     
     // 设置 inter-op 并行性（跨算子并行）
@@ -245,7 +245,7 @@ Tensor LibTorchBackend::forward(const std::vector<int> &inputIds) {
             if (id >= 0 && static_cast<size_t>(id) < config_.vocabSize) {
                 validInputIds.push_back(id);
             } else {
-                CLLM_WARN("[LibTorchBackend] Skipping invalid token ID: {} (vocab size: {})", 
+                CLLM_WARN("[LibTorchBackend] Skipping invalid token ID: %d (vocab size: %u)", 
                           id, config_.vocabSize);
                 // 用0(通常是PAD token)替代无效ID
                 validInputIds.push_back(0);
@@ -260,19 +260,19 @@ Tensor LibTorchBackend::forward(const std::vector<int> &inputIds) {
         if (originalLen < tracedLen) {
             // 填充到 tracedLen（使用 PAD token 0）
             paddedInputIds.resize(tracedLen, 0);
-            CLLM_DEBUG("[LibTorchBackend] Padded input from {} to {} tokens", 
+            CLLM_DEBUG("[LibTorchBackend] Padded input from %zu to %zu tokens", 
                        originalLen, tracedLen);
         } else if (originalLen > tracedLen) {
             // 裁剪到 tracedLen：保留末尾 token（更贴近“上下文窗口”语义）
             paddedInputIds.erase(paddedInputIds.begin(), paddedInputIds.end() - static_cast<std::ptrdiff_t>(tracedLen));
-            CLLM_WARN("[LibTorchBackend] WARNING: Truncated input from {} to {} tokens (kept last tokens)",
+            CLLM_WARN("[LibTorchBackend] WARNING: Truncated input from %zu to %zu tokens (kept last tokens)",
                       originalLen, tracedLen);
         }
         
         // 转换输入为 torch::Tensor
         torch::Tensor input_tensor = vecToTensor(paddedInputIds);
 
-        CLLM_DEBUG("[LibTorchBackend] Input tensor shape: [{}, {}]", 
+        CLLM_DEBUG("[LibTorchBackend] Input tensor shape: [%zu, %zu]", 
                    input_tensor.size(0), input_tensor.size(1));
 
         // 禁用梯度计算
@@ -291,7 +291,7 @@ Tensor LibTorchBackend::forward(const std::vector<int> &inputIds) {
             if (i < output_tensor.dim() - 1) shape_str += " x ";
         }
         shape_str += "]";
-        CLLM_DEBUG("[LibTorchBackend] Output tensor shape: {}", shape_str);
+        CLLM_DEBUG("[LibTorchBackend] Output tensor shape: %s", shape_str.c_str());
 
         // 转换输出为自定义 Tensor
         Tensor fullLogits = torchTensorToTensor(output_tensor);
@@ -311,7 +311,7 @@ Tensor LibTorchBackend::forward(const std::vector<int> &inputIds) {
                 }
             }
             
-            CLLM_DEBUG("[LibTorchBackend] Extracted output for original {} tokens", actualLen);
+            CLLM_DEBUG("[LibTorchBackend] Extracted output for original %zu tokens", actualLen);
             return result;
         }
         
@@ -360,13 +360,13 @@ Tensor LibTorchBackend::forwardBatch(const std::vector<int> &flatInputIds,
         
         // 放宽形状验证:允许不同的输出长度(由于TorchScript trace固定长度)
         if (requestLogits.shape().size() != 2) {
-            CLLM_ERROR("[LibTorchBackend] Invalid logits shape: expected 2D tensor, got {}D", 
+            CLLM_ERROR("[LibTorchBackend] Invalid logits shape: expected 2D tensor, got %zuD", 
                        requestLogits.shape().size());
             throw std::runtime_error("LibTorchBackend::forwardBatch: invalid logits shape (not 2D)");
         }
         
         if (requestLogits.shape()[1] != vocab) {
-            CLLM_ERROR("[LibTorchBackend] Vocab size mismatch: expected {}, got {}", 
+            CLLM_ERROR("[LibTorchBackend] Vocab size mismatch: expected %u, got %zu", 
                        vocab, requestLogits.shape()[1]);
             throw std::runtime_error("LibTorchBackend::forwardBatch: vocab size mismatch");
         }
@@ -382,7 +382,7 @@ Tensor LibTorchBackend::forwardBatch(const std::vector<int> &flatInputIds,
 
         // 先把前缀（没有 logits 的部分）置 0
         if (offsetInRequest > 0) {
-            CLLM_WARN("[LibTorchBackend] Output truncated: request len {} > output len {}, aligning logits to tail (offset={})",
+            CLLM_WARN("[LibTorchBackend] Output truncated: request len %zu > output len %zu, aligning logits to tail (offset=%zu)",
                       len, tokensToUse, offsetInRequest);
             for (size_t t = 0; t < offsetInRequest; ++t) {
                 size_t globalRow = start + t;
@@ -405,6 +405,161 @@ Tensor LibTorchBackend::forwardBatch(const std::vector<int> &flatInputIds,
     }
 
     return logits;
+}
+
+// ========== 权重加载方法 ==========
+
+bool LibTorchBackend::loadWeightsFromDict(const std::map<std::string, torch::Tensor>& weightsDict) {
+    // TODO: Implement loadWeightsFromDict method
+    // 实现从权重字典加载模型权重的逻辑
+    // 参考设计文档3.2.3.1节
+    
+    CLLM_WARN("LibTorchBackend::loadWeightsFromDict: Method not yet implemented");
+    
+    try {
+        // 基础实现框架：遍历权重字典并加载到模型中
+        // 注意：具体实现需要根据模型结构调整权重名称映射
+        for (const auto& pair : weightsDict) {
+            const std::string& name = pair.first;
+            const torch::Tensor& tensor = pair.second;
+            
+            // TODO: 实现权重加载逻辑
+            // model_.setattr(name, tensor);
+            
+            // 手动构建形状字符串，避免 fmt 格式化问题
+            std::string shapeStr = "[";
+            auto sizes = tensor.sizes();
+            for (size_t i = 0; i < sizes.size(); ++i) {
+                if (i > 0) shapeStr += ", ";
+                shapeStr += std::to_string(sizes[i]);
+            }
+            shapeStr += "]";
+            
+            CLLM_DEBUG("LibTorchBackend::loadWeightsFromDict: Loading weight '%s' with shape %s", 
+                      name.c_str(), shapeStr.c_str());
+        }
+        
+        initialized_ = true;
+        return true;
+        
+    } catch (const std::exception& e) {
+        CLLM_ERROR("LibTorchBackend::loadWeightsFromDict: Failed to load weights from dict: %s", e.what());
+        return false;
+    }
+}
+
+bool LibTorchBackend::loadFromGGUF(const std::string& ggufPath) {
+    // TODO: Implement loadFromGGUF method
+    // 实现从GGUF文件加载模型的逻辑
+    // 参考设计文档3.2.3.2节
+    
+    CLLM_WARN("LibTorchBackend::loadFromGGUF: Method not yet implemented");
+    
+    try {
+        CLLM_INFO("LibTorchBackend::loadFromGGUF: Loading GGUF model from %s", ggufPath.c_str());
+        
+        // TODO: 实现GGUF加载逻辑
+        // 1. 解析GGUF文件头
+        // 2. 读取模型元数据
+        // 3. 加载权重数据
+        // 4. 构建模型结构
+        // 5. 初始化模型
+        
+        return buildModel();
+        
+    } catch (const std::exception& e) {
+        CLLM_ERROR("LibTorchBackend::loadFromGGUF: Failed to load model from GGUF file: %s", e.what());
+        return false;
+    }
+}
+
+bool LibTorchBackend::buildModel() {
+    // TODO: Implement buildModel method
+    // 实现模型结构构建逻辑
+    // 参考设计文档3.2.4节
+    
+    CLLM_WARN("LibTorchBackend::buildModel: Method not yet implemented");
+    
+    try {
+        CLLM_INFO("LibTorchBackend::buildModel: Building model structure");
+        
+        // TODO: 实现模型构建逻辑
+        // 根据config_构建模型结构
+        // 将权重加载到模型中
+        
+        initialized_ = true;
+        return true;
+        
+    } catch (const std::exception& e) {
+        CLLM_ERROR("LibTorchBackend::buildModel: Failed to build model: %s", e.what());
+        return false;
+    }
+}
+
+bool LibTorchBackend::loadFromModelWeights(const model::ModelWeights& weights) {
+    // 实现从通用权重结构加载模型权重的逻辑
+    // 将 ModelWeights 转换为 torch::Tensor 字典，然后调用 loadWeightsFromDict()
+    
+    CLLM_INFO("LibTorchBackend::loadFromModelWeights: Loading weights from ModelWeights structure");
+    
+    try {
+        // 检查权重是否有效
+        if (!weights.isValid()) {
+            CLLM_ERROR("LibTorchBackend::loadFromModelWeights: Invalid ModelWeights structure");
+            return false;
+        }
+        
+        std::map<std::string, torch::Tensor> weightsDict;
+        auto allWeights = weights.getAllWeights();
+        
+        for (const auto& pair : allWeights) {
+            const std::string& name = pair.first;
+            model::WeightData* weightData = pair.second;
+            
+            if (!weightData || !weightData->isValid()) {
+                CLLM_ERROR("LibTorchBackend::loadFromModelWeights: Invalid weight data for '%s'", name.c_str());
+                continue;
+            }
+            
+            // 创建 torch::Tensor 从 WeightData
+            torch::TensorOptions options = torch::TensorOptions()
+                .dtype(torch::kFloat32)
+                .device(device_);
+            
+            std::vector<int64_t> shape;
+            for (size_t dim : weightData->shape) {
+                shape.push_back(static_cast<int64_t>(dim));
+            }
+            
+            // Create torch::Tensor from WeightData
+            torch::Tensor tensor = torch::from_blob(
+                weightData->data.data(),
+                torch::IntArrayRef(shape),
+                options
+            ).clone(); // Clone to create a copy that's managed by LibTorch
+            
+            // 手动构建形状字符串，避免 fmt 格式化问题
+            std::string shapeStr = "[";
+            auto sizes = tensor.sizes();
+            for (size_t i = 0; i < sizes.size(); ++i) {
+                if (i > 0) shapeStr += ", ";
+                shapeStr += std::to_string(sizes[i]);
+            }
+            shapeStr += "]";
+            
+            CLLM_DEBUG("LibTorchBackend::loadFromModelWeights: Converted weight '%s' with shape %s", 
+                      name.c_str(), shapeStr.c_str());
+            
+            weightsDict[name] = tensor;
+        }
+        
+        // 调用 loadWeightsFromDict 加载权重
+        return loadWeightsFromDict(weightsDict);
+        
+    } catch (const std::exception& e) {
+        CLLM_ERROR("LibTorchBackend::loadFromModelWeights: Failed to load weights from ModelWeights: %s", e.what());
+        return false;
+    }
 }
 
 } // namespace inference

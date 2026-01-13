@@ -16,6 +16,7 @@
 #include <string>
 #include <chrono>
 #include <iomanip>
+#include <thread>
 
 using namespace cllm;
 using namespace cllm::inference;

@@ -79,3 +79,26 @@ add_executable(integrated_test
 target_link_libraries(integrated_test
     cllm_core
 )
+
+# GGUF loader test example
+add_executable(gguf_loader_test
+    test_gguf_loader.cpp
+)
+target_link_libraries(gguf_loader_test
+    cllm_core
+)
+# Dequantization test example
+add_executable(dequantization_test
+    test_dequantize.cpp
+)
+target_link_libraries(dequantization_test
+    cllm_core
+)
+
+# Performance test example
+add_executable(performance_test
+    performance_test.cpp
+)
+target_link_libraries(performance_test
+    cllm_core
+)

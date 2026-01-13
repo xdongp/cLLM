@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "type": "SentencePiece",
+  "vocab_size": 3,
+  "bos_token_id": 1,
+  "eos_token_id": 2,
+  "pad_token_id": 0,
+  "unk_token_id": 3,
+  "added_tokens_decoder": {
+    "100": {"content": "hello"},
+    "101": {"content": "world"},
+    "102": {"content": "!"}
+  }
+}

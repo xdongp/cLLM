@@ -9,6 +9,7 @@
 #include "cllm/inference/backend_interface.h"
 #include "cllm/kylin/tensor.h"
 #include "cllm/model/config.h"
+#include "cllm/model/weight_data.h"
 
 #include <torch/script.h>
 #include <torch/torch.h>
@@ -86,6 +87,14 @@ public:
      * @brief 获取模型配置
      */
     const ModelConfig &getConfig() const override { return config_; }
+    
+    /**
+     * @brief 从 ModelWeights 加载权重到 LibTorch 后端
+     * 
+     * @param weights 通用权重数据结构
+     * @return true 成功，false 失败
+     */
+    bool loadFromModelWeights(const model::ModelWeights &weights);
 
     /**
      * @brief 设置推理设备（必须在 initialize 之前调用）
@@ -101,8 +110,33 @@ public:
      * @param numThreads 线程数，0 表示使用默认值
      */
     void setNumThreads(int numThreads);
+    
+    /**
+     * @brief 从权重字典加载模型权重
+     * 
+     * @param weightsDict 权重名称到张量的映射
+     * @return true 成功，false 失败
+     */
+    bool loadWeightsFromDict(const std::map<std::string, torch::Tensor>& weightsDict);
+    
+    /**
+     * @brief 从 GGUF 文件加载模型
+     * 
+     * @param ggufPath GGUF 文件路径
+     * @return true 成功，false 失败
+     */
+    bool loadFromGGUF(const std::string& ggufPath);
+    
 
+    
 private:
+    /**
+     * @brief 构建模型结构
+     * 
+     * @return true 成功，false 失败
+     */
+    bool buildModel();
+    
     std::string modelPath_;           ///< TorchScript 模型路径
     ModelConfig config_;              ///< 模型配置
     torch::jit::script::Module model_; ///< LibTorch 模型

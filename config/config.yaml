@@ -1,49 +1,26 @@
-# cLLM 配置文件
-# 配置文件使用 YAML 格式
+# cLLM 配置文件（模板）
+# 复制为 config.yaml 后按需修改
 
 # 服务器配置
 server:
   host: "0.0.0.0"          # 服务器监听地址
   port: 8080               # 服务器监听端口
-  max_batch_size: 8        # 最大批处理大小
-  max_context_length: 2048 # 最大上下文长度
-  quantization: "fp16"     # 量化类型: fp16, int8, int4
-  use_libtorch: false      # 是否使用 LibTorch 后端
-  num_threads: 4           # 服务器线程数
-  min_threads: 2           # 服务器最小线程数
+  num_threads: 4           # Drogon 工作线程数（0 表示使用硬件并发数）
+  min_threads: 2           # 最小线程数（避免 /generate 阻塞导致 /health 卡住）
+  use_libtorch: false      # 是否使用 LibTorch 后端（否则使用 Kylin）
 
 # 模型配置
 model:
-  path: "/path/to/model"   # 模型文件路径
-  vocab_size: 151936       # 词表大小
-  seq_len: 2048            # 序列长度
-  quantized: true          # 是否量化
-  quantization: "fp16"     # 量化类型
+  path: "/path/to/model"   # 模型目录或模型文件路径
+  vocab_size: 151936       # 词表大小（可被后端自动探测覆盖）
   max_context_length: 2048 # 最大上下文长度
-  default_max_tokens: 100  # 默认最大令牌数
-  temperature: 0.7         # 默认温度
-  top_k: 50                # 默认 top_k
-  top_p: 0.9               # 默认 top_p
+  default_max_tokens: 100  # 默认最大生成 token 数
+  quantization: "fp16"     # 量化类型: fp16, int8, int4
 
 # HTTP 配置
 http:
-  max_input_tokens: 120    # 最大输入令牌数
-  timeout_ms: 30000        # 请求超时时间(毫秒)
-
-# 资源配置
-resources:
-  max_batch_size: 8        # 最大批处理大小
-  max_context_length: 2048 # 最大上下文长度
-  kv_cache_max_size: 100   # KV缓存最大大小
-  kv_cache_max_memory_mb: 4096 # KV缓存最大内存(MB)
-  memory_limit_mb: 16384   # 内存限制(MB)
-
-# 采样器配置
-sampler:
-  temperature: 0.7         # 温度参数
-  top_k: 50                # top-k采样
-  top_p: 0.9               # top-p采样
-  greedy_threshold: 0.1    # 贪婪阈值
+  max_input_tokens: 120    # 最大输入 token（过长 prompt 会被裁剪）
+  timeout_ms: 30000        # HTTP 请求超时时间(毫秒)
 
 # API 端点配置
 api:
@@ -64,6 +41,7 @@ api:
       name: "encode"
       path: "/encode"
       method: "POST"
+
   response:
     content_type:
       json: "application/json"
@@ -71,11 +49,13 @@ api:
     headers:
       cache_control: "no-cache"
       connection: "keep-alive"
+
   defaults:
     prompt: ""
-    max_tokens: 3
+    max_tokens: 100
     temperature: 0.7
     top_p: 0.9
+
   timeouts:
     min: 60.0
     max: 600.0
@@ -83,46 +63,44 @@ api:
 
 # 调度器配置
 scheduler:
-  max_iterations: 1000     # 最大迭代次数
-  batch_timeout_ms: 500    # 批处理超时时间(毫秒)
-  max_batch_size: 32       # 最大批处理大小
-  context_usage_threshold: 0.75 # 上下文使用阈值
-  default_temperature: 0.7 # 默认温度
-  default_top_p: 0.9       # 默认 top_p
-  default_top_k: 50        # 默认 top_k
-  default_max_tokens: 100  # 默认最大令牌数
-  request_timeout: 60.0    # 请求超时时间(秒)
-  loop_interval: 10        # 调度循环间隔(毫秒)
-  idle_loop_interval: 100  # 空闲时调度循环间隔(毫秒)
-  wait_poll_interval_ms: 10 # waitForRequest 轮询间隔(毫秒)
+  max_iterations: 1000
+  batch_timeout_ms: 500
+  max_batch_size: 32
+  context_usage_threshold: 0.75
+  default_temperature: 0.7
+  default_top_p: 0.9
+  default_top_k: 50
+  default_max_tokens: 100
+  request_timeout: 60.0
+  loop_interval: 10
+  idle_loop_interval: 100
+  wait_poll_interval_ms: 10
 
-# 队列配置
-queue:
-  max_size: 1000           # 队列最大大小
-  priority_weight: 1.0     # 优先级权重
-
-# 内存配置
-memory:
-  cache_limit_mb: 2048     # 缓存限制(MB)
-  monitor_interval_ms: 1000 # 内存监控间隔(毫秒)
+# 资源配置
+resources:
+  max_batch_size: 8
+  max_context_length: 2048
+  kv_cache_max_size: 100
+  kv_cache_max_memory_mb: 4096
+  memory_limit_mb: 16384
 
 # 缓存配置
 cache:
-  default_max_size: 100    # 默认最大缓存大小
-  default_max_memory_mb: 4096 # 默认最大缓存内存(MB)
-  enable_lru: true         # 是否启用 LRU
-  enable_memory_limit: true # 是否启用内存限制
-  enable_stats: true       # 是否启用统计
-  eviction_threshold: 0.8  # 缓存驱逐阈值
-  cleanup_interval: 1000   # 清理间隔(毫秒)
+  default_max_size: 100
+  default_max_memory_mb: 4096
+  enable_lru: true
+  enable_memory_limit: true
+  enable_stats: true
+  eviction_threshold: 0.8
+  cleanup_interval: 1000
 
 # LibTorch 后端配置
 backend:
   libtorch:
-    seq_len_candidates: [8, 16, 32, 64, 128, 256] # 候选序列长度
-    fallback_seq_len: 8    # 备选序列长度
+    seq_len_candidates: [8, 16, 32, 64, 128, 256]
+    fallback_seq_len: 8
 
 # 日志配置
 logging:
-  level: "info"            # 日志级别: trace, debug, info, warn, error
-  file: ""                 # 日志文件路径(空表示控制台输出)
+  level: "info"
+  file: ""

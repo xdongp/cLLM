@@ -4,6 +4,7 @@
  */
 
 #include "cllm/inference/kylin_backend.h"
+#include "cllm/model/loader_interface.h"
 #include "cllm/common/logger.h"
 
 #include <stdexcept>
@@ -35,9 +36,16 @@ KylinBackend::KylinBackend(const ModelConfig &config, const std::string &modelPa
     CLLM_INFO("[KylinBackend] Initializing Kylin (麒麟) inference backend");
     
     if (!modelPath_.empty()) {
-        // 真实权重模式
-        CLLM_INFO("[KylinBackend] Will load real weights from: {}", modelPath_);
-        loader_ = std::make_unique<kylin::ModelLoader>(modelPath_, externalConfig_);
+        // 真实权重模式 - 使用 ModelLoaderFactory 自动检测格式
+        CLLM_INFO("[KylinBackend] Will load real weights from: %s", modelPath_.c_str());
+        try {
+            loader_ = ModelLoaderFactory::createLoader(modelPath_, externalConfig_);
+            CLLM_INFO("[KylinBackend] Created loader for format: %s", 
+                     ModelLoaderFactory::formatToString(ModelLoaderFactory::detectFormat(modelPath_)).c_str());
+        } catch (const std::exception& e) {
+            CLLM_ERROR("[KylinBackend] Failed to create model loader: %s", e.what());
+            throw;
+        }
     } else {
         // 占位权重模式
         CLLM_INFO("[KylinBackend] Will use placeholder weights (test mode)");
@@ -66,10 +74,10 @@ void KylinBackend::prepareInternalConfig() {
     internalConfig_.numAttentionHeads = 4; // headDim = 32
     
     CLLM_INFO("[KylinBackend] Using simplified config:");
-    CLLM_INFO("  hiddenSize: {}", internalConfig_.hiddenSize);
-    CLLM_INFO("  intermediateSize: {}", internalConfig_.intermediateSize);
-    CLLM_INFO("  numLayers: {}", internalConfig_.numLayers);
-    CLLM_INFO("  vocabSize: {} (from external)", internalConfig_.vocabSize);
+    CLLM_INFO("  hiddenSize: %u", internalConfig_.hiddenSize);
+    CLLM_INFO("  intermediateSize: %u", internalConfig_.intermediateSize);
+    CLLM_INFO("  numLayers: %u", internalConfig_.numLayers);
+    CLLM_INFO("  vocabSize: %u (from external)", internalConfig_.vocabSize);
 }
 
 bool KylinBackend::initialize() {
@@ -311,6 +319,90 @@ kylin::Tensor KylinBackend::forwardBatch(
     }
 
     return logits;
+}
+
+bool KylinBackend::loadFromModelWeights(const model::ModelWeights &weights) {
+    CLLM_INFO("[KylinBackend] Loading weights from ModelWeights");
+    
+    try {
+        const size_t numLayers = weights.layers.size();
+        if (numLayers == 0) {
+            CLLM_ERROR("[KylinBackend] No layers found in ModelWeights");
+            return false;
+        }
+        
+        // 更新内部配置
+        internalConfig_.numLayers = numLayers;
+        internalConfig_.vocabSize = weights.embedding.shape[0];
+        internalConfig_.hiddenSize = weights.embedding.shape[1];
+        
+        // 确保权重容器大小正确
+        wq_.resize(numLayers);
+        wk_.resize(numLayers);
+        wv_.resize(numLayers);
+        wo_.resize(numLayers);
+        wGate_.resize(numLayers);
+        wUp_.resize(numLayers);
+        wDown_.resize(numLayers);
+        norm1_.resize(numLayers);
+        norm2_.resize(numLayers);
+        
+        // 加载embedding权重
+        embedding_ = Tensor(weights.embedding.shape);
+        std::copy(weights.embedding.data.begin(), weights.embedding.data.end(), embedding_.data());
+        
+        // 加载lmHead权重
+        lmHead_ = Tensor(weights.lmHead.shape);
+        std::copy(weights.lmHead.data.begin(), weights.lmHead.data.end(), lmHead_.data());
+        
+        // 加载finalNorm权重
+        finalNormWeight_ = Tensor(weights.finalNorm.shape);
+        std::copy(weights.finalNorm.data.begin(), weights.finalNorm.data.end(), finalNormWeight_.data());
+        
+        // 加载每层的权重
+        for (size_t layer = 0; layer < numLayers; ++layer) {
+            const model::LayerWeights &layerWeights = weights.layers[layer];
+            
+            // Attention权重
+            wq_[layer] = Tensor(layerWeights.wq.shape);
+            std::copy(layerWeights.wq.data.begin(), layerWeights.wq.data.end(), wq_[layer].data());
+            
+            wk_[layer] = Tensor(layerWeights.wk.shape);
+            std::copy(layerWeights.wk.data.begin(), layerWeights.wk.data.end(), wk_[layer].data());
+            
+            wv_[layer] = Tensor(layerWeights.wv.shape);
+            std::copy(layerWeights.wv.data.begin(), layerWeights.wv.data.end(), wv_[layer].data());
+            
+            wo_[layer] = Tensor(layerWeights.wo.shape);
+            std::copy(layerWeights.wo.data.begin(), layerWeights.wo.data.end(), wo_[layer].data());
+            
+            // FFN权重
+            wGate_[layer] = Tensor(layerWeights.wGate.shape);
+            std::copy(layerWeights.wGate.data.begin(), layerWeights.wGate.data.end(), wGate_[layer].data());
+            
+            wUp_[layer] = Tensor(layerWeights.wUp.shape);
+            std::copy(layerWeights.wUp.data.begin(), layerWeights.wUp.data.end(), wUp_[layer].data());
+            
+            wDown_[layer] = Tensor(layerWeights.wDown.shape);
+            std::copy(layerWeights.wDown.data.begin(), layerWeights.wDown.data.end(), wDown_[layer].data());
+            
+            // Norm权重
+            norm1_[layer] = Tensor(layerWeights.norm1.shape);
+            std::copy(layerWeights.norm1.data.begin(), layerWeights.norm1.data.end(), norm1_[layer].data());
+            
+            norm2_[layer] = Tensor(layerWeights.norm2.shape);
+            std::copy(layerWeights.norm2.data.begin(), layerWeights.norm2.data.end(), norm2_[layer].data());
+        }
+        
+        // 绑定权重到模型
+        bindWeightsToModel();
+        
+        CLLM_INFO("[KylinBackend] Successfully loaded weights from ModelWeights");
+        return true;
+    } catch (const std::exception &e) {
+        CLLM_ERROR("[KylinBackend] Failed to load weights from ModelWeights: %s", e.what());
+        return false;
+    }
 }
 
 } // namespace inference
