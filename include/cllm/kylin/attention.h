@@ -7,6 +7,7 @@
 #include "cllm/kylin/tensor.h"
 #include "cllm/kylin/kernels.h"
 #include "cllm/kylin/rope.h"
+#include <memory>
 
 namespace cllm {
 namespace kylin {
@@ -41,13 +42,14 @@ private:
     size_t hiddenSize_;
     size_t numHeads_;
     size_t headDim_;
+    mutable size_t numKVHeads_;  // 从权重形状推断，mutable 因为可能在 const 函数中修改
 
     const Tensor* wq_;
     const Tensor* wk_;
     const Tensor* wv_;
     const Tensor* wo_;
 
-    RoPE rope_;
+    mutable std::unique_ptr<RoPE> rope_;  // 延迟初始化，根据实际的qHeadDim创建
 };
 
 }  // namespace kylin

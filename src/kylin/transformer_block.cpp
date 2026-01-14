@@ -5,6 +5,8 @@
 
 #include "cllm/kylin/transformer_block.h"
 
+#include "cllm/common/logger.h"
+
 #include <stdexcept>
 
 namespace cllm {
@@ -50,6 +52,8 @@ void TransformerBlock::setNormWeights(
 }
 
 Tensor TransformerBlock::forward(const Tensor& input) const {
+    CLLM_INFO("TransformerBlock::forward: 开始执行");
+    
     if (!norm1Weight_ || !norm2Weight_) {
         throw std::runtime_error("TransformerBlock norm weights not set");
     }
@@ -66,32 +70,47 @@ Tensor TransformerBlock::forward(const Tensor& input) const {
         throw std::invalid_argument("TransformerBlock: input hidden size mismatch");
     }
 
+    CLLM_INFO("TransformerBlock::forward: 输入形状 [batch=%zu, seqLen=%zu, hidden=%zu]", batch, seqLen, hidden);
+
     using namespace kernels;
 
     // 1. Pre-Norm + Attention
+    CLLM_INFO("TransformerBlock::forward: 开始第一层 RMSNorm");
     Tensor norm1({batch, seqLen, hiddenSize_});
     rmsnorm(input.data(), norm1.data(), norm1Weight_->data(), batch * seqLen, hiddenSize_, rmsEps_);
+    CLLM_INFO("TransformerBlock::forward: 第一层 RMSNorm 完成");
 
+    CLLM_INFO("TransformerBlock::forward: 开始 Attention 计算");
     Tensor attnOut = attention_.forwardNoKV(norm1);
+    CLLM_INFO("TransformerBlock::forward: Attention 计算完成");
 
     // 残差1: x1 = attnOut + input
+    CLLM_INFO("TransformerBlock::forward: 开始第一层残差连接");
     Tensor x1({batch, seqLen, hiddenSize_});
     for (size_t i = 0; i < batch * seqLen * hiddenSize_; ++i) {
         x1[i] = attnOut[i] + input[i];
     }
+    CLLM_INFO("TransformerBlock::forward: 第一层残差连接完成");
 
     // 2. Pre-Norm + FFN
+    CLLM_INFO("TransformerBlock::forward: 开始第二层 RMSNorm");
     Tensor norm2({batch, seqLen, hiddenSize_});
     rmsnorm(x1.data(), norm2.data(), norm2Weight_->data(), batch * seqLen, hiddenSize_, rmsEps_);
+    CLLM_INFO("TransformerBlock::forward: 第二层 RMSNorm 完成");
 
+    CLLM_INFO("TransformerBlock::forward: 开始 FFN 计算");
     Tensor ffnOut = ffn_.forward(norm2);
+    CLLM_INFO("TransformerBlock::forward: FFN 计算完成");
 
     // 残差2: out = ffnOut + x1
+    CLLM_INFO("TransformerBlock::forward: 开始第二层残差连接");
     Tensor output({batch, seqLen, hiddenSize_});
     for (size_t i = 0; i < batch * seqLen * hiddenSize_; ++i) {
         output[i] = ffnOut[i] + x1[i];
     }
+    CLLM_INFO("TransformerBlock::forward: 第二层残差连接完成");
 
+    CLLM_INFO("TransformerBlock::forward: 执行完成");
     return output;
 }
 

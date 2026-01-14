@@ -198,6 +198,7 @@ add_library(cllm_core
     src/model/gguf_loader_new.cpp
     src/model/gguf_dequantization.cpp
     src/kylin/kernels.cpp
+    src/kylin/quantization.cpp
     src/kylin/rope.cpp
     src/kylin/attention.cpp
     src/kylin/feed_forward.cpp
@@ -294,6 +295,18 @@ if(BUILD_TESTS)
         cllm_core
         Threads::Threads
     )
+    
+    # Kylin引擎GGUF Q4_K_M推理测试
+    add_executable(test_kylin_gguf_q4k
+        tests/test_kylin_gguf_q4k.cpp
+    )
+    target_link_libraries(test_kylin_gguf_q4k
+        cllm_core
+        gtest
+        gtest_main
+        Threads::Threads
+    )
+    add_test(NAME KylinGGUFQ4KTest COMMAND test_kylin_gguf_q4k)
     
     # 加载Qwen模型的测试程序
     add_executable(load_qwen_model

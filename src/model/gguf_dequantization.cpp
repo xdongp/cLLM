@@ -487,12 +487,8 @@ void dequantizeQ5KMF32AVX2(const void* input, float* output, const std::vector<s
 
 // Q5_K_M到F32的反量化（主入口）
 void dequantizeQ5KMF32(const void* input, float* output, const std::vector<size_t>& shape) {
-    // 根据可用的SIMD指令集选择最佳实现
-#ifdef __AVX2__
-    dequantizeQ5KMF32AVX2(input, output, shape);
-#else
+    // 强制使用标量实现（修复MacOS上的AVX2问题）
     dequantizeQ5KMF32Scalar(input, output, shape);
-#endif
 }
 
 // 通用反量化接口

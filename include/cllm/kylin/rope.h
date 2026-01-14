@@ -31,6 +31,10 @@ public:
      */
     void apply(Tensor& q, Tensor& k, size_t seqLen, size_t posOffset = 0) const;
 
+    /**
+     * @brief 获取每个头的维度
+     */
+    size_t getDimPerHead() const { return dimPerHead_; }
 
 private:
     size_t dimPerHead_;

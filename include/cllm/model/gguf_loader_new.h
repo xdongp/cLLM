@@ -76,7 +76,8 @@ enum class GGUFValueType : uint32_t {
     ARRAY    = 9,
     UINT64   = 10,
     INT64    = 11,
-    FLOAT64  = 12
+    FLOAT64  = 12,
+    COUNT    = 13  // 用于范围检查
 };
 
 // GGUF文件头结构

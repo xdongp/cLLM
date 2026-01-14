@@ -1,4 +1,5 @@
 #include "cllm/kylin/model_loader.h"
+#include "cllm/model/gguf_loader_new.h"
 #include "cllm/common/json.h"
 #include "cllm/common/logger.h"
 
@@ -6,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <filesystem>
 
 namespace cllm {
 namespace kylin {
@@ -17,9 +19,48 @@ ModelLoader::ModelLoader(const std::string &modelPath, const ModelConfig &config
     , dtype_(WeightDType::FP32)
     , int8Scale_(1.0f)
     , actualQProjDim_(0)
-    , actualKVProjDim_(0) {}
+    , actualKVProjDim_(0)
+    , ggufLoader_(nullptr)
+    , isGGUFFormat_(false) {}
+
+bool ModelLoader::detectGGUFFormat() const {
+    // 检查文件扩展名
+    std::filesystem::path path(modelPath_);
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    
+    if (ext == ".gguf") {
+        return true;
+    }
+    
+    // 检查文件头（魔数）
+    std::ifstream file(modelPath_, std::ios::binary);
+    if (!file.is_open()) {
+        CLLM_DEBUG("ModelLoader: failed to open file for GGUF detection: %s", modelPath_.c_str());
+        return false;
+    }
+    
+    uint32_t magic = 0;
+    if (!file.read(reinterpret_cast<char*>(&magic), sizeof(magic)) || 
+        file.gcount() != sizeof(magic)) {
+        CLLM_DEBUG("ModelLoader: failed to read magic number from file: %s", modelPath_.c_str());
+        file.close();
+        return false;
+    }
+    file.close();
+    
+    // GGUF魔数: 0x46554747 ("GGUF")
+    return (magic == 0x46554747);
+}
 
 WeightDType ModelLoader::detectDType() const {
+    // 先检查是否为GGUF格式
+    if (detectGGUFFormat()) {
+        // GGUF格式需要加载后才能确定具体量化类型
+        // 这里先返回一个占位符，实际类型在loadGGUF中确定
+        return WeightDType::GGUF_F32;  // 默认，实际会在loadGGUF中更新
+    }
+    
     if (modelPath_.find("fp16") != std::string::npos) {
         return WeightDType::FP16;
     }
@@ -125,6 +166,14 @@ bool ModelLoader::load() {
         return true;
     }
 
+    // 检测格式
+    isGGUFFormat_ = detectGGUFFormat();
+    
+    if (isGGUFFormat_) {
+        CLLM_INFO("ModelLoader: detected GGUF format");
+        return loadGGUF();
+    }
+
     dtype_ = detectDType();
     CLLM_INFO("ModelLoader: detected dtype=%s", 
               (dtype_ == WeightDType::FP32 ? "fp32" :
@@ -135,6 +184,36 @@ bool ModelLoader::load() {
     }
 
     return loadBinaryFile();
+}
+
+bool ModelLoader::loadGGUF() {
+    try {
+        // 创建GGUF加载器
+        ggufLoader_ = std::make_unique<GGUFLoader>(modelPath_, true, true);
+        
+        // 加载GGUF文件
+        if (!ggufLoader_->load()) {
+            CLLM_ERROR("ModelLoader: failed to load GGUF file");
+            return false;
+        }
+        
+        // 更新配置
+        config_ = ggufLoader_->getConfig();
+        
+        // 检测量化类型（通过检查张量类型）
+        // 这里简化处理，实际应该检查所有权重张量的类型
+        dtype_ = WeightDType::GGUF_F32;  // 默认，实际使用时会根据张量类型判断
+        
+        CLLM_INFO("ModelLoader: GGUF model loaded successfully");
+        CLLM_INFO("  - Vocab size: %zu", config_.vocabSize);
+        CLLM_INFO("  - Hidden size: %zu", config_.hiddenSize);
+        CLLM_INFO("  - Num layers: %zu", config_.numLayers);
+        
+        return true;
+    } catch (const std::exception& e) {
+        CLLM_ERROR("ModelLoader: exception while loading GGUF: %s", e.what());
+        return false;
+    }
 }
 
 bool ModelLoader::loadBinaryFile() {
@@ -234,6 +313,16 @@ bool ModelLoader::loadInto(
     Tensor &finalNorm,
     Tensor &lmHead
 ) const {
+    // 如果是GGUF格式，使用GGUFLoader的loadInto方法
+    if (isGGUFFormat_ && ggufLoader_) {
+        return ggufLoader_->loadInto(
+            embedding, wq, wk, wv, wo,
+            wGate, wUp, wDown,
+            norm1, norm2,
+            finalNorm, lmHead
+        );
+    }
+    
     if (weights_.empty()) {
         CLLM_ERROR("ModelLoader::loadInto called before load()");
         return false;

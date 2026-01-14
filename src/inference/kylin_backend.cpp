@@ -8,6 +8,7 @@
 #include "cllm/common/logger.h"
 
 #include <stdexcept>
+#include <cmath>
 
 namespace cllm {
 namespace inference {
@@ -21,6 +22,34 @@ inline void fill_tensor_with_pattern(kylin::Tensor &tensor, float scale) {
         // 使用一个简单位移后的周期模式，保证数值稳定且非零
         float v = static_cast<float>((i % 31) - 15);
         tensor[i] = v * scale;
+    }
+}
+
+// Xavier/Glorot 初始化：适用于线性层权重
+// 对于形状为 [fan_in, fan_out] 的权重，使用 scale = sqrt(2.0 / (fan_in + fan_out))
+inline void xavier_init(kylin::Tensor &tensor, size_t fan_in, size_t fan_out) {
+    const size_t n = tensor.size();
+    if (n == 0) return;
+    
+    // 使用简化的Xavier初始化：scale = sqrt(2.0 / (fan_in + fan_out))
+    float scale = std::sqrt(2.0f / static_cast<float>(fan_in + fan_out));
+    
+    // 使用正态分布的近似：Box-Muller变换的简化版本
+    // 为了简单，使用均匀分布乘以scale，然后添加小的随机偏移
+    for (size_t i = 0; i < n; ++i) {
+        // 使用周期模式模拟均匀分布 [-1, 1]
+        float u = static_cast<float>((i % 100) - 50) / 50.0f;
+        tensor[i] = u * scale;
+    }
+}
+
+// 小值初始化：适用于embedding和某些特殊层
+inline void small_value_init(kylin::Tensor &tensor, float scale = 0.1f) {
+    const size_t n = tensor.size();
+    for (size_t i = 0; i < n; ++i) {
+        // 使用小的均匀分布值
+        float v = static_cast<float>((i % 21) - 10) / 100.0f * scale;
+        tensor[i] = v;
     }
 }
 
@@ -129,7 +158,17 @@ bool KylinBackend::initialize() {
     }
 
     // 3. 绑定权重到模型
+    CLLM_INFO("[KylinBackend] About to call bindWeightsToModel()...");
+    try {
     bindWeightsToModel();
+    } catch (const std::exception& e) {
+        CLLM_ERROR("[KylinBackend] Exception in bindWeightsToModel(): %s", e.what());
+        throw;
+    } catch (...) {
+        CLLM_ERROR("[KylinBackend] Unknown exception in bindWeightsToModel()");
+        throw;
+    }
+    CLLM_INFO("[KylinBackend] bindWeightsToModel() completed successfully");
 
     initialized_ = true;
     CLLM_INFO("[KylinBackend] Initialization completed successfully");
@@ -162,6 +201,7 @@ bool KylinBackend::loadRealWeights() {
     norm1_.resize(numLayers);
     norm2_.resize(numLayers);
 
+    CLLM_INFO("[KylinBackend] Calling loadInto to map weights...");
     if (!loader_->loadInto(
             embedding_,
             wq_, wk_, wv_, wo_,
@@ -174,30 +214,84 @@ bool KylinBackend::loadRealWeights() {
     }
 
     CLLM_INFO("[KylinBackend] Real weights loaded successfully");
+    CLLM_INFO("[KylinBackend] Weight containers: wq_.size()=%zu, embedding_.shape().size()=%zu",
+             wq_.size(), embedding_.shape().size());
     return true;
 }
 
 void KylinBackend::initializePlaceholderWeights() {
     CLLM_INFO("[KylinBackend] Initializing placeholder weights...");
 
-    const float baseScale = 0.01f;
     const size_t numLayers = internalConfig_.numLayers;
+    const size_t hidden = internalConfig_.hiddenSize;
+    const size_t inter = internalConfig_.intermediateSize;
+    const size_t vocab = internalConfig_.vocabSize;
 
-    // Embedding 和 LM Head
-    fill_tensor_with_pattern(embedding_, baseScale);
-    fill_tensor_with_pattern(lmHead_, baseScale);
-    fill_tensor_with_pattern(finalNormWeight_, 1.0f);
+    // Embedding: 使用小值初始化
+    // embedding_: [vocab, hidden]
+    small_value_init(embedding_, 0.1f);
+    
+    // LM Head: 使用Xavier初始化
+    // lmHead_: [hidden, vocab]
+    xavier_init(lmHead_, hidden, vocab);
+    
+    // Final norm: 初始化为1
+    finalNormWeight_.fill(1.0f);
 
-    // 每层权重
+    // 每层权重：使用Xavier初始化以获得更好的数值稳定性
     for (size_t layer = 0; layer < numLayers; ++layer) {
-        fill_tensor_with_pattern(wq_[layer], baseScale);
-        fill_tensor_with_pattern(wk_[layer], baseScale);
-        fill_tensor_with_pattern(wv_[layer], baseScale);
-        fill_tensor_with_pattern(wo_[layer], baseScale);
+        // Attention权重: [hidden, hidden] 或 [hidden, qDim/kvDim]
+        const auto& wqShape = wq_[layer].shape();
+        const auto& wkShape = wk_[layer].shape();
+        const auto& wvShape = wv_[layer].shape();
+        const auto& woShape = wo_[layer].shape();
+        
+        if (wqShape.size() == 2) {
+            xavier_init(wq_[layer], wqShape[0], wqShape[1]);
+        } else {
+            fill_tensor_with_pattern(wq_[layer], 0.1f);
+        }
+        
+        if (wkShape.size() == 2) {
+            xavier_init(wk_[layer], wkShape[0], wkShape[1]);
+        } else {
+            fill_tensor_with_pattern(wk_[layer], 0.1f);
+        }
+        
+        if (wvShape.size() == 2) {
+            xavier_init(wv_[layer], wvShape[0], wvShape[1]);
+        } else {
+            fill_tensor_with_pattern(wv_[layer], 0.1f);
+        }
+        
+        if (woShape.size() == 2) {
+            xavier_init(wo_[layer], woShape[0], woShape[1]);
+        } else {
+            fill_tensor_with_pattern(wo_[layer], 0.1f);
+        }
 
-        fill_tensor_with_pattern(wGate_[layer], baseScale);
-        fill_tensor_with_pattern(wUp_[layer], baseScale);
-        fill_tensor_with_pattern(wDown_[layer], baseScale);
+        // FFN权重: [hidden, inter] 或 [inter, hidden]
+        const auto& wGateShape = wGate_[layer].shape();
+        const auto& wUpShape = wUp_[layer].shape();
+        const auto& wDownShape = wDown_[layer].shape();
+        
+        if (wGateShape.size() == 2) {
+            xavier_init(wGate_[layer], wGateShape[0], wGateShape[1]);
+        } else {
+            fill_tensor_with_pattern(wGate_[layer], 0.1f);
+        }
+        
+        if (wUpShape.size() == 2) {
+            xavier_init(wUp_[layer], wUpShape[0], wUpShape[1]);
+        } else {
+            fill_tensor_with_pattern(wUp_[layer], 0.1f);
+        }
+        
+        if (wDownShape.size() == 2) {
+            xavier_init(wDown_[layer], wDownShape[0], wDownShape[1]);
+        } else {
+            fill_tensor_with_pattern(wDown_[layer], 0.1f);
+        }
 
         // RMSNorm 权重初始化为 1
         norm1_[layer].fill(1.0f);
@@ -208,7 +302,135 @@ void KylinBackend::initializePlaceholderWeights() {
 }
 
 void KylinBackend::bindWeightsToModel() {
+    CLLM_INFO("[KylinBackend] ===== bindWeightsToModel() START =====");
     CLLM_INFO("[KylinBackend] Binding weights to TransformerModel...");
+
+    // 验证权重形状
+    CLLM_INFO("[KylinBackend] Getting config values...");
+    const size_t hidden = internalConfig_.hiddenSize;
+    const size_t vocab = internalConfig_.vocabSize;
+    const size_t numLayers = internalConfig_.numLayers;
+    const size_t numHeads = internalConfig_.numAttentionHeads;
+    
+    if (numHeads == 0) {
+        CLLM_ERROR("[KylinBackend] numHeads is 0!");
+        throw std::runtime_error("numHeads is 0");
+    }
+    
+    // 从实际权重形状推断 qDim、kvDim 和 inter（支持 GQA 和不同的 FFN 配置）
+    // 默认值：假设 Q 和 KV 维度相同
+    size_t qDim = hidden;
+    size_t kvDim = hidden;
+    size_t inter = internalConfig_.intermediateSize;
+    
+    // 从第一层的权重形状推断
+    if (numLayers > 0 && wq_[0].shape().size() == 2) {
+        qDim = wq_[0].shape()[1];  // wq: [hidden, qDim]
+        CLLM_INFO("[KylinBackend] 从wq形状推断qDim: %zu", qDim);
+    }
+    if (numLayers > 0 && wk_[0].shape().size() == 2) {
+        kvDim = wk_[0].shape()[1];  // wk: [hidden, kvDim]
+        CLLM_INFO("[KylinBackend] 从wk形状推断kvDim: %zu", kvDim);
+    }
+    // 从第一层的 FFN 权重形状推断 intermediateSize
+    if (numLayers > 0 && wGate_[0].shape().size() == 2) {
+        inter = wGate_[0].shape()[1];  // wGate: [hidden, inter]
+        CLLM_INFO("[KylinBackend] 从wGate形状推断intermediateSize: %zu", inter);
+        // 更新配置，以便后续使用
+        internalConfig_.intermediateSize = inter;
+    }
+    
+    const size_t headDim = hidden / numHeads;
+    
+    CLLM_INFO("[KylinBackend] 验证权重形状: hidden=%zu, vocab=%zu, numLayers=%zu, numHeads=%zu, headDim=%zu, qDim=%zu, kvDim=%zu, inter=%zu",
+             hidden, vocab, numLayers, numHeads, headDim, qDim, kvDim, inter);
+    
+    if (hidden == 0 || vocab == 0 || numLayers == 0 || inter == 0) {
+        CLLM_ERROR("[KylinBackend] Invalid config values!");
+        throw std::runtime_error("Invalid config values");
+    }
+    
+    // 验证embedding形状
+    if (embedding_.shape().size() != 2) {
+        CLLM_ERROR("[KylinBackend] Embedding shape invalid: expected 2D, got %zuD", embedding_.shape().size());
+        throw std::runtime_error("Embedding shape mismatch");
+    }
+    if (embedding_.shape()[0] != vocab || embedding_.shape()[1] != hidden) {
+        CLLM_ERROR("[KylinBackend] Embedding shape mismatch: expected [%zu, %zu], got [%zu, %zu]",
+                  vocab, hidden, embedding_.shape()[0], embedding_.shape()[1]);
+        throw std::runtime_error("Embedding shape mismatch");
+    }
+    CLLM_INFO("[KylinBackend] Embedding shape: [%zu, %zu] ✓", embedding_.shape()[0], embedding_.shape()[1]);
+    
+    // 验证lmHead形状
+    if (lmHead_.shape().size() != 2) {
+        CLLM_ERROR("[KylinBackend] LMHead shape invalid: expected 2D, got %zuD", lmHead_.shape().size());
+        throw std::runtime_error("LMHead shape mismatch");
+    }
+    if (lmHead_.shape()[0] != hidden || lmHead_.shape()[1] != vocab) {
+        CLLM_ERROR("[KylinBackend] LMHead shape mismatch: expected [%zu, %zu], got [%zu, %zu]",
+                  hidden, vocab, lmHead_.shape()[0], lmHead_.shape()[1]);
+        throw std::runtime_error("LMHead shape mismatch");
+    }
+    CLLM_INFO("[KylinBackend] LMHead shape: [%zu, %zu] ✓", lmHead_.shape()[0], lmHead_.shape()[1]);
+    
+    // 验证层权重形状
+    for (size_t layer = 0; layer < numLayers; ++layer) {
+        if (wq_[layer].shape().size() != 2) {
+            CLLM_ERROR("[KylinBackend] Layer %zu wq shape invalid: expected 2D", layer);
+            throw std::runtime_error("Layer weight shape mismatch");
+        }
+        
+        // 验证wq形状: 期望 [hidden, qDim]
+        if (wq_[layer].shape()[0] != hidden || wq_[layer].shape()[1] != qDim) {
+            CLLM_ERROR("[KylinBackend] Layer %zu wq shape mismatch: expected [%zu, %zu], got [%zu, %zu]",
+                      layer, hidden, qDim, wq_[layer].shape()[0], wq_[layer].shape()[1]);
+            throw std::runtime_error("Layer wq shape mismatch");
+        }
+        
+        // 验证wk/wv形状: 期望 [hidden, kvDim] (支持GQA，KV维度可能不同于Q)
+        if (wk_[layer].shape()[0] != hidden || wk_[layer].shape()[1] != kvDim) {
+            CLLM_ERROR("[KylinBackend] Layer %zu wk shape mismatch: expected [%zu, %zu], got [%zu, %zu]",
+                      layer, hidden, kvDim, wk_[layer].shape()[0], wk_[layer].shape()[1]);
+            throw std::runtime_error("Layer wk shape mismatch");
+        }
+        if (wv_[layer].shape()[0] != hidden || wv_[layer].shape()[1] != kvDim) {
+            CLLM_ERROR("[KylinBackend] Layer %zu wv shape mismatch: expected [%zu, %zu], got [%zu, %zu]",
+                      layer, hidden, kvDim, wv_[layer].shape()[0], wv_[layer].shape()[1]);
+            throw std::runtime_error("Layer wv shape mismatch");
+        }
+        
+        // 验证wo形状: 期望 [qDim, hidden]
+        if (wo_[layer].shape()[0] != qDim || wo_[layer].shape()[1] != hidden) {
+            CLLM_ERROR("[KylinBackend] Layer %zu wo shape mismatch: expected [%zu, %zu], got [%zu, %zu]",
+                      layer, qDim, hidden, wo_[layer].shape()[0], wo_[layer].shape()[1]);
+            throw std::runtime_error("Layer wo shape mismatch");
+        }
+        
+        // 验证FFN权重形状
+        if (wGate_[layer].shape()[0] != hidden || wGate_[layer].shape()[1] != inter) {
+            CLLM_ERROR("[KylinBackend] Layer %zu wGate shape mismatch: expected [%zu, %zu], got [%zu, %zu]",
+                      layer, hidden, inter, wGate_[layer].shape()[0], wGate_[layer].shape()[1]);
+            throw std::runtime_error("Layer wGate shape mismatch");
+        }
+        if (wUp_[layer].shape()[0] != hidden || wUp_[layer].shape()[1] != inter) {
+            CLLM_ERROR("[KylinBackend] Layer %zu wUp shape mismatch: expected [%zu, %zu], got [%zu, %zu]",
+                      layer, hidden, inter, wUp_[layer].shape()[0], wUp_[layer].shape()[1]);
+            throw std::runtime_error("Layer wUp shape mismatch");
+        }
+        if (wDown_[layer].shape()[0] != inter || wDown_[layer].shape()[1] != hidden) {
+            CLLM_ERROR("[KylinBackend] Layer %zu wDown shape mismatch: expected [%zu, %zu], got [%zu, %zu]",
+                      layer, inter, hidden, wDown_[layer].shape()[0], wDown_[layer].shape()[1]);
+            throw std::runtime_error("Layer wDown shape mismatch");
+        }
+        
+        CLLM_DEBUG("[KylinBackend] Layer %zu: wq[%zu, %zu], wk[%zu, %zu], wv[%zu, %zu], wo[%zu, %zu] ✓",
+                   layer,
+                   wq_[layer].shape()[0], wq_[layer].shape()[1],
+                   wk_[layer].shape()[0], wk_[layer].shape()[1],
+                   wv_[layer].shape()[0], wv_[layer].shape()[1],
+                   wo_[layer].shape()[0], wo_[layer].shape()[1]);
+    }
 
     // 重建模型（使用当前配置）
     model_ = kylin::TransformerModel(internalConfig_);
@@ -218,7 +440,6 @@ void KylinBackend::bindWeightsToModel() {
     model_.setLmHeadWeight(lmHead_);
 
     // 绑定每层权重
-    const size_t numLayers = internalConfig_.numLayers;
     for (size_t layer = 0; layer < numLayers; ++layer) {
         model_.setBlockWeights(
             layer,

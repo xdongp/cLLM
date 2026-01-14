@@ -13,9 +13,15 @@
 
 #include <string>
 #include <vector>
+#include <memory>
 
 #include "cllm/model/config.h"
 #include "cllm/kylin/tensor.h"
+
+// 前向声明
+namespace cllm {
+    class GGUFLoader;
+}
 
 namespace cllm {
 namespace kylin {
@@ -23,7 +29,13 @@ namespace kylin {
 enum class WeightDType {
     FP32,
     FP16,
-    INT8
+    INT8,
+    GGUF_Q4_K,  // GGUF格式，Q4_K量化
+    GGUF_Q5_K,  // GGUF格式，Q5_K量化
+    GGUF_Q6_K,  // GGUF格式，Q6_K量化
+    GGUF_Q8_0,  // GGUF格式，Q8_0量化
+    GGUF_F16,   // GGUF格式，FP16
+    GGUF_F32    // GGUF格式，FP32
 };
 
 class ModelLoader {
@@ -88,10 +100,16 @@ private:
     // 实际投影维度（从 .json 元数据加载，如果为 0 则使用 config_ 推导）
     size_t actualQProjDim_;
     size_t actualKVProjDim_;
+    
+    // GGUF支持
+    std::unique_ptr<GGUFLoader> ggufLoader_;  // GGUF加载器（如果使用GGUF格式）
+    bool isGGUFFormat_;  // 是否为GGUF格式
 
     bool loadBinaryFile();
     bool loadMetadata();  // 加载 .json 元数据（如 int8 scale 和实际投影维度）
     WeightDType detectDType() const;  // 根据文件扩展名推导 dtype
+    bool detectGGUFFormat() const;  // 检测是否为GGUF格式
+    bool loadGGUF();  // 加载GGUF格式模型
 };
 
 } // namespace kylin
