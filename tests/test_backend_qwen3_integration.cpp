@@ -132,7 +132,7 @@ TEST_F(BackendQwen3IntegrationTest, LongRunningStability) {
         // 每10次迭代检查一次内存
         if (i % 10 == 0) {
             // 暂时注释掉内存使用检查和日志，因为没有包含相应的头文件
-            // CLLM_INFO("Iteration {} completed", i);
+            // CLLM_INFO("Iteration %d completed", i);
             std::cout << "Iteration " << i << " completed" << std::endl;
         }
         

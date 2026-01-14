@@ -436,7 +436,45 @@ private:
     // 读取GGUF字符串（包含长度前缀）
     std::string readString() {
         // GGUF格式中，字符串的长度前缀是uint64_t类型
-        uint64_t length = readValue<uint64_t>();
+        uint64_t length;
+        
+        // 直接读取原始字节，手动处理字节序
+        uint8_t length_bytes[8];
+        if (useMemoryMap_) {
+            if (currentPosition_ + 8 > fileSize_) {
+                throw std::runtime_error("文件太小，无法读取字符串长度");
+            }
+            memcpy(length_bytes, static_cast<uint8_t*>(mappedMemory_) + currentPosition_, 8);
+            currentPosition_ += 8;
+        } else {
+            if (fread(length_bytes, 1, 8, file_) != 8) {
+                throw std::runtime_error("无法读取字符串长度");
+            }
+            currentPosition_ += 8;
+        }
+        
+        // 根据字节序转换长度
+        if (needByteOrderSwap_) {
+            // 大端到小端转换
+            length = (static_cast<uint64_t>(length_bytes[0]) << 56) |
+                    (static_cast<uint64_t>(length_bytes[1]) << 48) |
+                    (static_cast<uint64_t>(length_bytes[2]) << 40) |
+                    (static_cast<uint64_t>(length_bytes[3]) << 32) |
+                    (static_cast<uint64_t>(length_bytes[4]) << 24) |
+                    (static_cast<uint64_t>(length_bytes[5]) << 16) |
+                    (static_cast<uint64_t>(length_bytes[6]) << 8) |
+                    (static_cast<uint64_t>(length_bytes[7]) << 0);
+        } else {
+            // 小端直接转换（第一个字节是最低有效位）
+            length = (static_cast<uint64_t>(length_bytes[0]) << 0) |
+                    (static_cast<uint64_t>(length_bytes[1]) << 8) |
+                    (static_cast<uint64_t>(length_bytes[2]) << 16) |
+                    (static_cast<uint64_t>(length_bytes[3]) << 24) |
+                    (static_cast<uint64_t>(length_bytes[4]) << 32) |
+                    (static_cast<uint64_t>(length_bytes[5]) << 40) |
+                    (static_cast<uint64_t>(length_bytes[6]) << 48) |
+                    (static_cast<uint64_t>(length_bytes[7]) << 56);
+        }
         
         // 验证字符串长度是否合理，防止恶意文件或损坏文件导致内存分配过大
         // 设置合理的上限：1MB，对于键名和元数据字符串来说已经足够大

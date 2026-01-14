@@ -79,12 +79,12 @@ bool GGUFLoader::load() {
         parseMetadata(header.metadataCount);
         CLLM_INFO("元数据解析完成，共 %zu 项", metadata_.size());
         
-        // 提取模型配置
-        extractModelConfig();
-        
-        // 解析张量信息
+        // 解析张量信息（在提取配置之前，以便可以从张量信息推断vocab_size等参数）
         parseTensorInfos(header.tensorCount);
         CLLM_INFO("张量信息解析完成，共 %zu 个张量", tensorInfos_.size());
+        
+        // 提取模型配置
+        extractModelConfig();
         
         return true;
     } catch (const std::exception& e) {
@@ -347,49 +347,154 @@ kylin::WeightDType GGUFLoader::getDType() const {
 GGUFHeader GGUFLoader::parseHeader() {
     GGUFHeader header;
     
-    // 读取文件头
-    readValues(&header.magic, 1);
+    // 先读取原始魔数字节
+    uint8_t magic_bytes[4];
+    if (useMemoryMap_) {
+        if (currentPosition_ + 4 > fileSize_) {
+            throw std::runtime_error("文件太小，无法读取魔数");
+        }
+        memcpy(magic_bytes, static_cast<uint8_t*>(mappedMemory_) + currentPosition_, 4);
+        currentPosition_ += 4;
+    } else {
+        if (fread(magic_bytes, 1, 4, file_) != 4) {
+            throw std::runtime_error("无法读取魔数");
+        }
+        currentPosition_ += 4;
+    }
     
-    // 验证魔数
-    if (header.magic != 0x46554747) { // 'GGUF'
-        throw std::runtime_error("无效的GGUF文件格式: 魔数不匹配");
+    // 检查魔数的字节序（参考llama.cpp的实现）
+    // GGUF魔数：'GGUF' = 字节序列 0x47 0x47 0x55 0x46
+    // 小端格式：按字节顺序存储，读取为uint32_t时是 0x46554747
+    // 大端格式：按字节顺序存储，读取为uint32_t时是 0x47554746
+    const uint32_t GGUF_MAGIC_LE = 0x46554747; // 'GGUF' in little-endian
+    
+    // 直接比较字节序列（不依赖字节序解释）
+    // 'GGUF' = 0x47 0x47 0x55 0x46
+    bool isValidMagic = (magic_bytes[0] == 0x47 && magic_bytes[1] == 0x47 && 
+                         magic_bytes[2] == 0x55 && magic_bytes[3] == 0x46);
+    
+    if (isValidMagic) {
+        // 文件是小端字节序（标准格式）
+        needByteOrderSwap_ = !isSystemLittleEndian();
+        header.magic = GGUF_MAGIC_LE;
+        CLLM_INFO("检测到GGUF文件（小端格式）");
+    } else {
+        // 检查是否是大端格式（GGUF v3支持）
+        // 大端格式：字节顺序相反 0x46 0x55 0x47 0x47
+        bool isBigEndianMagic = (magic_bytes[0] == 0x46 && magic_bytes[1] == 0x55 && 
+                                 magic_bytes[2] == 0x47 && magic_bytes[3] == 0x47);
+        if (isBigEndianMagic) {
+            // 文件是大端字节序（GGUF v3支持）
+            needByteOrderSwap_ = isSystemLittleEndian();
+            header.magic = GGUF_MAGIC_LE; // 统一存储为小端格式
+            CLLM_INFO("检测到大端字节序GGUF文件（需要字节序转换）");
+        } else {
+            // 魔数不匹配 - 打印实际读取的魔数用于调试
+            char c0 = std::isprint(magic_bytes[0]) ? magic_bytes[0] : '?';
+            char c1 = std::isprint(magic_bytes[1]) ? magic_bytes[1] : '?';
+            char c2 = std::isprint(magic_bytes[2]) ? magic_bytes[2] : '?';
+            char c3 = std::isprint(magic_bytes[3]) ? magic_bytes[3] : '?';
+            throw std::runtime_error(std::string("无效的GGUF文件格式: 魔数不匹配, 读取到 '") + 
+                                   c0 + c1 + c2 + c3 + "' (0x" + 
+                                   std::to_string(static_cast<unsigned>(magic_bytes[0])) + 
+                                   std::to_string(static_cast<unsigned>(magic_bytes[1])) + 
+                                   std::to_string(static_cast<unsigned>(magic_bytes[2])) + 
+                                   std::to_string(static_cast<unsigned>(magic_bytes[3])) + 
+                                   "), 期望 'GGUF'");
+        }
     }
     
     // 读取版本号
     readValues(&header.version, 1);
     ggufVersion_ = header.version;
     
-    // GGUF版本3在版本号字段(uint32_t, 4字节)后有3个填充字节，使版本号字段对齐到8字节
-    // 必须在读取tensorCount之前处理填充字节
-    if (header.version == 3) {
-        // 检查边界
-        if (currentPosition_ + 3 > fileSize_) {
-            throw std::runtime_error("文件大小不足，无法跳过版本号填充字节: 位置 " + 
-                                   std::to_string(currentPosition_) + " + 3 > 文件大小 " + 
-                                   std::to_string(fileSize_));
-        }
-        
-        // 跳过3个填充字节
-        if (useMemoryMap_) {
-            currentPosition_ += 3;
-        } else {
-            if (fseek(file_, 3, SEEK_CUR) != 0) {
-                throw std::runtime_error("无法跳过版本号填充字节: fseek失败");
-            }
-            currentPosition_ += 3;
-        }
+    // 验证版本号 (参考llama.cpp的字节序检测逻辑)
+    if (header.version == 0) {
+        throw std::runtime_error("无效的GGUF版本号: 0");
     }
     
-    // 验证版本号
-    if (header.version != 3) {
-        CLLM_WARN("GGUF版本号 %u 与当前实现的版本 3 不匹配，可能会导致兼容性问题", header.version);
+    // 检测字节序不匹配: 如果版本号的低16位为0，说明字节序可能不匹配
+    // 例如版本3 (0x00000003) 在大端系统上读取为 (0x03000000)
+    if ((header.version & 0x0000FFFF) == 0x00000000) {
+        throw std::runtime_error("GGUF文件版本号 " + std::to_string(header.version) + 
+                               " 异常大，可能存在主机与模型字节序不匹配的问题");
     }
     
-    // 读取张量数量和元数据数量（这些字段在版本3中是8字节对齐的）
+    // 检查版本号是否支持
+    if (header.version == 1) {
+        throw std::runtime_error("GGUFv1不再被支持，请使用更新的版本");
+    }
+    if (header.version > 3) {
+        CLLM_WARN("GGUF版本号 %u 高于当前支持的版本 3，可能存在兼容性问题", header.version);
+    }
+    
+    // 读取张量数量和元数据数量
     readValues(&header.tensorCount, 1);
     readValues(&header.metadataCount, 1);
     
+    // 验证张量数量和元数据数量的合理性
+    const uint64_t MAX_TENSORS = SIZE_MAX / sizeof(GGULTensorInfo);
+    const uint64_t MAX_METADATA = SIZE_MAX / sizeof(GGUFMetadata);
+    
+    if (header.tensorCount > MAX_TENSORS) {
+        throw std::runtime_error("张量数量 " + std::to_string(header.tensorCount) + 
+                               " 超过允许的最大值 " + std::to_string(MAX_TENSORS));
+    }
+    
+    if (header.metadataCount > MAX_METADATA) {
+        throw std::runtime_error("元数据数量 " + std::to_string(header.metadataCount) + 
+                               " 超过允许的最大值 " + std::to_string(MAX_METADATA));
+    }
+    
     return header;
+}
+
+// 验证元数据键是否符合GGUF规范
+// 规范要求：lower_snake_case，用.分隔，最多65535字节
+static bool validateMetadataKey(const std::string& key) {
+    if (key.empty()) {
+        return false;
+    }
+    
+    // 检查长度（最多65535字节，即2^16-1）
+    if (key.length() > 65535) {
+        return false;
+    }
+    
+    // 检查是否为ASCII字符串
+    for (char c : key) {
+        if (static_cast<unsigned char>(c) > 127) {
+            return false; // 非ASCII字符
+        }
+    }
+    
+    // 检查格式：lower_snake_case，用.分隔
+    // 允许：字母、数字、下划线、点号
+    // 不允许：大写字母、连续点号、开头/结尾点号
+    if (key[0] == '.' || key[key.length() - 1] == '.') {
+        return false;
+    }
+    
+    bool lastWasDot = false;
+    for (size_t i = 0; i < key.length(); ++i) {
+        char c = key[i];
+        if (c == '.') {
+            if (lastWasDot) {
+                return false; // 连续点号
+            }
+            lastWasDot = true;
+        } else if (c == '_') {
+            lastWasDot = false;
+        } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            lastWasDot = false;
+        } else if (c >= 'A' && c <= 'Z') {
+            return false; // 不允许大写字母
+        } else {
+            return false; // 不允许其他字符
+        }
+    }
+    
+    return true;
 }
 
 void GGUFLoader::parseMetadata(uint64_t metadataCount) {
@@ -401,40 +506,113 @@ void GGUFLoader::parseMetadata(uint64_t metadataCount) {
         
         try {
             // 读取键名
-            metadata.key = readString();
+            try {
+                metadata.key = readString();
+            } catch (const std::length_error& e) {
+                CLLM_ERROR("读取元数据键 %zu 时遇到length_error: %s", i, e.what());
+                throw;
+            } catch (const std::bad_alloc& e) {
+                CLLM_ERROR("读取元数据键 %zu 时遇到bad_alloc: %s", i, e.what());
+                throw;
+            }
+            
+            // 验证键名是否符合GGUF规范
+            if (!validateMetadataKey(metadata.key)) {
+                CLLM_WARN("元数据键 '%s' 不符合GGUF规范（应为lower_snake_case，用.分隔），将跳过", metadata.key.c_str());
+                setFilePosition(savedPosition);
+                continue;
+            }
+            
+            // 检查键名是否重复 (参考llama.cpp的实现)
+            for (const auto& [existingKey, existingMetadata] : metadata_) {
+                if (metadata.key == existingKey) {
+                    CLLM_ERROR("发现重复的元数据键 '%s' (位置 %zu)", metadata.key.c_str(), i);
+                    throw std::runtime_error("元数据键重复: " + metadata.key);
+                }
+            }
             
             // 读取值类型
             uint32_t valueTypeRaw = readValue<uint32_t>();
             
-            // 验证值类型是否在合理范围内
-            // 注意：GGUF规范可能会随着版本更新而添加新的类型
-            // 这里使用一个更宽松的检查，允许更多类型
-            if (valueTypeRaw > 30) { // 使用一个更宽松的上限
-                CLLM_WARN("元数据值类型超出常见范围: %u", valueTypeRaw);
-                // 不抛出异常，而是尝试跳过这个元数据项
-                // 恢复文件位置
+            // 验证值类型是否在有效范围内（参考GGUF规范）
+            if (valueTypeRaw >= static_cast<uint32_t>(GGUFValueType::COUNT)) {
+                CLLM_WARN("元数据值类型 %u 超出有效范围 [0, %u]，将跳过此元数据项", 
+                         valueTypeRaw, static_cast<uint32_t>(GGUFValueType::COUNT) - 1);
                 setFilePosition(savedPosition);
-                CLLM_WARN("已恢复文件位置到 %zu，跳过当前元数据项", savedPosition);
                 continue;
             }
             
             metadata.type = static_cast<GGUFValueType>(valueTypeRaw);
             
-            // 读取值
-            try {
-                readMetadataValue(metadata);
-            } catch (const std::exception& e) {
-                CLLM_WARN("读取元数据值失败: %s，将跳过此元数据项", e.what());
-                // 恢复文件位置
-                setFilePosition(savedPosition);
-                CLLM_WARN("已恢复文件位置到 %zu，跳过当前元数据项", savedPosition);
-                continue;
+            // 处理数组类型：需要先读取数组元素类型和长度
+            bool isArray = false;
+            uint64_t arrayElementCount = 1;
+            if (metadata.type == GGUFValueType::ARRAY) {
+                isArray = true;
+                // 读取数组元素类型
+                uint32_t arrayElementTypeRaw = readValue<uint32_t>();
+                if (arrayElementTypeRaw >= static_cast<uint32_t>(GGUFValueType::COUNT)) {
+                    CLLM_WARN("数组元素类型 %u 超出有效范围，将跳过此元数据项", arrayElementTypeRaw);
+                    setFilePosition(savedPosition);
+                    continue;
+                }
+                GGUFValueType arrayElementType = static_cast<GGUFValueType>(arrayElementTypeRaw);
+                
+                // 读取数组长度
+                arrayElementCount = readValue<uint64_t>();
+                
+                // 验证数组长度合理性（防止恶意文件）
+                const uint64_t MAX_ARRAY_SIZE = 1024 * 1024 * 1024; // 1GB元素上限
+                if (arrayElementCount > MAX_ARRAY_SIZE) {
+                    CLLM_WARN("数组长度 %llu 过大，将跳过此元数据项", arrayElementCount);
+                    setFilePosition(savedPosition);
+                    continue;
+                }
+                
+                // 设置数组元数据
+                metadata.array_val.elementType = arrayElementType;
+                metadata.array_val.elementCount = arrayElementCount;
+                metadata.array_val.elements.reserve(arrayElementCount);
+                
+                // 读取数组元素
+                bool arrayReadSuccess = true;
+                for (uint64_t j = 0; j < arrayElementCount; ++j) {
+                    GGUFMetadata element;
+                    element.type = arrayElementType;
+                    try {
+                        readMetadataValue(element);
+                        metadata.array_val.elements.push_back(element);
+                    } catch (const std::exception& e) {
+                        CLLM_WARN("读取数组元素 %llu/%llu 失败: %s，将跳过此元数据项", 
+                                 j, arrayElementCount, e.what());
+                        arrayReadSuccess = false;
+                        break; // 跳出内层循环
+                    }
+                }
+                
+                // 如果数组读取成功，存储元数据
+                if (arrayReadSuccess && metadata.array_val.elements.size() == arrayElementCount) {
+                    metadata_[metadata.key] = metadata;
+                } else {
+                    // 数组读取失败，恢复文件位置并跳过
+                    setFilePosition(savedPosition);
+                    continue; // 继续外层循环的下一个元数据项
+                }
+            } else {
+                // 读取非数组值
+                try {
+                    readMetadataValue(metadata);
+                    // 存储元数据
+                    metadata_[metadata.key] = metadata;
+                } catch (const std::exception& e) {
+                    CLLM_WARN("读取元数据值失败: %s，将跳过此元数据项", e.what());
+                    // 恢复文件位置
+                    setFilePosition(savedPosition);
+                    continue;
+                }
             }
             
-            // 存储元数据
-            metadata_[metadata.key] = metadata;
-            
-            // 检查是否是对齐值
+            // 检查是否是对齐值（在存储元数据之后）
             if (metadata.key == "general.alignment") {
                 // 根据值类型获取对齐值
                 switch (metadata.type) {
@@ -489,58 +667,97 @@ void GGUFLoader::parseTensorInfos(uint64_t tensorCount) {
         
         try {
             // 读取张量名称
-            tensorInfo.name = readString();
+            try {
+                tensorInfo.name = readString();
+            } catch (const std::length_error& e) {
+                CLLM_ERROR("读取张量 %zu 名称时遇到length_error: %s", i, e.what());
+                throw;
+            } catch (const std::bad_alloc& e) {
+                CLLM_ERROR("读取张量 %zu 名称时遇到bad_alloc: %s", i, e.what());
+                throw;
+            }
+            
+            // 验证张量名称长度（GGUF规范：最多64字节）
+            const size_t MAX_TENSOR_NAME_LENGTH = 64;
+            if (tensorInfo.name.length() >= MAX_TENSOR_NAME_LENGTH) {
+                throw std::runtime_error("张量名称 '" + tensorInfo.name + "' 长度 " + 
+                                        std::to_string(tensorInfo.name.length()) + 
+                                        " 超过最大允许长度 " + std::to_string(MAX_TENSOR_NAME_LENGTH));
+            }
+            
+            // 检查张量名称是否重复 (参考llama.cpp)
+            for (const auto& [existingName, existingIndex] : tensorNameMap_) {
+                if (tensorInfo.name == existingName) {
+                    CLLM_ERROR("发现重复的张量名称 '%s' (位置 %zu 和 %zu)", 
+                             tensorInfo.name.c_str(), existingIndex, i);
+                    throw std::runtime_error("张量名称重复: " + tensorInfo.name);
+                }
+            }
             
             // 读取维度数
             tensorInfo.dimensions = readValue<uint32_t>();
             
-            // 验证维度数是否在合理范围内 (0-8)
-            // 注意：维度数为0是有效的（标量），但超过8通常不合理
-            if (tensorInfo.dimensions > 8) {
-                throw std::runtime_error("张量维度数异常: " + std::to_string(tensorInfo.dimensions) + 
-                                        " (合理范围: 0-8)");
+            // 验证维度数是否在合理范围内 (参考GGUF规范和llama.cpp)
+            // GGUF规范：目前最多4维，但未来可能扩展，这里使用更宽松的限制
+            const uint32_t MAX_DIMENSIONS = 4; // GGML_MAX_DIMS
+            if (tensorInfo.dimensions > MAX_DIMENSIONS) {
+                throw std::runtime_error("张量 " + tensorInfo.name + " 维度数异常: " + 
+                                        std::to_string(tensorInfo.dimensions) + 
+                                        " (最大允许: " + std::to_string(MAX_DIMENSIONS) + ")");
             }
             
             // 读取形状
+            tensorInfo.shape.reserve(tensorInfo.dimensions);
             tensorInfo.shape.resize(tensorInfo.dimensions);
             for (uint32_t j = 0; j < tensorInfo.dimensions; ++j) {
                 tensorInfo.shape[j] = readValue<uint64_t>();
                 
-                // 验证每个维度的大小是否合理（不能为0，除非是标量）
+                // 验证每个维度的大小是否合理（不能为负数或0，除非是标量）
+                if (tensorInfo.shape[j] < 0) {
+                    throw std::runtime_error("张量 " + tensorInfo.name + " 的第 " + 
+                                            std::to_string(j) + " 个维度大小为负数: " + 
+                                            std::to_string(tensorInfo.shape[j]));
+                }
                 if (tensorInfo.shape[j] == 0 && tensorInfo.dimensions > 0) {
-                    throw std::runtime_error("张量 " + tensorInfo.name + " 的第 " + std::to_string(j) + 
-                                            " 个维度大小为0，这是无效的");
+                    throw std::runtime_error("张量 " + tensorInfo.name + " 的第 " + 
+                                            std::to_string(j) + " 个维度大小为0");
                 }
             }
             
-            // 读取张量类型
-            uint32_t tensorTypeRaw = readValue<uint32_t>();
+            // 验证总元素数不会导致溢出（参考llama.cpp的实现）
+            int64_t totalElements = 1;
+            for (uint32_t j = 0; j < tensorInfo.dimensions; ++j) {
+                if (totalElements > INT64_MAX / static_cast<int64_t>(tensorInfo.shape[j])) {
+                    throw std::runtime_error("张量 " + tensorInfo.name + " 的总元素数溢出");
+                }
+                totalElements *= static_cast<int64_t>(tensorInfo.shape[j]);
+            }
             
-            // 验证张量类型是否在有效范围内
-            // GGMLType的最大值是COUNT-1，但实际使用的类型值可能更小
-            // 根据GGUF规范，有效的类型值通常在0-40之间
-            const uint32_t MAX_VALID_GGML_TYPE = 40;
-            if (tensorTypeRaw > MAX_VALID_GGML_TYPE) {
-                throw std::runtime_error("张量类型值异常: " + std::to_string(tensorTypeRaw) + 
-                                        " (有效范围: 0-" + std::to_string(MAX_VALID_GGML_TYPE) + ")");
+            // 读取张量类型
+            int32_t tensorTypeRaw = readValue<int32_t>();
+            
+            // 验证张量类型是否在有效范围内（参考GGUF规范和llama.cpp）
+            if (tensorTypeRaw < 0 || tensorTypeRaw >= static_cast<int32_t>(GGMLType::COUNT)) {
+                throw std::runtime_error("张量 " + tensorInfo.name + " 类型值异常: " + 
+                                        std::to_string(tensorTypeRaw) + 
+                                        " (有效范围: 0-" + 
+                                        std::to_string(static_cast<int32_t>(GGMLType::COUNT) - 1) + ")");
             }
             
             tensorInfo.type = static_cast<GGMLType>(tensorTypeRaw);
             
+            // 计算张量大小并验证块大小对齐（参考llama.cpp）
+            // 这里需要根据张量类型计算块大小，但为了简化，我们先读取偏移量
+            // 块大小验证将在后续添加
+            
             // 读取偏移量
             tensorInfo.offset = readValue<uint64_t>();
             
-            // 验证偏移量是否超出文件大小
-            if (tensorInfo.offset >= fileSize_) {
+            // 验证偏移量是否对齐（参考GGUF规范：偏移量必须是对齐值的倍数）
+            if (alignment_ > 0 && (tensorInfo.offset % alignment_ != 0)) {
                 throw std::runtime_error("张量 " + tensorInfo.name + " 的偏移量 " + 
-                                        std::to_string(tensorInfo.offset) + " 超出文件大小 " + 
-                                        std::to_string(fileSize_));
-            }
-            
-            // 验证偏移量是否对齐
-            if (tensorInfo.offset % alignment_ != 0) {
-                CLLM_WARN("张量 %s 的偏移量 %zu 不是对齐值 %u 的倍数，可能会影响性能", 
-                          tensorInfo.name.c_str(), tensorInfo.offset, alignment_);
+                                        std::to_string(tensorInfo.offset) + 
+                                        " 不是对齐值 " + std::to_string(alignment_) + " 的倍数");
             }
             
             // 存储张量信息
@@ -556,7 +773,6 @@ void GGUFLoader::parseTensorInfos(uint64_t tensorCount) {
                 CLLM_WARN("已恢复文件位置到 %zu，跳过当前张量信息项", savedPosition);
             } catch (const std::exception& restoreError) {
                 CLLM_ERROR("无法恢复文件位置: %s，解析可能已损坏", restoreError.what());
-                // 如果无法恢复位置，抛出异常，因为继续解析会导致数据错位
                 throw std::runtime_error("张量信息解析失败且无法恢复文件位置: " + std::string(e.what()));
             }
             
@@ -565,19 +781,54 @@ void GGUFLoader::parseTensorInfos(uint64_t tensorCount) {
         }
     }
     
-    // 对齐文件位置到下一个对齐边界
+    // 对齐文件位置到数据段开始位置（参考llama.cpp的实现）
+    // GGUF规范要求：张量信息后需要填充到对齐边界，然后才是数据段
     uint64_t alignedPosition = alignOffset(currentPosition_);
     if (alignedPosition > currentPosition_) {
+        // 需要跳过填充字节
+        uint64_t paddingSize = alignedPosition - currentPosition_;
         if (useMemoryMap_) {
             currentPosition_ = alignedPosition;
         } else {
-            if (fseek(file_, alignedPosition, SEEK_SET) != 0) {
-                throw std::runtime_error("无法对齐文件位置");
+            // 对于文件I/O，需要实际跳过填充字节
+            if (fseek(file_, static_cast<long>(alignedPosition), SEEK_SET) != 0) {
+                throw std::runtime_error("无法对齐文件位置到数据段开始");
             }
             currentPosition_ = alignedPosition;
         }
-        CLLM_INFO("将文件位置从 %zu 对齐到 %zu (对齐值 %u)", currentPosition_, alignedPosition, alignment_);
+        CLLM_INFO("将文件位置从 %zu 对齐到 %zu (对齐值 %u，填充 %zu 字节)", 
+                 currentPosition_ - paddingSize, alignedPosition, alignment_, paddingSize);
     }
+    
+    // 验证张量偏移的连续性和对齐（参考llama.cpp的实现）
+    // 计算数据段开始位置（相对于数据段，不是文件开始）
+    uint64_t dataSectionOffset = currentPosition_;
+    
+    // 验证所有张量的偏移量是否连续且对齐
+    uint64_t expectedOffset = 0;
+    for (size_t i = 0; i < tensorInfos_.size(); ++i) {
+        const GGULTensorInfo& ti = tensorInfos_[i];
+        
+        // 张量的偏移量是相对于数据段开始的
+        if (ti.offset != expectedOffset) {
+            throw std::runtime_error("张量 '" + ti.name + "' 的偏移量 " + 
+                                    std::to_string(ti.offset) + 
+                                    " 与预期偏移量 " + std::to_string(expectedOffset) + " 不匹配");
+        }
+        
+        // 计算张量大小（需要考虑对齐）
+        size_t tensorSize = getTensorByteSize(ti);
+        size_t paddedSize = alignOffset(tensorSize);
+        
+        // 检查溢出
+        if (SIZE_MAX - expectedOffset < paddedSize) {
+            throw std::runtime_error("张量偏移量计算溢出");
+        }
+        
+        expectedOffset += paddedSize;
+    }
+    
+    CLLM_INFO("张量偏移验证完成，数据段总大小: %zu 字节", expectedOffset);
 }
 
 // 辅助函数：从元数据中提取uint32_t值
@@ -708,10 +959,41 @@ void GGUFLoader::extractModelConfig() {
     uint32_t vocabSize = 32000;
     std::vector<std::string> vocabSizeKeys = {
         "ggml.vocab_size",
-        "tokenizer.ggml.vocab_size"
+        "tokenizer.ggml.vocab_size",
+        "qwen3.vocab_size",
+        "qwen.vocab_size"
     };
     if (tryExtractUInt32(vocabSize, vocabSizeKeys)) {
         config_.vocabSize = vocabSize;
+    }
+    
+    // 对于Qwen模型，从embedding层权重或输出层权重推断vocab size
+    if (config_.modelType == "qwen3" || config_.modelType == "qwen") {
+        // 尝试从output.weight（LM head）推断vocab size
+        for (const auto& tensorInfo : tensorInfos_) {
+            // output.weight 是 LM head
+            // GGUF 格式中，权重shape可能是 [hidden, vocab] 或 [vocab, hidden]
+            // 需要根据实际情况判断
+            if (tensorInfo.name == "output.weight" || tensorInfo.name == "token_embd.weight") {
+                if (tensorInfo.shape.size() >= 2) {
+                    uint32_t dim0 = static_cast<uint32_t>(tensorInfo.shape[0]);
+                    uint32_t dim1 = static_cast<uint32_t>(tensorInfo.shape[1]);
+                    
+                    // vocab_size 通常是较大的维度
+                    uint32_t inferredVocabSize = std::max(dim0, dim1);
+                    
+                    CLLM_INFO("从 %s (shape=[%u,%u]) 推断vocab_size = %u",  
+                             tensorInfo.name.c_str(), dim0, dim1, inferredVocabSize);
+                    
+                    if (inferredVocabSize > vocabSize) {
+                        CLLM_INFO("更新vocab_size: %u -> %u", vocabSize, inferredVocabSize);
+                        config_.vocabSize = inferredVocabSize;
+                        vocabSize = inferredVocabSize;
+                    }
+                }
+                break;  // 找到就退出
+            }
+        }
     }
     
     // 提取中间层大小
@@ -822,50 +1104,119 @@ void GGUFLoader::extractModelConfig() {
     CLLM_INFO("  Intermediate size: %u", config_.intermediateSize);
 }
 
+// 获取GGML类型的块大小（每个块包含的元素数）
+static int64_t getGGMLBlockSize(GGMLType type) {
+    switch (type) {
+        case GGMLType::Q4_0:
+        case GGMLType::Q4_1:
+        case GGMLType::Q5_0:
+        case GGMLType::Q5_1:
+        case GGMLType::Q8_0:
+        case GGMLType::Q8_1:
+        case GGMLType::Q2_K:
+        case GGMLType::Q3_K:
+        case GGMLType::Q4_K:
+        case GGMLType::Q5_K:
+        case GGMLType::Q6_K:
+        case GGMLType::Q8_K:
+        case GGMLType::IQ2_XXS:
+        case GGMLType::IQ2_XS:
+        case GGMLType::IQ3_XXS:
+        case GGMLType::IQ1_S:
+        case GGMLType::IQ4_NL:
+        case GGMLType::IQ3_S:
+        case GGMLType::IQ2_S:
+        case GGMLType::IQ4_XS:
+        case GGMLType::IQ1_M:
+        case GGMLType::TQ1_0:
+        case GGMLType::TQ2_0:
+            return 32; // 大多数量化类型使用32元素块
+        default:
+            return 1;  // 非量化类型，块大小为1
+    }
+}
+
+// 获取GGML类型的元素大小（每个元素的字节数，对于量化类型是块的平均大小）
+static size_t getGGMLTypeSize(GGMLType type) {
+    switch (type) {
+        case GGMLType::F32: return 4;
+        case GGMLType::F16: return 2;
+        case GGMLType::BF16: return 2;
+        case GGMLType::I8: return 1;
+        case GGMLType::I16: return 2;
+        case GGMLType::I32: return 4;
+        case GGMLType::I64: return 8;
+        case GGMLType::F64: return 8;
+        case GGMLType::Q4_0: return 18; // 32个元素，每个块18字节（2字节scale + 16字节数据）
+        case GGMLType::Q4_1: return 20; // 32个元素，每个块20字节（2字节scale + 2字节bias + 16字节数据）
+        case GGMLType::Q5_0: return 22; // 32个元素，每个块22字节（2字节scale + 20字节数据）
+        case GGMLType::Q5_1: return 24; // 32个元素，每个块24字节（2字节scale + 2字节bias + 20字节数据）
+        case GGMLType::Q8_0: return 34; // 32个元素，每个块34字节（2字节scale + 32字节数据）
+        case GGMLType::Q8_1: return 36; // 32个元素，每个块36字节（2字节scale + 2字节bias + 32字节数据）
+        case GGMLType::Q2_K: return 12; // 32个元素，每个块12字节
+        case GGMLType::Q3_K: return 14; // 32个元素，每个块14字节
+        case GGMLType::Q4_K: return 16; // 32个元素，每个块16字节
+        case GGMLType::Q5_K: return 20; // 32个元素，每个块20字节
+        case GGMLType::Q6_K: return 24; // 32个元素，每个块24字节
+        case GGMLType::Q8_K: return 34; // 32个元素，每个块34字节
+        case GGMLType::IQ2_XXS: return 8;  // 32个元素，每个块8字节
+        case GGMLType::IQ2_XS: return 10;  // 32个元素，每个块10字节
+        case GGMLType::IQ3_XXS: return 10; // 32个元素，每个块10字节
+        case GGMLType::IQ1_S: return 6;     // 32个元素，每个块6字节
+        case GGMLType::IQ4_NL: return 18;   // 32个元素，每个块18字节
+        case GGMLType::IQ3_S: return 12;   // 32个元素，每个块12字节
+        case GGMLType::IQ2_S: return 12;   // 32个元素，每个块12字节
+        case GGMLType::IQ4_XS: return 20;   // 32个元素，每个块20字节
+        case GGMLType::IQ1_M: return 8;     // 32个元素，每个块8字节
+        case GGMLType::TQ1_0: return 10;     // 32个元素，每个块10字节
+        case GGMLType::TQ2_0: return 18;    // 32个元素，每个块18字节
+        case GGMLType::MXFP4: return 18;    // 32个元素，每个块18字节
+        default:
+            return 4; // 默认4字节
+    }
+}
+
 size_t GGUFLoader::getTensorByteSize(const GGULTensorInfo& tensorInfo) const {
-    // 计算张量的字节大小
-    // 这里需要根据不同的张量类型实现不同的计算逻辑
-    size_t elementSize = 0;
-    
     // 计算元素总数
     uint64_t elementCount = 1;
     for (uint64_t dim : tensorInfo.shape) {
+        if (elementCount > UINT64_MAX / dim) {
+            throw std::runtime_error("张量元素总数计算溢出");
+        }
         elementCount *= dim;
     }
     
-    size_t byteSize = 0;
-    
-    switch (tensorInfo.type) {
-        case GGMLType::F32:
-            byteSize = elementCount * 4;
-            break;
-        case GGMLType::F16:
-        case GGMLType::BF16:
-            byteSize = elementCount * 2;
-            break;
-        case GGMLType::Q4_0:
-        case GGMLType::Q4_1:
-            // Q4_0和Q4_1每个元素占用4位
-            byteSize = (elementCount * 4 + 7) / 8; // 计算总位数并转换为字节数，向上取整
-            break;
-        case GGMLType::Q5_0:
-        case GGMLType::Q5_1:
-            // Q5_0和Q5_1每个元素占用5位
-            byteSize = (elementCount * 5 + 7) / 8; // 计算总位数并转换为字节数，向上取整
-            break;
-        case GGMLType::Q8_0:
-        case GGMLType::Q8_1:
-            // Q8_0和Q8_1每个元素占用8位
-            byteSize = elementCount * 1;
-            break;
-        // ... 其他类型的实现
-        default:
-            byteSize = elementCount * 4; // 默认4字节
-            CLLM_WARN("未知张量类型 %u，将使用默认元素大小4字节", static_cast<uint32_t>(tensorInfo.type));
+    // 对于量化类型，需要按块计算
+    int64_t blockSize = getGGMLBlockSize(tensorInfo.type);
+    if (blockSize > 1) {
+        // 量化类型：需要确保第一维是块大小的倍数
+        if (tensorInfo.shape.empty() || tensorInfo.shape[0] % blockSize != 0) {
+            throw std::runtime_error("张量 '" + tensorInfo.name + 
+                                    "' 的第一维 " + std::to_string(tensorInfo.shape.empty() ? 0 : tensorInfo.shape[0]) +
+                                    " 不是块大小 " + std::to_string(blockSize) + " 的倍数");
+        }
+        
+        // 计算块数
+        uint64_t blockCount = elementCount / blockSize;
+        size_t blockByteSize = getGGMLTypeSize(tensorInfo.type);
+        
+        // 检查溢出
+        if (blockCount > SIZE_MAX / blockByteSize) {
+            throw std::runtime_error("张量字节大小计算溢出");
+        }
+        
+        return blockCount * blockByteSize;
+    } else {
+        // 非量化类型：直接计算
+        size_t elementSize = getGGMLTypeSize(tensorInfo.type);
+        
+        // 检查溢出
+        if (elementCount > SIZE_MAX / elementSize) {
+            throw std::runtime_error("张量字节大小计算溢出");
+        }
+        
+        return elementCount * elementSize;
     }
-    
-    // 确保字节大小是对齐的
-    return alignOffset(byteSize);
 }
 
 uint64_t GGUFLoader::getCurrentFilePosition() const {
