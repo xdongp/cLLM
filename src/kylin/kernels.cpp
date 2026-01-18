@@ -99,7 +99,11 @@ void rmsnorm(
         // 1. 计算 mean(x^2)
         float meanSq = 0.0f;
         for (size_t j = 0; j < cols; ++j) {
-            meanSq += rowIn[j] * rowIn[j];
+            // 避免数值溢出：裁剪输入值
+            float x = rowIn[j];
+            if (x > 1.0e18f) x = 1.0e18f;
+            if (x < -1.0e18f) x = -1.0e18f;
+            meanSq += x * x;
         }
         meanSq /= static_cast<float>(cols);
 
@@ -108,7 +112,11 @@ void rmsnorm(
 
         // 3. 归一化并乘以权重
         for (size_t j = 0; j < cols; ++j) {
-            float v = rowIn[j] * invRms;
+            // 再次裁剪输入值
+            float x = rowIn[j];
+            if (x > 1.0e18f) x = 1.0e18f;
+            if (x < -1.0e18f) x = -1.0e18f;
+            float v = x * invRms;
             rowOut[j] = v * (weight ? weight[j] : 1.0f);
         }
     }

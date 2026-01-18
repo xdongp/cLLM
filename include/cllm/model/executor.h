@@ -43,7 +43,9 @@ public:
         const std::string& modelPath,
         const std::string& quantization = "",
         bool enableSIMD = true,
-        bool useLibTorch = false
+        bool useLibTorch = false,
+        const std::string& backendType = "",
+        const ModelConfig* initialConfig = nullptr
     );
     
     /**
@@ -131,6 +133,12 @@ public:
     void setConfig(const ModelConfig& config);
     
     /**
+     * @brief 设置 tokenizer 的 vocab_size（不影响 InferenceEngine）
+     * @param tokenizerVocabSize tokenizer 的词表大小
+     */
+    void setTokenizerVocabSize(size_t tokenizerVocabSize);
+    
+    /**
      * @brief 检查模型是否已加载
      * @return true if model is loaded, false otherwise
      */
@@ -158,6 +166,7 @@ private:
     std::string quantization_;
     bool enableSIMD_;
     bool useLibTorch_;  // 是否使用 LibTorch 后端
+    std::string backendType_;  // 指定后端类型（空表示自动选择）
     
     void* modelHandle_;
     void* modelWeights_;

@@ -58,6 +58,7 @@ private:
     int eosId_ = -1;
     int padId_ = -1;
     int unkId_ = -1;
+    int maxSpecialTokenId_ = -1;
     
     std::unordered_set<int> specialTokenIds_;
 };

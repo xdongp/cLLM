@@ -4,6 +4,7 @@
 #include "cllm/tokenizer/generator.h"
 #include "cllm/tokenizer/hf_tokenizer.h"
 #include "cllm/tokenizer/native_tokenizer.h"
+#include "cllm/tokenizer/gguf_tokenizer.h"
 #include "cllm/common/logger.h"
 #include <chrono>
 #include <stdexcept>
@@ -33,6 +34,30 @@ namespace {
         }
         if (fs::is_directory(modelPath)) {
             return fs::exists(fs::path(modelPath) / "tokenizer.model");
+        }
+        return false;
+    }
+    
+    bool isGgufFile(const std::string& modelPath) {
+        namespace fs = std::filesystem;
+        if (modelPath.empty()) {
+            return false;
+        }
+        // 检查是否为 .gguf 文件
+        if (fs::is_regular_file(modelPath)) {
+            std::string ext = fs::path(modelPath).extension().string();
+            return (ext == ".gguf");
+        }
+        // 检查目录中是否有 .gguf 文件
+        if (fs::is_directory(modelPath)) {
+            for (const auto& entry : fs::directory_iterator(modelPath)) {
+                if (entry.is_regular_file()) {
+                    std::string ext = entry.path().extension().string();
+                    if (ext == ".gguf") {
+                        return true;
+                    }
+                }
+            }
         }
         return false;
     }
@@ -111,8 +136,12 @@ TokenizerManager::TokenizerManager(
             
         case TokenizerImpl::AUTO:
         default:
-            // ✅ 自动检测: HuggingFace优先
-            if (hasTokenizerJson(modelPath)) {
+            // ✅ 自动检测: 优先检测 GGUF 格式（关键修复）
+            if (isGgufFile(modelPath)) {
+                CLLM_INFO("✅ Detected GGUF format, using GGUFTokenizer");
+                tokenizer_ = new GGUFTokenizer();
+                
+            } else if (hasTokenizerJson(modelPath)) {
                 CLLM_INFO("✅ Detected HuggingFace format (tokenizer.json), using HFTokenizer");
                 tokenizer_ = new HFTokenizer(modelType);
                 

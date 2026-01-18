@@ -10,18 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/googletest/googletest/include)
 
-# 添加测试可执行文件
-add_executable(test_gguf_loader test_gguf_loader.cpp)
-
-# 链接库
-target_link_libraries(test_gguf_loader 
-    GTest::gtest 
-    GTest::gtest_main
-    cllm_core
-)
-
-# 启用测试
-enable_testing()
-add_test(NAME test_gguf_loader COMMAND test_gguf_loader)
+# 注意：旧的测试文件已被删除，因为它们缺少必要的依赖
+# 新的 llama.cpp 后端测试在主 CMakeLists.txt 中定义
 
 

@@ -267,6 +267,12 @@ std::string Config::serverHost() const {
     return config_["server"]["host"].as<std::string>("0.0.0.0");
 }
 
+// 后端配置
+std::string Config::backendType() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["backend"]["type"].as<std::string>("");
+}
+
 // LibTorch后端配置
 std::vector<int> Config::backendLibTorchSeqLenCandidates() const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -289,6 +295,32 @@ std::vector<int> Config::backendLibTorchSeqLenCandidates() const {
 int Config::backendLibTorchFallbackSeqLen() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return config_["backend"]["libtorch"]["fallback_seq_len"].as<int>(8);
+}
+
+// llama.cpp 后端配置
+int Config::backendLlamaCppBatchSize() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["backend"]["llama_cpp"]["n_batch"].as<int>(512);
+}
+
+int Config::backendLlamaCppNumThreads() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["backend"]["llama_cpp"]["n_threads"].as<int>(0);
+}
+
+int Config::backendLlamaCppGpuLayers() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["backend"]["llama_cpp"]["n_gpu_layers"].as<int>(0);
+}
+
+bool Config::backendLlamaCppUseMmap() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["backend"]["llama_cpp"]["use_mmap"].as<bool>(true);
+}
+
+bool Config::backendLlamaCppUseMlock() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_["backend"]["llama_cpp"]["use_mlock"].as<bool>(false);
 }
 
 // API端点配置

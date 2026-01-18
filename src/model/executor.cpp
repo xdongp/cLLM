@@ -21,12 +21,15 @@ ModelExecutor::ModelExecutor(
     const std::string& modelPath,
     const std::string& quantization,
     bool enableSIMD,
-    bool useLibTorch
+    bool useLibTorch,
+    const std::string& backendType,
+    const ModelConfig* initialConfig
 )
     : modelPath_(modelPath)
     , quantization_(quantization)
     , enableSIMD_(enableSIMD)
     , useLibTorch_(useLibTorch)
+    , backendType_(backendType)
     , modelHandle_(nullptr)
     , modelWeights_(nullptr)
     , modelSize_(0)
@@ -40,10 +43,18 @@ ModelExecutor::ModelExecutor(
     , inputBuffer_()
     , inferenceEngine_(nullptr) {
     
-    CLLM_INFO("[ModelExecutor] Initializing with %s backend", 
-              (useLibTorch_ ? "LibTorch" : "Kylin"));
+    if (!backendType_.empty()) {
+        CLLM_INFO("[ModelExecutor] Initializing with backend: %s", backendType_.c_str());
+    } else {
+        CLLM_INFO("[ModelExecutor] Initializing with %s backend", 
+                  (useLibTorch_ ? "LibTorch" : "Kylin"));
+    }
     
     sampler_ = std::make_unique<Sampler>();
+
+    if (initialConfig) {
+        config_ = *initialConfig;
+    }
     
     // Note: config_ is default-constructed, check useKVCache only if explicitly set
     // For now, skip KV cache initialization in constructor
@@ -57,7 +68,11 @@ ModelExecutor::ModelExecutor(
     batchProcessor_ = std::make_unique<BatchProcessor>(this);
     
     // 初始化 InferenceEngine
-    inferenceEngine_ = std::make_unique<inference::InferenceEngine>(config_, modelPath_, useLibTorch_);
+    if (!backendType_.empty()) {
+        inferenceEngine_ = std::make_unique<inference::InferenceEngine>(config_, modelPath_, backendType_);
+    } else {
+        inferenceEngine_ = std::make_unique<inference::InferenceEngine>(config_, modelPath_, useLibTorch_);
+    }
     if (!inferenceEngine_->initialize()) {
         throw std::runtime_error("ModelExecutor: failed to initialize inference engine");
     }
@@ -363,8 +378,15 @@ std::vector<int> ModelExecutor::generate(
         
         BatchOutput output = forward(batchInput);
         
-        FloatArray logits = output.getLogitsForRequest(0);
-        
+        // logits 存储布局是按 model vocab 展开的，但采样应限制在 tokenizer vocab 内
+        // （两者可能不同，例如 Qwen3: model vocab=151936, tokenizer vocab=151669）
+        FloatArray fullLogits = output.getLogitsForRequest(0, config_.vocabSize);
+        size_t sampleVocabSize = std::min(config_.tokenizerVocabSize, config_.vocabSize);
+        FloatArray logits(sampleVocabSize);
+        for (size_t j = 0; j < sampleVocabSize; ++j) {
+            logits[j] = fullLogits[j];
+        }
+
         int nextToken = sampler_->sample(logits, temperature);
         
         generatedTokens.push_back(nextToken);
@@ -403,11 +425,20 @@ void ModelExecutor::setConfig(const ModelConfig& config) {
     // 如果 InferenceEngine 已初始化，也更新它的配置
     if (inferenceEngine_) {
         // InferenceEngine 的配置是在构造时传入的，需要重新创建
-        inferenceEngine_ = std::make_unique<inference::InferenceEngine>(config_, modelPath_, useLibTorch_);
+        if (!backendType_.empty()) {
+            inferenceEngine_ = std::make_unique<inference::InferenceEngine>(config_, modelPath_, backendType_);
+        } else {
+            inferenceEngine_ = std::make_unique<inference::InferenceEngine>(config_, modelPath_, useLibTorch_);
+        }
         if (!inferenceEngine_->initialize()) {
             throw std::runtime_error("ModelExecutor::setConfig: failed to reinitialize inference engine");
         }
     }
+}
+
+void ModelExecutor::setTokenizerVocabSize(size_t tokenizerVocabSize) {
+    config_.tokenizerVocabSize = tokenizerVocabSize;
+    // tokenizerVocabSize 不影响 InferenceEngine，所以不需要重新初始化
 }
 
 int ModelExecutor::sampleToken(const std::vector<int>& inputIds, float temperature) {
@@ -425,8 +456,14 @@ int ModelExecutor::sampleToken(const std::vector<int>& inputIds, float temperatu
     
     BatchOutput output = forward(batchInput);
     
-    FloatArray logits = output.getLogitsForRequest(0);
-    
+    // logits 存储布局是按 model vocab 展开的，但采样应限制在 tokenizer vocab 内
+    FloatArray fullLogits = output.getLogitsForRequest(0, config_.vocabSize);
+    size_t sampleVocabSize = std::min(config_.tokenizerVocabSize, config_.vocabSize);
+    FloatArray logits(sampleVocabSize);
+    for (size_t j = 0; j < sampleVocabSize; ++j) {
+        logits[j] = fullLogits[j];
+    }
+
     return sampler_->sample(logits, temperature);
 }
 

@@ -114,6 +114,7 @@ int main(int argc, char* argv[]) {
     bool useLibTorchOptSet = false;
     std::optional<std::string> logLevelOpt;
     std::optional<std::string> logFileOpt;
+    std::optional<std::string> backendTypeOpt;
 
     std::string configPath;
     
@@ -218,7 +219,11 @@ int main(int argc, char* argv[]) {
         std::string quantization = quantizationOpt.value_or(cllm::Config::instance().serverQuantization());
         size_t maxBatchSize = maxBatchSizeOpt.value_or(static_cast<size_t>(cllm::Config::instance().serverMaxBatchSize()));
         size_t maxContextLength = maxContextLengthOpt.value_or(static_cast<size_t>(cllm::Config::instance().serverMaxContextLength()));
-        bool useLibTorch = useLibTorchOptSet ? useLibTorchOpt : cllm::Config::instance().serverUseLibTorch();
+        std::string backendType = backendTypeOpt.value_or(cllm::Config::instance().backendType());
+        bool useLibTorch = useLibTorchOptSet ? useLibTorchOpt : (backendType == "libtorch" || backendType == "LibTorch" || cllm::Config::instance().serverUseLibTorch());
+        if (useLibTorch) {
+            backendType = "libtorch";
+        }
         std::string logLevel = logLevelOpt.value_or(cllm::Config::instance().loggingLevel());
         std::string logFile = logFileOpt.value_or(cllm::Config::instance().loggingFile());
 
@@ -264,7 +269,7 @@ int main(int argc, char* argv[]) {
         CLLM_INFO("  - Quantization: %s", quantization.c_str());
         CLLM_INFO("  - Max Batch Size: %zu", maxBatchSize);
         CLLM_INFO("  - Max Context Length: %zu", maxContextLength);
-        CLLM_INFO("  - Backend: %s", (useLibTorch ? "LibTorch" : "Kylin"));
+        CLLM_INFO("  - Backend: %s", (backendType.empty() ? (useLibTorch ? "LibTorch" : "Auto") : backendType.c_str()));
         CLLM_INFO("  - Log Level: %s", logLevel.c_str());
 
         // 注册信号处理器
@@ -348,6 +353,20 @@ int main(int argc, char* argv[]) {
             if (isDir) {
                 fs::path dir(modelPath);
 
+                if (!useLibTorch) {
+                    auto ggufs = listFilesWithExt(dir, ".gguf");
+                    if (ggufs.size() == 1) {
+                        backendModelPath = ggufs.front().string();
+                    } else if (ggufs.size() > 1) {
+                        std::string msg = "Multiple .gguf files found. Pass a .gguf path directly via --model-path. Candidates: ";
+                        for (const auto& p : ggufs) {
+                            msg += p.filename().string();
+                            msg += " ";
+                        }
+                        throw std::runtime_error(msg);
+                    }
+                }
+
                 if (useLibTorch) {
                     // LibTorch 需要 TorchScript .pt
                     auto pts = listFilesWithExt(dir, ".pt");
@@ -366,6 +385,8 @@ int main(int argc, char* argv[]) {
                         }
                         throw std::runtime_error(msg);
                     }
+                } else if (!backendModelPath.empty()) {
+                    // 已选择 .gguf
                 } else {
                     // Kylin 需要 .bin
                     auto bins = listFilesWithExt(dir, ".bin");
@@ -409,15 +430,37 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        if (!backendModelPath.empty()) {
+            namespace fs = std::filesystem;
+            if (fs::path(backendModelPath).extension() == ".gguf") {
+                tokenizerModelDir = backendModelPath;
+                if (backendType.empty()) {
+                    backendType = "llama_cpp";
+                }
+            }
+        }
+
         CLLM_INFO("Resolved paths:");
         CLLM_INFO("  - Backend model file: %s", backendModelPath.c_str());
         CLLM_INFO("  - Tokenizer dir: %s", tokenizerModelDir.c_str());
+        CLLM_INFO("  - Backend type: %s", backendType.empty() ? "auto" : backendType.c_str());
+
+        cllm::ModelConfig initialConfig;
+        initialConfig.maxSequenceLength = maxContextLength;
+        initialConfig.ropeNctxOrig = maxContextLength;
+        initialConfig.llamaBatchSize = static_cast<size_t>(cllm::Config::instance().backendLlamaCppBatchSize());
+        initialConfig.llamaNumThreads = cllm::Config::instance().backendLlamaCppNumThreads();
+        initialConfig.llamaGpuLayers = cllm::Config::instance().backendLlamaCppGpuLayers();
+        initialConfig.llamaUseMmap = cllm::Config::instance().backendLlamaCppUseMmap();
+        initialConfig.llamaUseMlock = cllm::Config::instance().backendLlamaCppUseMlock();
 
         g_modelExecutor = std::make_unique<cllm::ModelExecutor>(
             backendModelPath,
             quantization,
             true,  // enableSIMD
-            useLibTorch
+            useLibTorch,
+            backendType,
+            &initialConfig
         );
 
         // 加载模型（实际权重加载由 InferenceEngine 后端负责，这里主要做 warmup / 标记）
@@ -431,6 +474,12 @@ int main(int argc, char* argv[]) {
         cllm::ITokenizer* tokenizer = g_tokenizerManager->getTokenizer();
         CLLM_INFO("Tokenizer initialized");
         CLLM_INFO("  - Vocab size: %zu", tokenizer->getVocabSize());
+        
+        // 将 tokenizer 的 vocab_size 设置到 ModelExecutor 的 config 中
+        // 这样在采样时可以使用正确的 tokenizer vocab_size 来限制 logits 范围
+        size_t tokenizerVocabSize = tokenizer->getVocabSize();
+        g_modelExecutor->setTokenizerVocabSize(tokenizerVocabSize);
+        CLLM_INFO("Model config updated with tokenizer vocab_size: %zu", tokenizerVocabSize);
         
         // 初始化调度器
         CLLM_INFO("Initializing scheduler...");

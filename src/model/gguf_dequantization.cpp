@@ -43,8 +43,8 @@ void dequantizeF16ToF32Scalar(const uint16_t* input, float* output, size_t size)
                 f32 = (sign << 31) | (exponent << 23) | (mantissa << 13);
             }
         } else if (exponent == 0x1F) {
-            // 无穷大或NaN
-            f32 = (sign << 31) | (0xFF << 23) | (mantissa << 13);
+            // 无穷大或NaN - 替换为 0.0，避免传播
+            f32 = 0;
         } else {
             // 规格化数
             exponent += 127 - 15;
@@ -142,17 +142,25 @@ void dequantizeF16ToF32(const uint16_t* input, float* output, size_t size) {
     // 根据可用的SIMD指令集选择最佳实现
 #ifdef __AVX2__
     dequantizeF16ToF32AVX2(input, output, size);
-    CLLM_INFO("使用AVX2优化的F16反量化，大小: %zu", size);
+    //CLLM_INFO("使用AVX2优化的F16反量化，大小: %zu", size);
 #elif __SSE2__
     dequantizeF16ToF32SSE2(input, output, size);
-    CLLM_INFO("使用SSE2优化的F16反量化，大小: %zu", size);
+    //CLLM_INFO("使用SSE2优化的F16反量化，大小: %zu", size);
 #elif __ARM_NEON
     dequantizeF16ToF32NEON(input, output, size);
-    CLLM_INFO("使用NEON优化的F16反量化，大小: %zu", size);
+    //CLLM_INFO("使用NEON优化的F16反量化，大小: %zu", size);
 #else
     dequantizeF16ToF32Scalar(input, output, size);
-    CLLM_INFO("使用标量F16反量化，大小: %zu", size);
+    //CLLM_INFO("使用标量F16反量化，大小: %zu", size);
 #endif
+    
+    // 后处理：将所有 NaN/Inf 替换为 0.0
+    // SIMD 指令可能会保留 NaN，所以需要在这里统一处理
+    for (size_t i = 0; i < size; ++i) {
+        if (std::isnan(output[i]) || std::isinf(output[i])) {
+            output[i] = 0.0f;
+        }
+    }
 }
 
 // Q8_0到F32的反量化（标量实现）

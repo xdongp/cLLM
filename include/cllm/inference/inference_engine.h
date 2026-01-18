@@ -33,16 +33,18 @@ namespace inference {
  * 后端选择：
  * - useLibTorch=true：使用 LibTorch 后端（快速原型、GPU 推理）
  * - useLibTorch=false：使用 Kylin 后端（极致 CPU 性能）
+ * - backendType="llama_cpp"：使用 llama.cpp 后端（GGUF 格式，原生优化）
  */
 class InferenceEngine {
 public:
     /**
-     * @brief 构造函数
+     * @brief 构造函数（使用布尔标志选择后端，向后兼容）
      * 
      * @param config 模型配置
      * @param modelPath 模型路径
      *                  - .pt 文件：用于 LibTorch 后端
      *                  - .bin 文件：用于 Kylin 后端
+     *                  - .gguf 文件：自动使用 llama.cpp 后端（如果可用）
      *                  - 空字符串：使用占位权重（仅 Kylin，测试模式）
      * @param useLibTorch 是否使用 LibTorch 后端（默认 false，使用 Kylin）
      */
@@ -50,6 +52,19 @@ public:
         const ModelConfig &config,
         const std::string &modelPath = std::string(),
         bool useLibTorch = false
+    );
+
+    /**
+     * @brief 构造函数（使用字符串指定后端类型）
+     * 
+     * @param config 模型配置
+     * @param modelPath 模型路径
+     * @param backendType 后端类型（"kylin", "libtorch", "llama_cpp"）
+     */
+    explicit InferenceEngine(
+        const ModelConfig &config,
+        const std::string &modelPath,
+        const std::string &backendType
     );
 
     /**
@@ -97,7 +112,7 @@ public:
     /**
      * @brief 获取后端类型
      * 
-     * @return 后端名称字符串（"LibTorch" 或 "Kylin"）
+     * @return 后端名称字符串（"LibTorch", "Kylin", 或 "llama.cpp"）
      */
     std::string getBackendType() const;
 

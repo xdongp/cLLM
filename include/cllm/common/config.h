@@ -82,9 +82,19 @@ public:
     // 服务器配置
     std::string serverHost() const;
     
+    // 后端配置
+    std::string backendType() const;
+
     // LibTorch后端配置
     std::vector<int> backendLibTorchSeqLenCandidates() const;
     int backendLibTorchFallbackSeqLen() const;
+
+    // llama.cpp 后端配置
+    int backendLlamaCppBatchSize() const;
+    int backendLlamaCppNumThreads() const;
+    int backendLlamaCppGpuLayers() const;
+    bool backendLlamaCppUseMmap() const;
+    bool backendLlamaCppUseMlock() const;
     
     // API端点配置
     std::string apiEndpointHealthName() const;

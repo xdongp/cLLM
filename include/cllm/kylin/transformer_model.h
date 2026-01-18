@@ -44,7 +44,9 @@ public:
         const Tensor& wUp,
         const Tensor& wDown,
         const Tensor& norm1Weight,
-        const Tensor& norm2Weight
+        const Tensor& norm2Weight,
+        const Tensor& attnQNormWeight = Tensor(),  // 可选：Q的独立归一化权重
+        const Tensor& attnKNormWeight = Tensor()   // 可选：K的独立归一化权重
     );
 
     /// 设置最终 RMSNorm 的权重
@@ -59,9 +61,9 @@ private:
 
     std::vector<TransformerBlock> layers_;
 
-    const Tensor* embedding_;     // [vocab, hidden]
-    const Tensor* lmHead_;        // [hidden, vocab]
-    const Tensor* finalNormWeight_; // [hidden]
+    Tensor embedding_;     // [vocab, hidden]
+    Tensor lmHead_;        // [hidden, vocab]
+    Tensor finalNormWeight_; // [hidden]
 
     float rmsEps_;
 };

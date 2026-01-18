@@ -33,9 +33,9 @@ private:
     size_t hiddenSize_;
     size_t intermediateSize_;
 
-    const Tensor* wGate_;
-    const Tensor* wUp_;
-    const Tensor* wDown_;
+    Tensor wGate_;
+    Tensor wUp_;
+    Tensor wDown_;
 };
 
 }  // namespace kylin

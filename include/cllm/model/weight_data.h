@@ -71,6 +71,8 @@ struct LayerWeights {
     WeightData wDown;   ///< FFN Down 权重
     WeightData norm1;   ///< 注意力层归一化权重
     WeightData norm2;   ///< FFN 层归一化权重
+    WeightData attnQNorm;  ///< Q 的独立归一化权重（Qwen3等模型需要）
+    WeightData attnKNorm;  ///< K 的独立归一化权重（Qwen3等模型需要）
 };
 
 /**

@@ -12,23 +12,21 @@ namespace kylin {
 
 FeedForwardNetwork::FeedForwardNetwork(size_t hiddenSize, size_t intermediateSize)
     : hiddenSize_(hiddenSize)
-    , intermediateSize_(intermediateSize)
-    , wGate_(nullptr)
-    , wUp_(nullptr)
-    , wDown_(nullptr) {}
+    , intermediateSize_(intermediateSize) {}
 
 void FeedForwardNetwork::setWeights(
     const Tensor& wGate,
     const Tensor& wUp,
     const Tensor& wDown
 ) {
-    wGate_ = &wGate;
-    wUp_ = &wUp;
-    wDown_ = &wDown;
+    wGate_ = wGate;
+    wUp_ = wUp;
+    wDown_ = wDown;
 }
 
 Tensor FeedForwardNetwork::forward(const Tensor& input) const {
-    if (!wGate_ || !wUp_ || !wDown_) {
+    // 检查权重是否已设置
+    if (wGate_.shape().empty() || wUp_.shape().empty() || wDown_.shape().empty()) {
         throw std::runtime_error("FeedForwardNetwork weights not set");
     }
 
@@ -53,8 +51,8 @@ Tensor FeedForwardNetwork::forward(const Tensor& input) const {
     Tensor gate2d({rows, intermediateSize_});
     Tensor up2d({rows, intermediateSize_});
 
-    matmul(input.data(), wGate_->data(), gate2d.data(), rows, intermediateSize_, hiddenSize_);
-    matmul(input.data(), wUp_->data(), up2d.data(), rows, intermediateSize_, hiddenSize_);
+    matmul(input.data(), wGate_.data(), gate2d.data(), rows, intermediateSize_, hiddenSize_);
+    matmul(input.data(), wUp_.data(), up2d.data(), rows, intermediateSize_, hiddenSize_);
 
     // activated = gate * SiLU(up)
     Tensor activated({rows, intermediateSize_});
@@ -67,7 +65,7 @@ Tensor FeedForwardNetwork::forward(const Tensor& input) const {
 
     // out2d = activated @ W_down -> [rows, hidden]
     Tensor out2d({rows, hiddenSize_});
-    matmul(activated.data(), wDown_->data(), out2d.data(), rows, hiddenSize_, intermediateSize_);
+    matmul(activated.data(), wDown_.data(), out2d.data(), rows, hiddenSize_, intermediateSize_);
 
     // 还原为 [batch, seq, hidden]
     Tensor output({batch, seqLen, hiddenSize_});

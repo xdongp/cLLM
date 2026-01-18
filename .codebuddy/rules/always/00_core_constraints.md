@@ -251,6 +251,30 @@ spdlog::info("Message");
 spdlog::warn("Warning");
 ```
 
+### 日志格式化风格
+
+**必须使用printf风格的格式化**，禁止使用spdlog的{}风格：
+
+```cpp
+// ✅ 推荐: printf风格
+CLLM_INFO("GGUF文件头解析成功: 版本 %u, 张量数量 %zu, 元数据数量 %zu", 
+          header.version, header.tensorCount, header.metadataCount);
+
+// ❌ 禁止: spdlog {}风格
+// CLLM_INFO("GGUF文件头解析成功: 版本 {}, 张量数量 {}, 元数据数量 {}", 
+//           header.version, header.tensorCount, header.metadataCount);
+```
+
+**格式符使用规范**：
+- `%s`: 字符串 (char*) 
+- `%zu`: 无符号长整型 (size_t)
+- `%u`: 无符号整型 (uint32_t)
+- `%d`: 整型 (int32_t)
+- `%lld`: 长整型 (int64_t)
+- `%f`: 浮点型 (float)
+- `%lf`: 双精度浮点型 (double)
+- `%%`: 百分号转义
+
 ### 日志Emoji规范 (可选)
 
 ```cpp

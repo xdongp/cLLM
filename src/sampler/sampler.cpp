@@ -38,13 +38,26 @@ int Sampler::sample(const FloatArray& logits, float temperature, int topK, float
     if (temperature < 0.0f) {
         throw std::invalid_argument("temperature must be non-negative");
     }
+
+    // -1 表示“使用默认配置”
+    if (topK == -1) {
+        topK = config_.getTopK();
+    }
+    if (topP < 0.0f && topP > -1.0f) {
+        // 兼容：拒绝 ( -1, 0 ) 这种无意义的值
+        throw std::invalid_argument("topP must be -1.0(disabled) or in range [0.0, 1.0]");
+    }
+    if (topP == -1.0f) {
+        topP = config_.getTopP();
+    }
+
     if (topP < -1.0f || topP > 1.0f) {
         throw std::invalid_argument("topP must be in range [-1.0, 1.0]");
     }
-    
+
     sampleCount_++;
     int result = sampleSingle(logits.data(), logits.size(), temperature, topK, topP);
-    
+
     // 更新统计信息
     if (temperature <= config_.getGreedyThreshold()) {
         stats_.incrementGreedySamples();
@@ -55,7 +68,7 @@ int Sampler::sample(const FloatArray& logits, float temperature, int topK, float
     } else {
         stats_.incrementTemperatureSamples();
     }
-    
+
     return result;
 }
 

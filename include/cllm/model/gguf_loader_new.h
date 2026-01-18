@@ -125,7 +125,7 @@ struct GGULTensorInfo {
     uint32_t dimensions;
     std::vector<uint64_t> shape;
     GGMLType type;
-    uint64_t offset; // 张量数据在文件中的偏移量
+    uint64_t offset; // 张量数据在“数据段(data section)”起点的相对偏移量（GGUF规范）
 };
 
 // GGUFLoader类，实现IModelLoader接口
@@ -330,6 +330,10 @@ private:
     // GGUF版本号和对齐值
     uint32_t ggufVersion_;
     uint32_t alignment_; // 全局对齐值，默认32
+
+    // GGUF数据段(data section)在文件中的起始位置
+    // GGUF张量的offset是相对该位置的偏移
+    uint64_t dataSectionOffset_ = 0;
     
     // 内存映射相关变量
     bool useMemoryMap_;
@@ -674,6 +678,9 @@ private:
     
     // 辅助函数：尝试从多个元数据键中提取字符串值
     bool tryExtractString(std::string& result, const std::vector<std::string>& keys);
+    
+    // 辅助函数：尝试从多个元数据键中提取浮点数值
+    bool tryExtractFloat32(float& result, const std::vector<std::string>& keys);
     
     // 获取张量大小（字节数）
     size_t getTensorByteSize(const GGULTensorInfo& tensorInfo) const;

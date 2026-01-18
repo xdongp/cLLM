@@ -147,6 +147,13 @@ bool GGUFLoader::loadWeights(cllm::model::ModelWeights& weights, bool loadAll) {
             layer.norm2.name = "layers." + std::to_string(i) + ".ffn_norm.weight";
             layer.norm2.dtype = kylin::WeightDType::FP32;
             
+            // Q/K 独立归一化权重（Qwen3等模型需要，可选）
+            layer.attnQNorm.name = "layers." + std::to_string(i) + ".attention.attn_q_norm.weight";
+            layer.attnQNorm.dtype = kylin::WeightDType::FP32;
+            
+            layer.attnKNorm.name = "layers." + std::to_string(i) + ".attention.attn_k_norm.weight";
+            layer.attnKNorm.dtype = kylin::WeightDType::FP32;
+            
             weights.layers.push_back(layer);
         }
         
@@ -174,6 +181,35 @@ bool GGUFLoader::loadWeights(cllm::model::ModelWeights& weights, bool loadAll) {
                 loadWeightByName("layers." + std::to_string(i) + ".feed_forward.wDown.weight", layer.wDown);
                 loadWeightByName("layers." + std::to_string(i) + ".attention_norm.weight", layer.norm1);
                 loadWeightByName("layers." + std::to_string(i) + ".ffn_norm.weight", layer.norm2);
+                
+                // 尝试加载 Q/K 独立归一化权重（可选，如果不存在会返回false但不报错）
+                // 支持多种命名格式：Qwen3可能使用 blk.X.attn_q_norm.weight 或 layers.X.attention.attn_q_norm.weight
+                std::string layerPrefix = "layers." + std::to_string(i);
+                std::string blkPrefix = "blk." + std::to_string(i);
+                
+                // 尝试多种可能的命名格式
+                bool qNormLoaded = loadWeightByName(layerPrefix + ".attention.attn_q_norm.weight", layer.attnQNorm);
+                if (!qNormLoaded) {
+                    qNormLoaded = loadWeightByName(blkPrefix + ".attn_q_norm.weight", layer.attnQNorm);
+                }
+                if (!qNormLoaded) {
+                    qNormLoaded = loadWeightByName(layerPrefix + ".attn_q_norm.weight", layer.attnQNorm);
+                }
+                
+                bool kNormLoaded = loadWeightByName(layerPrefix + ".attention.attn_k_norm.weight", layer.attnKNorm);
+                if (!kNormLoaded) {
+                    kNormLoaded = loadWeightByName(blkPrefix + ".attn_k_norm.weight", layer.attnKNorm);
+                }
+                if (!kNormLoaded) {
+                    kNormLoaded = loadWeightByName(layerPrefix + ".attn_k_norm.weight", layer.attnKNorm);
+                }
+                
+                if (qNormLoaded && kNormLoaded) {
+                    CLLM_DEBUG("Loaded attn_q_norm and attn_k_norm for layer %zu", i);
+                } else if (qNormLoaded || kNormLoaded) {
+                    CLLM_WARN("Layer %zu: Only one of attn_q_norm/attn_k_norm loaded (q=%d, k=%d)", 
+                             i, qNormLoaded, kNormLoaded);
+                }
             }
         }
         
@@ -201,7 +237,9 @@ bool GGUFLoader::loadWeightByName(const std::string& name, cllm::model::WeightDa
         uint64_t savedPos = getCurrentFilePosition();
         
         // 定位到张量数据位置
-        setFilePosition(tensorInfo.offset);
+        // 注意：GGUF中的tensorInfo.offset是相对数据段起点(data section)的偏移
+        // dataSectionOffset_在parseTensorInfos()对齐到数据段后确定
+        setFilePosition(dataSectionOffset_ + tensorInfo.offset);
         
         // 设置权重的元数据
         weight.name = name;
@@ -216,15 +254,20 @@ bool GGUFLoader::loadWeightByName(const std::string& name, cllm::model::WeightDa
         
         // 计算权重元素数量
         size_t elementCount = weight.elementCount();
-        
-        // 预分配输出缓冲区
+
+        // 输出缓冲区：仅在成功读取/反量化后填充
+        // （重要）失败时必须保持为空，避免上层把“失败”当成“成功但全0”。
+        weight.data.clear();
         weight.data.reserve(elementCount);
-        weight.data.resize(elementCount);
         
         // 根据张量类型读取并反量化权重数据
-        switch (static_cast<uint32_t>(tensorInfo.type)) {
+        uint32_t tensorType = static_cast<uint32_t>(tensorInfo.type);
+        CLLM_INFO("张量 %s 类型: %u", name.c_str(), tensorType);
+        
+        switch (tensorType) {
             case 0: // F32
                 // 直接读取
+                weight.data.resize(elementCount);
                 readValues(weight.data.data(), elementCount);
                 break;
             case 1: // F16
@@ -233,11 +276,12 @@ bool GGUFLoader::loadWeightByName(const std::string& name, cllm::model::WeightDa
                     std::vector<uint16_t> f16Data;
                     f16Data.reserve(elementCount);
                     f16Data.resize(elementCount);
-                    
+
                     // 批量读取F16数据
                     readValues(f16Data.data(), elementCount);
-                    
-                    // 使用SIMD优化的反量化
+
+                    // 反量化输出
+                    weight.data.resize(elementCount);
                     dequantizeF16ToF32(f16Data.data(), weight.data.data(), elementCount);
                 }
                 break;
@@ -258,21 +302,20 @@ bool GGUFLoader::loadWeightByName(const std::string& name, cllm::model::WeightDa
             case 12: // Q4_K (Q4_K_M)
                 {
                     // Q4_K格式: 每个块144字节，包含256个元素
-                    // 使用kylin模块的反量化函数
                     using namespace kylin::quantization;
-                    
-                    size_t blockCount = (elementCount + QK_K - 1) / QK_K;
-                    size_t q4DataSize = blockCount * sizeof(block_q4_K);
-                    
-                    // 预分配Q4_K数据缓冲区
+
+                    const size_t blockCount = (elementCount + QK_K - 1) / QK_K;
+                    const size_t q4DataSize = blockCount * sizeof(block_q4_K);
+
                     std::vector<uint8_t> q4Data;
                     q4Data.reserve(q4DataSize);
                     q4Data.resize(q4DataSize);
-                    
+
                     // 批量读取Q4_K数据
                     readValues(q4Data.data(), q4DataSize);
-                    
-                    // 使用kylin模块的反量化函数
+
+                    // 反量化输出
+                    weight.data.resize(elementCount);
                     dequantize_q4_K_to_f32(q4Data.data(), weight.data.data(), elementCount);
                 }
                 break;
@@ -296,44 +339,27 @@ bool GGUFLoader::loadWeightByName(const std::string& name, cllm::model::WeightDa
                 break;
             case 14: // Q6_K
                 {
-                    // Q6_K格式: 每个块256个元素，每个块约24字节（根据getTensorByteSize）
-                    // Q6_K使用6位量化，每个块包含scale和量化数据
-                    // 暂时使用简单的反量化：读取原始数据并转换为FP32
-                    // TODO: 实现完整的Q6_K反量化算法（参考llama.cpp的实现）
-                    CLLM_WARN("Q6_K反量化使用简化实现，可能影响精度");
-                    
-                    // 使用getTensorByteSize计算实际数据大小（更安全）
-                    size_t actualByteSize = getTensorByteSize(tensorInfo);
-                    if (actualByteSize == 0) {
-                        CLLM_ERROR("无法计算Q6_K张量的字节大小");
-                        setFilePosition(savedPos);
-                        return false;
-                    }
-                    
-                    // 预分配Q6_K数据缓冲区
+                    // Q6_K格式：256个元素/块，使用 kylin::quantization 的反量化实现
+                    using namespace kylin::quantization;
+
+                    const size_t blockCount = (elementCount + QK_K - 1) / QK_K;
+                    const size_t q6DataSize = blockCount * sizeof(block_q6_K);
+
                     std::vector<uint8_t> q6Data;
-                    q6Data.reserve(actualByteSize);
-                    q6Data.resize(actualByteSize);
-                    
+                    q6Data.reserve(q6DataSize);
+                    q6Data.resize(q6DataSize);
+
                     // 批量读取Q6_K数据
-                    readValues(q6Data.data(), actualByteSize);
-                    
-                    // 简化反量化：将数据转换为FP32
-                    // 这是一个临时实现，应该替换为完整的Q6_K反量化算法
-                    // 暂时使用简单的线性映射，将字节值映射到[-1, 1]范围
-                    size_t dataSize = std::min(actualByteSize, elementCount);
-                    for (size_t i = 0; i < dataSize; ++i) {
-                        // 简化：直接将字节值映射到[-1, 1]范围
-                        weight.data[i] = (static_cast<float>(q6Data[i]) - 128.0f) / 128.0f;
-                    }
-                    // 如果元素数超过读取的数据，剩余部分填充0
-                    for (size_t i = dataSize; i < elementCount; ++i) {
-                        weight.data[i] = 0.0f;
-                    }
+                    readValues(q6Data.data(), q6DataSize);
+
+                    // 反量化输出
+                    weight.data.resize(elementCount);
+                    dequantize_q6_K_to_f32(q6Data.data(), weight.data.data(), elementCount);
                 }
                 break;
             default:
                 CLLM_ERROR("不支持的张量类型: %u", static_cast<uint32_t>(tensorInfo.type));
+                weight.data.clear();
                 setFilePosition(savedPos);
                 return false;
         }
@@ -344,6 +370,7 @@ bool GGUFLoader::loadWeightByName(const std::string& name, cllm::model::WeightDa
         return true;
     } catch (const std::exception& e) {
         CLLM_ERROR("加载张量 %s 失败: %s", name.c_str(), e.what());
+        weight.data.clear();
         return false;
     }
 }
@@ -1172,13 +1199,16 @@ void GGUFLoader::parseTensorInfos(uint64_t tensorCount) {
         CLLM_INFO("将文件位置从 %zu 对齐到 %zu (对齐值 %u，填充 %zu 字节)", 
                  currentPosition_ - paddingSize, alignedPosition, alignment_, paddingSize);
     }
-    
+
+    // 记录数据段起始位置：GGUF张量offset均相对该位置
+    dataSectionOffset_ = currentPosition_;
+
     // 验证张量偏移的对齐（参考llama.cpp的实现）
-    // 注意：GGUF文件中的偏移量是相对于数据段开始的绝对偏移量
+    // 注意：GGUF文件中的偏移量是相对于数据段开始位置(dataSectionOffset_)的相对偏移
     // 不同GGUF文件可能使用不同的张量排列顺序，所以不强制要求连续偏移
     // 我们只验证偏移量是否对齐，以及是否在文件范围内
     
-    uint64_t dataSectionOffset = currentPosition_;
+    uint64_t dataSectionOffset = dataSectionOffset_;
     uint64_t minOffset = UINT64_MAX;
     uint64_t maxOffset = 0;
     
@@ -1196,24 +1226,27 @@ void GGUFLoader::parseTensorInfos(uint64_t tensorCount) {
         size_t paddedSize = alignOffset(tensorSize);
         
         // 验证偏移量是否在文件范围内
-        uint64_t tensorEndOffset = ti.offset + paddedSize;
+        // ti.offset 是相对 dataSectionOffset_ 的偏移，因此这里需要加上 dataSectionOffset_
+        uint64_t tensorEndOffset = dataSectionOffset_ + ti.offset + paddedSize;
         if (tensorEndOffset > fileSize_) {
             throw std::runtime_error("张量 '" + ti.name + "' 的结束偏移量 " + 
                                     std::to_string(tensorEndOffset) + 
                                     " 超出文件大小 " + std::to_string(fileSize_));
         }
         
-        // 跟踪最小和最大偏移量
+        // 跟踪最小和最大偏移量（这里记录的是“相对数据段”的范围，便于观察）
         if (ti.offset < minOffset) {
             minOffset = ti.offset;
         }
-        if (tensorEndOffset > maxOffset) {
-            maxOffset = tensorEndOffset;
+        uint64_t endOffsetRelative = ti.offset + paddedSize;
+        if (endOffsetRelative > maxOffset) {
+            maxOffset = endOffsetRelative;
         }
     }
     
-    CLLM_INFO("张量偏移验证完成，数据段范围: [%zu, %zu] 字节，总大小: %zu 字节", 
+    CLLM_INFO("张量偏移验证完成（相对数据段），范围: [%zu, %zu] 字节，总大小: %zu 字节", 
              minOffset, maxOffset, maxOffset - minOffset);
+    CLLM_INFO("GGUF 数据段起始位置: %zu", dataSectionOffset_);
 }
 
 // 辅助函数：从元数据中提取uint32_t值
@@ -1259,6 +1292,23 @@ bool GGUFLoader::tryExtractString(std::string& result, const std::vector<std::st
     return false;
 }
 
+// 辅助函数：尝试从多个元数据键中提取浮点数值
+bool GGUFLoader::tryExtractFloat32(float& result, const std::vector<std::string>& keys) {
+    for (const auto& key : keys) {
+        auto it = metadata_.find(key);
+        if (it != metadata_.end()) {
+            if (it->second.type == GGUFValueType::FLOAT32) {
+                result = it->second.value.f32_val;
+                return true;
+            } else if (it->second.type == GGUFValueType::FLOAT64) {
+                result = static_cast<float>(it->second.value.f64_val);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void GGUFLoader::extractModelConfig() {
     // 从元数据中提取模型配置
     // 设置默认值
@@ -1270,6 +1320,8 @@ void GGUFLoader::extractModelConfig() {
     config_.numKeyValueHeads = 8;
     config_.maxSequenceLength = 512;
     config_.intermediateSize = 3072;
+    config_.ropeTheta = 10000.0f;  // 默认 RoPE theta
+    config_.rmsNormEps = 1e-5f;    // 默认 RMSNorm eps
     config_.useKVCache = true;
     config_.useQuantization = false;
     config_.useMemoryCompression = false;
@@ -1544,6 +1596,106 @@ void GGUFLoader::extractModelConfig() {
         }
     }
     
+    // 提取 RoPE theta（rope.freq_base）
+    float ropeTheta = 10000.0f;  // 默认值
+    std::vector<std::string> ropeThetaKeys = {
+        "llm.rope.freq_base",
+        "rope.freq_base",
+        "qwen3.rope.freq_base",
+        "qwen.rope.freq_base"
+    };
+    if (tryExtractFloat32(ropeTheta, ropeThetaKeys)) {
+        config_.ropeTheta = ropeTheta;
+        CLLM_INFO("从元数据提取rope_theta (freq_base): %f", ropeTheta);
+    } else {
+        config_.ropeTheta = ropeTheta;  // 使用默认值
+        CLLM_INFO("使用默认rope_theta: %f", ropeTheta);
+    }
+    
+    // 提取 RMSNorm epsilon
+    float rmsNormEps = 1e-5f;  // 默认值
+    std::vector<std::string> rmsNormEpsKeys = {
+        "llm.rms_norm_eps",
+        "rms_norm_eps",
+        "qwen3.rms_norm_eps",
+        "qwen.rms_norm_eps"
+    };
+    if (tryExtractFloat32(rmsNormEps, rmsNormEpsKeys)) {
+        config_.rmsNormEps = rmsNormEps;
+        CLLM_INFO("从元数据提取rms_norm_eps: %e", rmsNormEps);
+    } else {
+        config_.rmsNormEps = rmsNormEps;  // 使用默认值
+        CLLM_INFO("使用默认rms_norm_eps: %e", rmsNormEps);
+    }
+    
+    // P3修复：提取 RoPE 扩展参数
+    // 1. rope_n_ctx_orig (原始上下文长度)
+    uint32_t ropeNctxOrig = config_.maxSequenceLength;  // 默认等于maxSequenceLength
+    std::vector<std::string> ropeNctxOrigKeys = {
+        "llm.rope.n_ctx_orig",
+        "rope.n_ctx_orig",
+        "qwen3.rope.n_ctx_orig",
+        "qwen.rope.n_ctx_orig"
+    };
+    if (tryExtractUInt32(ropeNctxOrig, ropeNctxOrigKeys)) {
+        config_.ropeNctxOrig = ropeNctxOrig;
+        CLLM_INFO("从元数据提取rope_n_ctx_orig: %u", ropeNctxOrig);
+    } else {
+        config_.ropeNctxOrig = config_.maxSequenceLength;  // 默认等于maxSequenceLength
+        CLLM_INFO("使用默认rope_n_ctx_orig: %u (等于maxSequenceLength)", config_.ropeNctxOrig);
+    }
+    
+    // 2. rope_freq_scale (频率缩放因子)
+    float ropeFreqScale = 1.0f;  // 默认值
+    std::vector<std::string> ropeFreqScaleKeys = {
+        "llm.rope.freq_scale",
+        "rope.freq_scale",
+        "qwen3.rope.freq_scale",
+        "qwen.rope.freq_scale"
+    };
+    if (tryExtractFloat32(ropeFreqScale, ropeFreqScaleKeys)) {
+        config_.ropeFreqScale = ropeFreqScale;
+        CLLM_INFO("从元数据提取rope_freq_scale: %f", ropeFreqScale);
+    } else {
+        config_.ropeFreqScale = 1.0f;  // 使用默认值
+        CLLM_INFO("使用默认rope_freq_scale: %f", config_.ropeFreqScale);
+    }
+    
+    // 3. rope_type (RoPE类型)
+    int32_t ropeType = 0;  // 默认标准RoPE
+    std::vector<std::string> ropeTypeKeys = {
+        "llm.rope.type",
+        "rope.type",
+        "qwen3.rope.type",
+        "qwen.rope.type"
+    };
+    // 注意：rope_type 可能是 UINT32 或 INT32，先尝试 UINT32
+    uint32_t ropeTypeUint = 0;
+    if (tryExtractUInt32(ropeTypeUint, ropeTypeKeys)) {
+        ropeType = static_cast<int32_t>(ropeTypeUint);
+        config_.ropeType = ropeType;
+        CLLM_INFO("从元数据提取rope_type: %d", ropeType);
+    } else {
+        config_.ropeType = 0;  // 使用默认值（标准RoPE）
+        CLLM_INFO("使用默认rope_type: %d", config_.ropeType);
+    }
+    
+    // 4. rope_ext_factor (扩展因子)
+    float ropeExtFactor = 1.0f;  // 默认值
+    std::vector<std::string> ropeExtFactorKeys = {
+        "llm.rope.ext_factor",
+        "rope.ext_factor",
+        "qwen3.rope.ext_factor",
+        "qwen.rope.ext_factor"
+    };
+    if (tryExtractFloat32(ropeExtFactor, ropeExtFactorKeys)) {
+        config_.ropeExtFactor = ropeExtFactor;
+        CLLM_INFO("从元数据提取rope_ext_factor: %f", ropeExtFactor);
+    } else {
+        config_.ropeExtFactor = 1.0f;  // 使用默认值
+        CLLM_INFO("使用默认rope_ext_factor: %f", config_.ropeExtFactor);
+    }
+    
     // 检查是否使用量化
     if (!tensorInfos_.empty()) {
         const GGULTensorInfo& firstTensor = tensorInfos_[0];
@@ -1577,18 +1729,25 @@ void GGUFLoader::extractModelConfig() {
 // 获取GGML类型的块大小（每个块包含的元素数）
 static int64_t getGGMLBlockSize(GGMLType type) {
     switch (type) {
+        // "传统"量化：32个元素/块
         case GGMLType::Q4_0:
         case GGMLType::Q4_1:
         case GGMLType::Q5_0:
         case GGMLType::Q5_1:
         case GGMLType::Q8_0:
         case GGMLType::Q8_1:
+            return 32;
+
+        // K-quant：256个元素/块 (QK_K)
         case GGMLType::Q2_K:
         case GGMLType::Q3_K:
         case GGMLType::Q4_K:
         case GGMLType::Q5_K:
         case GGMLType::Q6_K:
         case GGMLType::Q8_K:
+            return 256;
+
+        // IQ/TQ/MXFP4 这里先按32处理（后续如需严格支持再补齐）
         case GGMLType::IQ2_XXS:
         case GGMLType::IQ2_XS:
         case GGMLType::IQ3_XXS:
@@ -1600,9 +1759,11 @@ static int64_t getGGMLBlockSize(GGMLType type) {
         case GGMLType::IQ1_M:
         case GGMLType::TQ1_0:
         case GGMLType::TQ2_0:
-            return 32; // 大多数量化类型使用32元素块
+        case GGMLType::MXFP4:
+            return 32;
+
         default:
-            return 1;  // 非量化类型，块大小为1
+            return 1;
     }
 }
 
@@ -1623,12 +1784,14 @@ static size_t getGGMLTypeSize(GGMLType type) {
         case GGMLType::Q5_1: return 24; // 32个元素，每个块24字节（2字节scale + 2字节bias + 20字节数据）
         case GGMLType::Q8_0: return 34; // 32个元素，每个块34字节（2字节scale + 32字节数据）
         case GGMLType::Q8_1: return 36; // 32个元素，每个块36字节（2字节scale + 2字节bias + 32字节数据）
-        case GGMLType::Q2_K: return 12; // 32个元素，每个块12字节
-        case GGMLType::Q3_K: return 14; // 32个元素，每个块14字节
-        case GGMLType::Q4_K: return 16; // 32个元素，每个块16字节
-        case GGMLType::Q5_K: return 20; // 32个元素，每个块20字节
-        case GGMLType::Q6_K: return 24; // 32个元素，每个块24字节
-        case GGMLType::Q8_K: return 34; // 32个元素，每个块34字节
+        // K-quant：这里的 size 指的是“每个256元素块”的字节数（与llama.cpp的type_traits一致）
+        // 说明：当前工程已实现 Q4_K 的反量化/读取，因此这里至少要保证 Q4_K 正确。
+        case GGMLType::Q2_K: return 0;   // TODO: 补齐具体块大小后启用严格校验
+        case GGMLType::Q3_K: return 0;   // TODO: 补齐具体块大小后启用严格校验
+        case GGMLType::Q4_K: return 144; // sizeof(block_q4_K)
+        case GGMLType::Q5_K: return 176; // sizeof(block_q5_K) (llama.cpp/ggml)
+        case GGMLType::Q6_K: return 210; // sizeof(block_q6_K) (llama.cpp/ggml)
+        case GGMLType::Q8_K: return 0;   // TODO: 补齐具体块大小后启用严格校验
         case GGMLType::IQ2_XXS: return 8;  // 32个元素，每个块8字节
         case GGMLType::IQ2_XS: return 10;  // 32个元素，每个块10字节
         case GGMLType::IQ3_XXS: return 10; // 32个元素，每个块10字节

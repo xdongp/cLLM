@@ -99,7 +99,7 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
             
             // 编码prompt
             CLLM_DEBUG("Starting tokenization...");
-            requestState.tokenizedPrompt = tokenizer_->encode(req.prompt, true);
+            requestState.tokenizedPrompt = tokenizer_->encode(req.prompt, false);
             CLLM_DEBUG("Tokenization completed, got %zu tokens", requestState.tokenizedPrompt.size());
             
             // 控制输入长度：TorchScript trace 可能固化 seq_len（当前模型为 128），过长输入会导致推理开销变大
@@ -173,10 +173,14 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
 
                     generatedTokenCount = toDecode.size();
 
-                    CLLM_DEBUG("Decoding tokens...");
-                    generatedText = tokenizer_->decode(toDecode, true);
-                    CLLM_DEBUG("Decoded text: [%s]", generatedText.c_str());
-                    CLLM_DEBUG("Decoded text length: %zu", generatedText.length());
+                    try {
+                        generatedText = tokenizer_->decode(toDecode, true);
+                        CLLM_DEBUG("Decoded text: [%s]", generatedText.c_str());
+                        CLLM_DEBUG("Decoded text length: %zu", generatedText.length());
+                    } catch (const std::exception& e) {
+                        CLLM_ERROR("Exception during tokenizer decode: %s", e.what());
+                        generatedText = "[Decode Error: " + std::string(e.what()) + "]";
+                    }
                 } else {
                     CLLM_WARN("No tokens generated!");
                     generatedText = "No tokens generated";
@@ -224,7 +228,7 @@ HttpResponse GenerateEndpoint::handleStreaming(const GenerateRequest& req) {
     response.setHeader("Connection", cllm::Config::instance().apiResponseHeaderConnection());
     
     if (tokenizer_ != nullptr) {
-        std::vector<int> inputTokens = tokenizer_->encode(req.prompt, true);
+        std::vector<int> inputTokens = tokenizer_->encode(req.prompt, false);
         
         std::string generatedText;
         for (int i = 0; i < req.maxTokens; ++i) {

@@ -310,7 +310,7 @@ start-gguf-q4k-bg: build
 		--model-path $(GGUF_Q4K_MODEL_PATH) \
 		--port $(GGUF_Q4K_PORT) \
 		--host 0.0.0.0 \
-		--log-level info \
+		--log-level debug \
 		--max-batch-size $(MAX_BATCH_SIZE) \
 		--max-context-length $(MAX_CONTEXT_LENGTH) \
 		> logs/cllm_server_q4k_$(GGUF_Q4K_PORT).log 2>&1 & \
@@ -428,7 +428,7 @@ test-curl-q4k:
 	@echo "测试 Q4K 服务器 /generate 接口..."
 	@curl -X POST http://localhost:$(GGUF_Q4K_PORT)/generate \
 		-H "Content-Type: application/json" \
-		-d '{"prompt": "Hello, how are you?", "max_tokens": 10, "temperature": 0.7}' \
+		-d '{"prompt": "介绍人工智能", "max_tokens": 8, "temperature": 0.7}' \
 		| python3 -m json.tool || echo "请求失败，请确保服务器已启动 (端口: $(GGUF_Q4K_PORT))"
 
 run: start

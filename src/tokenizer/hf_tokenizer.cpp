@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <filesystem>
+#include <algorithm>
 
 namespace cllm {
 
@@ -147,17 +148,21 @@ void HFTokenizer::loadConfig(const std::string& modelPath) {
             // 读取特殊Token IDs
             if (config.contains("bos_token_id")) {
                 bosId_ = config["bos_token_id"].get<int>();
+                if (bosId_ > maxSpecialTokenId_) maxSpecialTokenId_ = bosId_;
             }
             if (config.contains("eos_token_id")) {
                 eosId_ = config["eos_token_id"].get<int>();
+                if (eosId_ > maxSpecialTokenId_) maxSpecialTokenId_ = eosId_;
             }
             if (config.contains("pad_token_id")) {
                 if (!config["pad_token_id"].is_null()) {
                     padId_ = config["pad_token_id"].get<int>();
+                    if (padId_ > maxSpecialTokenId_) maxSpecialTokenId_ = padId_;
                 }
             }
             if (config.contains("unk_token_id")) {
                 unkId_ = config["unk_token_id"].get<int>();
+                if (unkId_ > maxSpecialTokenId_) maxSpecialTokenId_ = unkId_;
             }
             
             // 读取added_tokens_decoder (完整的特殊Token列表)
@@ -166,6 +171,7 @@ void HFTokenizer::loadConfig(const std::string& modelPath) {
                 for (auto& [key, value] : tokens.items()) {
                     int tokenId = std::stoi(key);
                     specialTokenIds_.insert(tokenId);
+                    if (tokenId > maxSpecialTokenId_) maxSpecialTokenId_ = tokenId;
                 }
             }
             
@@ -181,7 +187,11 @@ void HFTokenizer::loadConfig(const std::string& modelPath) {
 int HFTokenizer::getVocabSize() const {
 #ifdef USE_TOKENIZERS_CPP
     if (!tokenizer_) return 0;
-    return tokenizer_->GetVocabSize();
+    int baseSize = static_cast<int>(tokenizer_->GetVocabSize());
+    if (maxSpecialTokenId_ >= 0) {
+        return std::max(baseSize, maxSpecialTokenId_ + 1);
+    }
+    return baseSize;
 #else
     return 0;
 #endif

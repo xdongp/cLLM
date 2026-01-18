@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 
 namespace cllm {
@@ -51,29 +52,46 @@ private:
     
     // 初始化编码/解码逻辑
     void initializeEncoding();
-    
+
+    // 预分词/编码
+    std::vector<std::string> preTokenize(const std::string& text) const;
+    std::vector<std::string> bpe(const std::string& token) const;
+    void buildByteEncoder();
+
     // 核心数据结构
     std::unordered_map<int, std::string> idToTokenMap_;
     std::unordered_map<std::string, int> tokenToIdMap_;
-    
+
     // BPE合并规则
     std::vector<std::pair<std::string, std::string>> mergeRules_;
-    
+    std::unordered_map<std::string, int> bpeRanks_;
+
+    // Byte-level encoder/decoder
+    std::unordered_map<unsigned char, std::string> byteEncoder_;
+    std::unordered_map<std::string, unsigned char> byteDecoder_;
+
+    // 特殊token
+    std::unordered_set<int> specialTokenIds_;
+    std::vector<std::string> specialTokenStrings_;
+
     // 特殊token ID
     int bosTokenId_ = -1;
     int eosTokenId_ = -1;
     int padTokenId_ = -1;
     int unkTokenId_ = -1;
-    
+
     // 词汇表大小
     int vocabSize_ = 0;
-    
+
     // 模型类型
     ModelType modelType_ = ModelType::LLAMA;
-    
+
+    // tokenizer pre type
+    std::string preTokenizer_;
+
     // 是否已加载
     bool loaded_ = false;
-    
+
     // 原始模型路径
     std::string modelPath_;
 };

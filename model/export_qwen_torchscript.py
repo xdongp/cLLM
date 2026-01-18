@@ -75,11 +75,65 @@ def export_qwen_torchscript(
     # 应用量化
     if use_int8:
         print("[export_qwen_torchscript] Applying INT8 dynamic quantization...")
-        model = torch.quantization.quantize_dynamic(
-            model,
-            {torch.nn.Linear},
-            dtype=torch.qint8
-        )
+        
+        # 检查量化引擎支持
+        supported_engines = torch.backends.quantized.supported_engines
+        print(f"[export_qwen_torchscript] Available quantization engines: {supported_engines}")
+        
+        # 尝试设置量化引擎（优先使用 qnnpack，在 macOS ARM 上通常可用）
+        try:
+            if 'qnnpack' in supported_engines:
+                torch.backends.quantized.engine = 'qnnpack'
+                print("[export_qwen_torchscript] Using qnnpack quantization engine")
+            elif 'fbgemm' in supported_engines:
+                torch.backends.quantized.engine = 'fbgemm'
+                print("[export_qwen_torchscript] Using fbgemm quantization engine")
+            else:
+                print("[export_qwen_torchscript] Warning: No quantization engine available!")
+                print("[export_qwen_torchscript] Supported engines: " + str(supported_engines))
+                raise RuntimeError(
+                    "No quantization engine available. This is common on macOS/Apple Silicon. "
+                    "Please use --fp16 instead, or install a PyTorch build with quantization support."
+                )
+        except Exception as e:
+            print(f"[export_qwen_torchscript] Error setting quantization engine: {e}")
+            raise
+        
+        # 确保模型在 CPU 上（量化需要 CPU）
+        model = model.cpu()
+        
+        try:
+            # 尝试使用新的 API (torch.ao.quantization) 如果可用
+            try:
+                model = torch.ao.quantization.quantize_dynamic(
+                    model,
+                    {torch.nn.Linear},
+                    dtype=torch.qint8
+                )
+            except (AttributeError, ImportError):
+                # 回退到旧 API
+                model = torch.quantization.quantize_dynamic(
+                    model,
+                    {torch.nn.Linear},
+                    dtype=torch.qint8
+                )
+        except RuntimeError as e:
+            if "NoQEngine" in str(e) or "quantized::linear_prepack" in str(e):
+                print("\n[export_qwen_torchscript] ❌ INT8 quantization failed!")
+                print("[export_qwen_torchscript] Reason: Quantization engine not available")
+                print("[export_qwen_torchscript] This is common on macOS, especially Apple Silicon.")
+                print("\n[export_qwen_torchscript] 💡 Solution:")
+                print("  1. Use FP16 instead: --fp16")
+                print("  2. Or skip quantization: remove --int8 flag")
+                print("\n[export_qwen_torchscript] To use INT8, you need:")
+                print("  - PyTorch built with quantization support")
+                print("  - Or quantize on Linux/x86 machine, then deploy to macOS")
+                raise RuntimeError(
+                    f"INT8 quantization failed: {e}\n"
+                    "Tip: Use --fp16 instead, or remove --int8 flag to export FP32 model."
+                ) from e
+            else:
+                raise
     elif use_fp16:
         print("[export_qwen_torchscript] Converting to FP16...")
         model = model.half()

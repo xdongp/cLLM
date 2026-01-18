@@ -27,6 +27,8 @@ void ModelConfig::loadFromConfigFile(const std::string& configPath) {
                 modelType = value;
             } else if (key == "vocab_size") {
                 vocabSize = std::stoul(value);
+            } else if (key == "tokenizer_vocab_size") {
+                tokenizerVocabSize = std::stoul(value);
             } else if (key == "hidden_size") {
                 hiddenSize = std::stoul(value);
             } else if (key == "num_layers") {
@@ -53,6 +55,7 @@ std::string ModelConfig::toString() const {
     oss << "ModelConfig{"
         << "modelType=" << modelType
         << ", vocabSize=" << vocabSize
+        << ", tokenizerVocabSize=" << tokenizerVocabSize
         << ", hiddenSize=" << hiddenSize
         << ", numLayers=" << numLayers
         << ", numAttentionHeads=" << numAttentionHeads
@@ -61,6 +64,11 @@ std::string ModelConfig::toString() const {
         << ", useKVCache=" << (useKVCache ? "true" : "false")
         << ", useQuantization=" << (useQuantization ? "true" : "false")
         << ", quantizationType=" << quantizationType
+        << ", llamaBatchSize=" << llamaBatchSize
+        << ", llamaNumThreads=" << llamaNumThreads
+        << ", llamaGpuLayers=" << llamaGpuLayers
+        << ", llamaUseMmap=" << (llamaUseMmap ? "true" : "false")
+        << ", llamaUseMlock=" << (llamaUseMlock ? "true" : "false")
         << "}";
     return oss.str();
 }

@@ -164,6 +164,10 @@ private:
     /// 每层的 Norm 权重
     std::vector<kylin::Tensor> norm1_; // [hiddenSize]
     std::vector<kylin::Tensor> norm2_; // [hiddenSize]
+    
+    /// 每层的 Q/K 独立归一化权重（可选，Qwen3等模型需要）
+    std::vector<kylin::Tensor> attnQNorm_; // [headDim] 或 [hiddenSize]，取决于模型
+    std::vector<kylin::Tensor> attnKNorm_; // [headDim] 或 [hiddenSize]，取决于模型
 
     // ========== 内部方法 ==========
     

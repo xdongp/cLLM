@@ -200,6 +200,8 @@ bool KylinBackend::loadRealWeights() {
     wDown_.resize(numLayers);
     norm1_.resize(numLayers);
     norm2_.resize(numLayers);
+    attnQNorm_.resize(numLayers);
+    attnKNorm_.resize(numLayers);
 
     CLLM_INFO("[KylinBackend] Calling loadInto to map weights...");
     if (!loader_->loadInto(
@@ -211,6 +213,38 @@ bool KylinBackend::loadRealWeights() {
             lmHead_)) {
         CLLM_ERROR("[KylinBackend] Failed to map weights from ModelLoader");
         return false;
+    }
+
+    // 尝试加载 Q/K 归一化权重（如果使用 GGUF 格式且存在）
+    // 注意：loadInto 接口不支持这些权重，需要通过 ModelWeights 结构加载
+    // 这里先尝试通过 IModelLoader 接口加载（如果支持）
+    if (loader_) {
+        model::ModelWeights modelWeights;
+        if (loader_->loadWeights(modelWeights, false)) {  // 不立即加载数据，只创建结构
+            // 尝试加载 Q/K 归一化权重
+            for (size_t layer = 0; layer < numLayers && layer < modelWeights.layers.size(); ++layer) {
+                const auto& layerWeights = modelWeights.layers[layer];
+                
+                // 如果 Q/K 归一化权重存在，加载它们
+                if (!layerWeights.attnQNorm.shape.empty() && layerWeights.attnQNorm.data.size() > 0) {
+                    attnQNorm_[layer] = kylin::Tensor(layerWeights.attnQNorm.shape);
+                    std::copy(layerWeights.attnQNorm.data.begin(), 
+                             layerWeights.attnQNorm.data.end(), 
+                             attnQNorm_[layer].data());
+                    CLLM_DEBUG("[KylinBackend] Loaded attnQNorm for layer %zu (shape size: %zu)", 
+                              layer, layerWeights.attnQNorm.shape.size());
+                }
+                
+                if (!layerWeights.attnKNorm.shape.empty() && layerWeights.attnKNorm.data.size() > 0) {
+                    attnKNorm_[layer] = kylin::Tensor(layerWeights.attnKNorm.shape);
+                    std::copy(layerWeights.attnKNorm.data.begin(), 
+                             layerWeights.attnKNorm.data.end(), 
+                             attnKNorm_[layer].data());
+                    CLLM_DEBUG("[KylinBackend] Loaded attnKNorm for layer %zu (shape size: %zu)", 
+                              layer, layerWeights.attnKNorm.shape.size());
+                }
+            }
+        }
     }
 
     CLLM_INFO("[KylinBackend] Real weights loaded successfully");
@@ -310,7 +344,7 @@ void KylinBackend::bindWeightsToModel() {
     const size_t hidden = internalConfig_.hiddenSize;
     const size_t vocab = internalConfig_.vocabSize;
     const size_t numLayers = internalConfig_.numLayers;
-    const size_t numHeads = internalConfig_.numAttentionHeads;
+    size_t numHeads = internalConfig_.numAttentionHeads;  // 可能被修正
     
     if (numHeads == 0) {
         CLLM_ERROR("[KylinBackend] numHeads is 0!");
@@ -340,10 +374,178 @@ void KylinBackend::bindWeightsToModel() {
         internalConfig_.intermediateSize = inter;
     }
     
-    const size_t headDim = hidden / numHeads;
+    // P1修复：禁用"标准公式推断 heads"覆盖模型配置
+    // 但是，如果配置中的 numQHeads 明显错误（导致 Q/K head_dim 不一致），需要修正
+    // 根据对比文档，llama.cpp 的 Qwen3 实现要求 Q/K head_dim 一致
+    //
+    // 策略：
+    // 1. 先计算 qHeadDim = qDim / numHeads
+    // 2. 验证 kvDim 是否能被 qHeadDim 整除（Qwen3 要求 Q/K head_dim 一致）
+    // 3. 如果不能整除，说明配置的 numQHeads 可能错误，尝试从权重推断正确的值
     
-    CLLM_INFO("[KylinBackend] 验证权重形状: hidden=%zu, vocab=%zu, numLayers=%zu, numHeads=%zu, headDim=%zu, qDim=%zu, kvDim=%zu, inter=%zu",
-             hidden, vocab, numLayers, numHeads, headDim, qDim, kvDim, inter);
+    size_t standardHeadDim = hidden / numHeads;  // 标准 head_dim（仅用于对比和验证）
+    
+    // 验证 qDim 是否能被 numHeads 整除
+    if (numHeads > 0 && qDim > 0) {
+        if (qDim % numHeads != 0) {
+            CLLM_ERROR("[KylinBackend] ❌ qDim (%zu) 不能被 numQHeads (%zu) 整除，配置或权重可能有问题",
+                      qDim, numHeads);
+            throw std::runtime_error("qDim must be divisible by numQHeads");
+        }
+        
+        // 计算实际的 qHeadDim（从权重形状推断，支持扩展 head_dim）
+        size_t actualQHeadDim = qDim / numHeads;
+        
+        // P1修复增强：验证 Q/K head_dim 一致性
+        // llama.cpp 要求 Q/K head_dim 必须一致（n_embd_head_v == n_embd_head_k）
+        // 如果配置的 numQHeads 导致 Q/K head_dim 不一致，需要推断正确的值
+        if (kvDim > 0 && kvDim % actualQHeadDim != 0) {
+            // 配置的 numQHeads 导致 Q/K head_dim 不一致，尝试推断正确的值
+            // llama.cpp 要求 Q/K head_dim 必须一致，所以需要找到使得两者一致的 numQHeads
+            // 策略：找到同时能被 qDim 和 kvDim 整除的 head_dim，然后反推 numQHeads
+            
+            CLLM_WARN("[KylinBackend] ⚠️ 配置的 numQHeads (%zu) 导致 Q/K head_dim 不一致：qHeadDim=%zu, kvDim=%zu，尝试推断正确的值",
+                     numHeads, actualQHeadDim, kvDim);
+            
+            // 尝试推断：找到使得 Q 和 K 的 head_dim 一致的 head_dim
+            // 常见的 head_dim 值：64, 128, 256
+            size_t inferredHeadDim = 0;
+            size_t inferredNumQHeads = 0;
+            
+            for (size_t candidateHeadDim = 64; candidateHeadDim <= 256; candidateHeadDim *= 2) {
+                if (qDim % candidateHeadDim == 0 && kvDim % candidateHeadDim == 0) {
+                    size_t candidateNumQHeads = qDim / candidateHeadDim;
+                    size_t candidateNumKVHeads = kvDim / candidateHeadDim;
+                    // 验证 GQA 约束：numQHeads 必须能被 numKVHeads 整除
+                    if (candidateNumQHeads > 0 && candidateNumKVHeads > 0 && 
+                        candidateNumQHeads % candidateNumKVHeads == 0 &&
+                        candidateNumQHeads <= 128) {  // 合理的 head 数量范围
+                        inferredHeadDim = candidateHeadDim;
+                        inferredNumQHeads = candidateNumQHeads;
+                        break;
+                    }
+                }
+            }
+            
+            if (inferredHeadDim > 0 && inferredNumQHeads != numHeads) {
+                CLLM_WARN("[KylinBackend] ⚠️ 推断正确的 numQHeads=%zu (qDim=%zu / headDim=%zu)，原配置为 %zu，将更新配置",
+                         inferredNumQHeads, qDim, inferredHeadDim, numHeads);
+                internalConfig_.numAttentionHeads = inferredNumQHeads;
+                numHeads = inferredNumQHeads;  // 更新局部变量
+                actualQHeadDim = inferredHeadDim;  // 更新 actualQHeadDim
+                standardHeadDim = hidden / numHeads;  // 重新计算 standardHeadDim
+            } else if (inferredHeadDim == 0) {
+                CLLM_ERROR("[KylinBackend] ❌ 无法推断正确的 numQHeads，Q/K head_dim 不一致：qHeadDim=%zu (qDim=%zu / numQHeads=%zu), kvDim=%zu",
+                          actualQHeadDim, qDim, numHeads, kvDim);
+                throw std::runtime_error("Cannot infer correct numQHeads: Q/K head_dim inconsistent");
+            }
+        }
+        
+        // 如果 actualQHeadDim != standardHeadDim，说明使用了扩展 head_dim（如 Qwen3）
+        if (actualQHeadDim != standardHeadDim) {
+            size_t expansionFactor = actualQHeadDim / standardHeadDim;
+            CLLM_INFO("[KylinBackend] ✓ 检测到扩展 head_dim：qHeadDim=%zu (标准=%zu, 扩展因子=%zu)，使用配置的 numQHeads=%zu",
+                     actualQHeadDim, standardHeadDim, expansionFactor, numHeads);
+        } else {
+            CLLM_INFO("[KylinBackend] ✓ 使用标准 head_dim：qHeadDim=%zu，numQHeads=%zu",
+                     actualQHeadDim, numHeads);
+        }
+    }
+    
+    // 从 kvDim 推断 KV heads（GQA 支持）
+    // 关键点：Qwen3（llama.cpp 实现）要求 Q/K 的 head_dim 一致（n_embd_head_v == n_embd_head_k）。
+    // 在这类模型中，head_dim 不能用 hidden/num_heads 的“标准公式”推断，而应以投影权重的实际形状为准。
+    // 因此 KV heads 应该使用 qHeadDimFromWeights 反推：numKVHeads = kvDim / qHeadDimFromWeights。
+    size_t qHeadDimFromWeights = 0;
+    if (internalConfig_.numAttentionHeads > 0 && qDim % internalConfig_.numAttentionHeads == 0) {
+        qHeadDimFromWeights = qDim / internalConfig_.numAttentionHeads;
+    }
+
+    // P1修复：验证 kvDim 是否能被 qHeadDim 整除（Qwen3 要求 Q/K head_dim 一致）
+    // 优先相信配置中的 numKeyValueHeads，只在配置不合理时才推断
+    bool kvHeadsInferred = false;
+    if (qHeadDimFromWeights > 0 && kvDim > 0) {
+        if (kvDim % qHeadDimFromWeights != 0) {
+            CLLM_ERROR("[KylinBackend] ❌ kvDim (%zu) 不能被 qHeadDim (%zu) 整除，Q/K head_dim 不一致！",
+                      kvDim, qHeadDimFromWeights);
+            throw std::runtime_error("kvDim must be divisible by qHeadDim (Qwen3 requires Q/K head_dim to be consistent)");
+        }
+        
+        size_t inferredNumKVHeads = kvDim / qHeadDimFromWeights;
+        if (inferredNumKVHeads > 0 &&
+            inferredNumKVHeads <= internalConfig_.numAttentionHeads &&
+            (internalConfig_.numAttentionHeads % inferredNumKVHeads == 0)) {
+            size_t configKVHeadDim = 0;
+            if (internalConfig_.numKeyValueHeads > 0 && kvDim % internalConfig_.numKeyValueHeads == 0) {
+                configKVHeadDim = kvDim / internalConfig_.numKeyValueHeads;
+            }
+            // 如果配置不合理或导致 Q/K head_dim 不一致，使用推断值
+            if (internalConfig_.numKeyValueHeads == 0 ||
+                internalConfig_.numKeyValueHeads > internalConfig_.numAttentionHeads ||
+                configKVHeadDim != qHeadDimFromWeights) {
+                CLLM_WARN("[KylinBackend] ⚠️ 配置的 numKVHeads=%zu 导致 kvHeadDim=%zu，与 qHeadDim=%zu 不一致，改为 %zu",
+                         internalConfig_.numKeyValueHeads, configKVHeadDim, qHeadDimFromWeights, inferredNumKVHeads);
+                internalConfig_.numKeyValueHeads = inferredNumKVHeads;
+                kvHeadsInferred = true;
+            } else {
+                CLLM_INFO("[KylinBackend] ✓ KV heads 配置与权重一致：numKVHeads=%zu, kvHeadDim=%zu",
+                         internalConfig_.numKeyValueHeads, qHeadDimFromWeights);
+                kvHeadsInferred = true;
+            }
+        } else {
+            CLLM_ERROR("[KylinBackend] ❌ 推断出的 numKVHeads=%zu 不合法（numQHeads=%zu）",
+                      inferredNumKVHeads, internalConfig_.numAttentionHeads);
+            throw std::runtime_error("Invalid inferred numKVHeads");
+        }
+    }
+
+    if (!kvHeadsInferred && (internalConfig_.numKeyValueHeads == 0 ||
+                             internalConfig_.numKeyValueHeads > internalConfig_.numAttentionHeads)) {
+        // 如果推断失败或配置不合理，默认等于 Q heads（MHA）
+        internalConfig_.numKeyValueHeads = internalConfig_.numAttentionHeads;
+        CLLM_INFO("[KylinBackend] 设置 numKeyValueHeads = numAttentionHeads = %zu (MHA)",
+                 internalConfig_.numAttentionHeads);
+    }
+    
+    // 使用更新后的配置
+    const size_t actualNumHeads = internalConfig_.numAttentionHeads;
+    const size_t actualNumKVHeads = internalConfig_.numKeyValueHeads;
+    
+    // W1修复：使用实际的 qHeadDim 和 kvHeadDim，而不是标准公式计算的 headDim
+    // 实际的 head_dim 应该从权重形状推断，而不是假设 headDim = hidden / numHeads
+    const size_t actualQHeadDim = (actualNumHeads > 0) ? (qDim / actualNumHeads) : (hidden / actualNumHeads);
+    const size_t actualKVHeadDim = (actualNumKVHeads > 0) ? (kvDim / actualNumKVHeads) : (hidden / actualNumKVHeads);
+    // 重新计算 standardHeadDim（基于更新后的 actualNumHeads）
+    standardHeadDim = hidden / actualNumHeads;  // 标准公式（仅用于对比）
+    
+    CLLM_INFO("[KylinBackend] 验证权重形状: hidden=%zu, vocab=%zu, numLayers=%zu, numQHeads=%zu, numKVHeads=%zu, actualQHeadDim=%zu, actualKVHeadDim=%zu, standardHeadDim=%zu, qDim=%zu, kvDim=%zu, inter=%zu",
+             hidden, vocab, numLayers, actualNumHeads, actualNumKVHeads, actualQHeadDim, actualKVHeadDim, standardHeadDim, qDim, kvDim, inter);
+    
+    // 验证 head 数量的一致性（使用实际的 head_dim）
+    // 修复：应该使用实际的 head_dim 进行验证，不应该再出现维度不匹配的警告（除非真的有问题）
+    if (qDim != actualNumHeads * actualQHeadDim) {
+        CLLM_WARN("[KylinBackend] ⚠️ qDim (%zu) != numQHeads * actualQHeadDim (%zu * %zu = %zu)，维度不匹配！",
+                 qDim, actualNumHeads, actualQHeadDim, actualNumHeads * actualQHeadDim);
+    } else if (actualQHeadDim != standardHeadDim) {
+        // 如果 qDim 与标准公式不同，说明使用了扩展 head_dim（这是正常的，比如 Qwen3）
+        size_t expansionFactor = actualQHeadDim / standardHeadDim;
+        CLLM_INFO("[KylinBackend] ✓ 检测到扩展 head_dim：Q head_dim=%zu (标准=%zu, 扩展因子=%zu)，维度匹配",
+                 actualQHeadDim, standardHeadDim, expansionFactor);
+    } else {
+        CLLM_INFO("[KylinBackend] ✓ Q 维度匹配：qDim=%zu = numQHeads * headDim (%zu * %zu)",
+                 qDim, actualNumHeads, actualQHeadDim);
+    }
+    if (kvDim != actualNumKVHeads * actualKVHeadDim) {
+        CLLM_WARN("[KylinBackend] ⚠️ kvDim (%zu) != numKVHeads * actualKVHeadDim (%zu * %zu = %zu)，维度不匹配！",
+                 kvDim, actualNumKVHeads, actualKVHeadDim, actualNumKVHeads * actualKVHeadDim);
+    } else if (actualKVHeadDim != standardHeadDim) {
+        // 如果 kvDim 与标准公式不同，说明使用了不同的 head_dim（这是正常的）
+        CLLM_INFO("[KylinBackend] ✓ KV head_dim=%zu (标准=%zu)，维度匹配",
+                 actualKVHeadDim, standardHeadDim);
+    } else {
+        CLLM_INFO("[KylinBackend] ✓ KV 维度匹配：kvDim=%zu = numKVHeads * headDim (%zu * %zu)",
+                 kvDim, actualNumKVHeads, actualKVHeadDim);
+    }
     
     if (hidden == 0 || vocab == 0 || numLayers == 0 || inter == 0) {
         CLLM_ERROR("[KylinBackend] Invalid config values!");
@@ -441,6 +643,10 @@ void KylinBackend::bindWeightsToModel() {
 
     // 绑定每层权重
     for (size_t layer = 0; layer < numLayers; ++layer) {
+        // 检查是否有 Q/K 归一化权重
+        kylin::Tensor attnQNorm = attnQNorm_[layer].shape().empty() ? kylin::Tensor() : attnQNorm_[layer];
+        kylin::Tensor attnKNorm = attnKNorm_[layer].shape().empty() ? kylin::Tensor() : attnKNorm_[layer];
+        
         model_.setBlockWeights(
             layer,
             wq_[layer],
@@ -451,7 +657,9 @@ void KylinBackend::bindWeightsToModel() {
             wUp_[layer],
             wDown_[layer],
             norm1_[layer],
-            norm2_[layer]
+            norm2_[layer],
+            attnQNorm,  // Q 归一化权重（可选）
+            attnKNorm   // K 归一化权重（可选）
         );
     }
 
@@ -567,6 +775,8 @@ bool KylinBackend::loadFromModelWeights(const model::ModelWeights &weights) {
         wDown_.resize(numLayers);
         norm1_.resize(numLayers);
         norm2_.resize(numLayers);
+        attnQNorm_.resize(numLayers);
+        attnKNorm_.resize(numLayers);
         
         // 加载embedding权重
         embedding_ = Tensor(weights.embedding.shape);
@@ -613,6 +823,23 @@ bool KylinBackend::loadFromModelWeights(const model::ModelWeights &weights) {
             
             norm2_[layer] = Tensor(layerWeights.norm2.shape);
             std::copy(layerWeights.norm2.data.begin(), layerWeights.norm2.data.end(), norm2_[layer].data());
+            
+            // Q/K 独立归一化权重（可选）
+            if (!layerWeights.attnQNorm.shape.empty() && layerWeights.attnQNorm.data.size() > 0) {
+                attnQNorm_[layer] = Tensor(layerWeights.attnQNorm.shape);
+                std::copy(layerWeights.attnQNorm.data.begin(), 
+                         layerWeights.attnQNorm.data.end(), 
+                         attnQNorm_[layer].data());
+                CLLM_DEBUG("[KylinBackend] Loaded attnQNorm for layer %zu from ModelWeights", layer);
+            }
+            
+            if (!layerWeights.attnKNorm.shape.empty() && layerWeights.attnKNorm.data.size() > 0) {
+                attnKNorm_[layer] = Tensor(layerWeights.attnKNorm.shape);
+                std::copy(layerWeights.attnKNorm.data.begin(), 
+                         layerWeights.attnKNorm.data.end(), 
+                         attnKNorm_[layer].data());
+                CLLM_DEBUG("[KylinBackend] Loaded attnKNorm for layer %zu from ModelWeights", layer);
+            }
         }
         
         // 绑定权重到模型

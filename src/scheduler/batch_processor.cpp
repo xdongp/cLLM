@@ -183,26 +183,89 @@ void SchedulerBatchProcessor::updateRequestStates(
         
         CLLM_DEBUG("Request %zu - Getting logits from output (using output index %zu)", i, activeIdx);
         
-        // 从 ModelExecutor 获取正确的 vocab size
-        size_t vocabSize = executor_ ? executor_->getConfig().vocabSize : 32000;
-        FloatArray logits = output.getLogitsForRequest(activeIdx, vocabSize);
+        // 从 ModelExecutor 获取模型的 vocab size（用于正确提取 logits）
+        size_t modelVocabSize = executor_ ? executor_->getConfig().vocabSize : 32000;
+        FloatArray fullLogits = output.getLogitsForRequest(activeIdx, modelVocabSize);
         
-        CLLM_DEBUG("Request %zu - Logits size: %zu", i, logits.size());
+        CLLM_DEBUG("Request %zu - Full logits size: %zu (model vocab_size)", i, fullLogits.size());
         
-        if (logits.empty()) {
+        if (fullLogits.empty()) {
             CLLM_ERROR("Request %zu got empty logits from model!", i);
             batch[i].isFailed = true;
             continue;
         }
         
+        // 在采样前将 logits 裁剪到 tokenizer 的 vocab_size
+        // 这是根本修复：确保采样只从 tokenizer 的有效范围内选择 token
+        size_t tokenizerVocabSize = executor_ ? executor_->getConfig().tokenizerVocabSize : fullLogits.size();
+        if (tokenizerVocabSize == 0) {
+            // 如果未设置，默认使用模型的 vocab_size（向后兼容）
+            tokenizerVocabSize = fullLogits.size();
+        }
+        FloatArray logits(std::min(fullLogits.size(), tokenizerVocabSize));
+        for (size_t j = 0; j < logits.size(); ++j) {
+            logits[j] = fullLogits[j];
+        }
+        
+        if (fullLogits.size() > tokenizerVocabSize) {
+            CLLM_DEBUG("Request %zu - Clipped logits from %zu to %zu (tokenizer vocab_size)", 
+                      i, fullLogits.size(), logits.size());
+        }
+        
+        // 统计 logits 信息
+        float maxLogit = logits.empty() ? 0.0f : logits[0];
+        float minLogit = logits.empty() ? 0.0f : logits[0];
+        float sumLogits = 0.0f;
+        size_t nonZeroCount = 0;
+        size_t zeroCount = 0;
+        
+        for (size_t j = 0; j < logits.size(); ++j) {
+            float val = logits[j];
+            if (val > maxLogit) maxLogit = val;
+            if (val < minLogit) minLogit = val;
+            sumLogits += val;
+            if (val != 0.0f) {
+                nonZeroCount++;
+            } else {
+                zeroCount++;
+            }
+        }
+        
+        float avgLogit = logits.empty() ? 0.0f : sumLogits / logits.size();
+        
+        CLLM_DEBUG("Request %zu - Logits statistics: size=%zu, max=%.6f, min=%.6f, avg=%.6f, non_zero=%zu, zero=%zu",
+                   i, logits.size(), maxLogit, minLogit, avgLogit, nonZeroCount, zeroCount);
+        
+        // 显示前 50 个 logits（如果 logits 数量大于 50）
         std::string logitsStr;
-        for (size_t j = 0; j < std::min(logits.size(), (size_t)10); ++j) {
+        size_t showCount = std::min(logits.size(), (size_t)50);
+        for (size_t j = 0; j < showCount; ++j) {
+            if (j > 0 && j % 10 == 0) {
+                logitsStr += "\n  ";
+            }
             logitsStr += " " + std::to_string(logits[j]);
         }
-        if (logits.size() > 10) {
+        if (logits.size() > showCount) {
             logitsStr += " ...";
         }
-        CLLM_DEBUG("Request %zu - First 10 logits: [%s]", i, logitsStr.c_str());
+        CLLM_DEBUG("Request %zu - First %zu logits: [%s]", i, showCount, logitsStr.c_str());
+        
+        // 如果 logits 全为 0，显示警告
+        if (nonZeroCount == 0) {
+            CLLM_WARN("Request %zu - WARNING: All logits are zero! This will cause uniform sampling.", i);
+        }
+        
+        // 显示最大值和最小值的位置
+        if (nonZeroCount > 0) {
+            size_t maxIdx = 0;
+            size_t minIdx = 0;
+            for (size_t j = 1; j < logits.size(); ++j) {
+                if (logits[j] > logits[maxIdx]) maxIdx = j;
+                if (logits[j] < logits[minIdx]) minIdx = j;
+            }
+            CLLM_DEBUG("Request %zu - Max logit at index %zu: %.6f, Min logit at index %zu: %.6f",
+                       i, maxIdx, logits[maxIdx], minIdx, logits[minIdx]);
+        }
         
         // Get sampling parameters from request
         float temperature = batch[i].temperature;
