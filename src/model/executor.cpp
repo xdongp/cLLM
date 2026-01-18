@@ -441,6 +441,40 @@ void ModelExecutor::setTokenizerVocabSize(size_t tokenizerVocabSize) {
     // tokenizerVocabSize 不影响 InferenceEngine，所以不需要重新初始化
 }
 
+bool ModelExecutor::releaseSequenceId(size_t requestId) const {
+    if (!inferenceEngine_) {
+        return false;
+    }
+    
+    // Phase 2: 委托给 InferenceEngine
+    return inferenceEngine_->releaseSequenceId(requestId);
+}
+
+bool ModelExecutor::cleanupKVCache(size_t requestId) const {
+    if (!inferenceEngine_) {
+        return false;
+    }
+    
+    // Phase 4: 委托给 InferenceEngine
+    return inferenceEngine_->cleanupKVCache(requestId);
+}
+
+bool ModelExecutor::updateKVCacheRequestStatus(size_t requestId, inference::RequestStatus status) const {
+    if (!inferenceEngine_) {
+        return false;
+    }
+
+    return inferenceEngine_->updateKVCacheRequestStatus(requestId, status);
+}
+
+size_t ModelExecutor::evictKVCachesIfNeeded(double evictionThreshold) const {
+    if (!inferenceEngine_) {
+        return 0;
+    }
+
+    return inferenceEngine_->evictKVCachesIfNeeded(evictionThreshold);
+}
+
 int ModelExecutor::sampleToken(const std::vector<int>& inputIds, float temperature) {
     if (!isModelLoaded_) {
         throw std::runtime_error("Model is not loaded");
@@ -481,10 +515,12 @@ FloatArray ModelExecutor::_executeModelInference(const BatchInput& input) {
     }
     
     // 调用自研推理引擎，获得 [total_tokens, vocab_size] logits
+    // Phase 2: 传递 sequenceIds（requestId）用于序列ID管理
     inference::Tensor logitsTensor = inferenceEngine_->forwardBatch(
         input.inputIds,
         input.requestPositions,
-        input.batchSize
+        input.batchSize,
+        input.sequenceIds  // 传递 requestId 列表
     );
     
     const auto& logitsShape = logitsTensor.shape();

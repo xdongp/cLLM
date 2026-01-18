@@ -77,6 +77,7 @@ public:
 
     /**
      * @brief 批处理前向推理
+     * @param sequenceIds 每个请求的序列ID（requestId），用于序列ID管理（可选，默认空向量）
      * 
      * 实现策略：
      * - 逐请求调用 forward()
@@ -90,7 +91,8 @@ public:
     Tensor forwardBatch(
         const std::vector<int> &flatInputIds,
         const std::vector<std::pair<size_t, size_t>> &requestPositions,
-        size_t batchSize
+        size_t batchSize,
+        const std::vector<size_t> &sequenceIds = {}
     ) override;
 
     /**

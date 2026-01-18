@@ -128,6 +128,21 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
                 CLLM_DEBUG("%s", tokenIds.str().c_str());
             }
             
+            // Phase 6: 检查并发限制
+            size_t runningCount = scheduler_->getRunningCount();
+            size_t maxConcurrent = scheduler_->getMaxConcurrentRequests();
+            if (runningCount >= maxConcurrent) {
+                CLLM_WARN("Concurrent request limit reached: %zu/%zu, returning HTTP 429", runningCount, maxConcurrent);
+                nlohmann::json errorResp;
+                errorResp["success"] = false;
+                errorResp["error"] = "Too many concurrent requests";
+                errorResp["message"] = "Server is currently at maximum capacity. Please try again later.";
+                errorResp["retry_after"] = 5;  // 建议重试时间（秒）
+                HttpResponse response = ResponseBuilder::json(errorResp, 429);
+                response.setHeader("Retry-After", "5");
+                return response;
+            }
+            
             // 添加请求到调度器
             CLLM_DEBUG("Adding request to scheduler...");
             size_t reqId = scheduler_->addRequest(requestState);
@@ -142,6 +157,15 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
             if (scheduler_->waitForRequest(reqId, timeoutSec)) {
                 CLLM_DEBUG("Request completed, retrieving result...");
                 RequestState result = scheduler_->getRequestResult(reqId);
+                
+                if (result.isTimeout) {
+                    CLLM_WARN("Request timed out (scheduler timeout)");
+                    nlohmann::json errorResp;
+                    errorResp["success"] = false;
+                    errorResp["error"] = "Request timeout";
+                    errorResp["message"] = "Request timed out";
+                    return ResponseBuilder::json(errorResp, 408);
+                }
                 
                 CLLM_DEBUG("Tokenized prompt in result: %zu tokens", result.tokenizedPrompt.size());
                 CLLM_DEBUG("Generated tokens count: %zu", result.generatedTokens.size());
@@ -159,7 +183,7 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
                     generatedTokens << " ]";
                     CLLM_DEBUG("%s", generatedTokens.str().c_str());
 
-                    // 解码前：按 EOS 截断，避免 EOS 后继续采样导致“乱码”
+                    // 解码前：按 EOS 截断，避免 EOS 后继续采样导致"乱码"
                     std::vector<int> toDecode = result.generatedTokens;
                     const int eosId = tokenizer_->getEosId();
                     if (eosId >= 0) {
@@ -187,8 +211,26 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
                 }
             } else {
                 CLLM_ERROR("Request timed out");
-                generatedText = "Request timed out";
+                nlohmann::json errorResp;
+                errorResp["success"] = false;
+                errorResp["error"] = "Request timeout";
+                errorResp["message"] = "Request timed out";
+                return ResponseBuilder::json(errorResp, 408);
             }
+        } catch (const SchedulerException& e) {
+            if (e.getError() == SchedulerError::REQUEST_QUEUE_FULL) {
+                CLLM_WARN("Request rejected: queue full");
+                nlohmann::json errorResp;
+                errorResp["success"] = false;
+                errorResp["error"] = "Request queue is full";
+                errorResp["message"] = "Server is currently at maximum capacity. Please try again later.";
+                errorResp["retry_after"] = 5;
+                HttpResponse response = ResponseBuilder::json(errorResp, 429);
+                response.setHeader("Retry-After", "5");
+                return response;
+            }
+            CLLM_ERROR("Scheduler error: %s", e.what());
+            generatedText = std::string("Error: ") + e.what();
         } catch (const std::exception& e) {
             CLLM_ERROR("Error processing request: %s", e.what());
             generatedText = std::string("Error: ") + e.what();
@@ -227,51 +269,165 @@ HttpResponse GenerateEndpoint::handleStreaming(const GenerateRequest& req) {
     response.setHeader("Cache-Control", cllm::Config::instance().apiResponseHeaderCacheControl());
     response.setHeader("Connection", cllm::Config::instance().apiResponseHeaderConnection());
     
-    if (tokenizer_ != nullptr) {
-        std::vector<int> inputTokens = tokenizer_->encode(req.prompt, false);
+    if (scheduler_ == nullptr || tokenizer_ == nullptr) {
+        nlohmann::json errorChunk;
+        errorChunk["id"] = requestId;
+        errorChunk["error"] = "Server not ready";
+        errorChunk["done"] = true;
+        std::ostringstream oss;
+        oss << "data: " << errorChunk.dump() << "\n\n";
+        response.addChunk(oss.str());
+        return response;
+    }
+    
+    try {
+        // 创建请求状态
+        RequestState requestState;
+        requestState.requestId = 0;
+        requestState.maxTokens = req.maxTokens;
+        requestState.temperature = req.temperature;
+        requestState.topP = req.topP;
+        requestState.topK = 0;
+        requestState.eosTokenId = tokenizer_->getEosId();
+        requestState.priority = 0;
+        requestState.arrivalTime = 0;
+        requestState.startTime = 0;
+        requestState.completionTime = 0;
+        requestState.isCompleted = false;
+        requestState.isRunning = false;
+        requestState.isFailed = false;
+        requestState.samplingStrategy = "";
+        requestState.errorMessage = "";
         
-        std::string generatedText;
-        for (int i = 0; i < req.maxTokens; ++i) {
-            // 测试英文生成 - 暂时只生成ASCII字符
-            int nextToken;
-            // 生成ASCII字符
-            nextToken = 32 + (rand() % 95); // 32-126是可打印ASCII字符
-            
-            // ITokenizer 没有 isSpecialToken()，这里做最小“特殊 token”保护
-            if (nextToken == tokenizer_->getEosId() ||
-                nextToken == tokenizer_->getPadId() ||
-                nextToken == tokenizer_->getBosId() ||
-                nextToken == tokenizer_->getUnkId()) {
-                break;
+        // 编码prompt
+        requestState.tokenizedPrompt = tokenizer_->encode(req.prompt, false);
+        
+        // 控制输入长度
+        const int maxInputTokens = cllm::Config::instance().httpMaxInputTokens();
+        if (maxInputTokens > 0) {
+            const size_t MAX_INPUT_TOKENS = static_cast<size_t>(maxInputTokens);
+            if (requestState.tokenizedPrompt.size() > MAX_INPUT_TOKENS) {
+                requestState.tokenizedPrompt.resize(MAX_INPUT_TOKENS);
             }
-
-            std::string tokenText;
-            try {
-                tokenText = tokenizer_->decode({nextToken}, false);
-            } catch (...) {
-                break;
-            }
-            generatedText += tokenText;
-            
-            nlohmann::json chunk;
-            chunk["id"] = requestId;
-            chunk["token"] = tokenText;
-            chunk["done"] = false;
-
-            std::ostringstream oss;
-            oss << "data: " << chunk.dump() << "\n\n";
-            response.addChunk(oss.str());
         }
         
-        // Send final done message
+        // 检查并发限制
+        size_t runningCount = scheduler_->getRunningCount();
+        size_t maxConcurrent = scheduler_->getMaxConcurrentRequests();
+        if (runningCount >= maxConcurrent) {
+            nlohmann::json errorChunk;
+            errorChunk["id"] = requestId;
+            errorChunk["error"] = "Too many concurrent requests";
+            errorChunk["done"] = true;
+            std::ostringstream oss;
+            oss << "data: " << errorChunk.dump() << "\n\n";
+            response.addChunk(oss.str());
+            return response;
+        }
+        
+        // 添加请求到调度器
+        size_t reqId = scheduler_->addRequest(requestState);
+        
+        // 等待请求完成（流式场景下，每个 token 都需要从 scheduler 拉取）
+        // 这里先实现简化版：等待完成后逐 token 返回（非真正实时流式）
+        const float timeoutMin = cllm::Config::instance().apiTimeoutMin();
+        const float timeoutMax = cllm::Config::instance().apiTimeoutMax();
+        const float tokenFactor = cllm::Config::instance().apiTimeoutTokenFactor();
+        const float timeoutSec = std::max(timeoutMin, std::min(timeoutMax, static_cast<float>(req.maxTokens) * tokenFactor));
+        
+        if (scheduler_->waitForRequest(reqId, timeoutSec)) {
+            RequestState result = scheduler_->getRequestResult(reqId);
+            
+            if (result.isTimeout) {
+                nlohmann::json errorChunk;
+                errorChunk["id"] = requestId;
+                errorChunk["error"] = "Request timeout";
+                errorChunk["done"] = true;
+                std::ostringstream oss;
+                oss << "data: " << errorChunk.dump() << "\n\n";
+                response.addChunk(oss.str());
+                return response;
+            }
+            
+            if (!result.generatedTokens.empty()) {
+                // 按 EOS 截断
+                std::vector<int> toDecode = result.generatedTokens;
+                const int eosId = tokenizer_->getEosId();
+                if (eosId >= 0) {
+                    for (size_t k = 0; k < toDecode.size(); ++k) {
+                        if (toDecode[k] == eosId) {
+                            toDecode.resize(k);
+                            break;
+                        }
+                    }
+                }
+                
+                // 逐 token 解码并返回（模拟流式输出）
+                for (size_t i = 0; i < toDecode.size(); ++i) {
+                    std::string tokenText;
+                    try {
+                        tokenText = tokenizer_->decode({toDecode[i]}, false);
+                    } catch (...) {
+                        continue;
+                    }
+                    
+                    nlohmann::json chunk;
+                    chunk["id"] = requestId;
+                    chunk["token"] = tokenText;
+                    chunk["done"] = false;
+                    
+                    std::ostringstream oss;
+                    oss << "data: " << chunk.dump() << "\n\n";
+                    response.addChunk(oss.str());
+                }
+            }
+        } else {
+            nlohmann::json errorChunk;
+            errorChunk["id"] = requestId;
+            errorChunk["error"] = "Request timeout";
+            errorChunk["done"] = true;
+            std::ostringstream oss;
+            oss << "data: " << errorChunk.dump() << "\n\n";
+            response.addChunk(oss.str());
+            return response;
+        }
+        
+        // 发送完成消息
         nlohmann::json finalChunk;
         finalChunk["id"] = requestId;
         finalChunk["token"] = "";
         finalChunk["done"] = true;
-
+        
         std::ostringstream finalOss;
         finalOss << "data: " << finalChunk.dump() << "\n\n";
         response.addChunk(finalOss.str());
+        
+    } catch (const SchedulerException& e) {
+        if (e.getError() == SchedulerError::REQUEST_QUEUE_FULL) {
+            nlohmann::json errorChunk;
+            errorChunk["id"] = requestId;
+            errorChunk["error"] = "Request queue is full";
+            errorChunk["done"] = true;
+            std::ostringstream oss;
+            oss << "data: " << errorChunk.dump() << "\n\n";
+            response.addChunk(oss.str());
+            return response;
+        }
+        nlohmann::json errorChunk;
+        errorChunk["id"] = requestId;
+        errorChunk["error"] = std::string("Scheduler error: ") + e.what();
+        errorChunk["done"] = true;
+        std::ostringstream oss;
+        oss << "data: " << errorChunk.dump() << "\n\n";
+        response.addChunk(oss.str());
+    } catch (const std::exception& e) {
+        nlohmann::json errorChunk;
+        errorChunk["id"] = requestId;
+        errorChunk["error"] = std::string("Error: ") + e.what();
+        errorChunk["done"] = true;
+        std::ostringstream oss;
+        oss << "data: " << errorChunk.dump() << "\n\n";
+        response.addChunk(oss.str());
     }
     
     return response;

@@ -124,7 +124,8 @@ Tensor InferenceEngine::forward(const std::vector<int> &inputIds) const {
 Tensor InferenceEngine::forwardBatch(
     const std::vector<int> &flatInputIds,
     const std::vector<std::pair<size_t, size_t>> &requestPositions,
-    size_t batchSize
+    size_t batchSize,
+    const std::vector<size_t> &sequenceIds
 ) const {
     if (!backend_) {
         throw std::runtime_error("InferenceEngine::forwardBatch: backend not created");
@@ -134,7 +135,7 @@ Tensor InferenceEngine::forwardBatch(
         throw std::runtime_error("InferenceEngine::forwardBatch: backend not initialized");
     }
     
-    return backend_->forwardBatch(flatInputIds, requestPositions, batchSize);
+    return backend_->forwardBatch(flatInputIds, requestPositions, batchSize, sequenceIds);
 }
 
 const ModelConfig &InferenceEngine::getConfig() const {
@@ -159,6 +160,102 @@ bool InferenceEngine::isInitialized() const {
     }
     
     return backend_->isInitialized();
+}
+
+bool InferenceEngine::releaseSequenceId(size_t requestId) const {
+    if (!backend_) {
+        return false;
+    }
+    
+    // Phase 2: 只对 LlamaCppBackend 有效
+    std::string backendName = backend_->getName();
+    if (backendName == "llama.cpp") {
+        #ifdef CLLM_USE_LLAMA_CPP
+        // 动态转换为 LlamaCppBackend 并调用 releaseSequenceId
+        auto* llamaBackend = dynamic_cast<LlamaCppBackend*>(backend_.get());
+        if (llamaBackend) {
+            return llamaBackend->releaseSequenceId(requestId);
+        }
+        #endif
+    }
+    
+    // 其他后端不需要序列ID管理
+    return false;
+}
+
+bool InferenceEngine::cleanupKVCache(size_t requestId) const {
+    if (!backend_) {
+        return false;
+    }
+    
+    // Phase 4: 只对 LlamaCppBackend 有效
+    std::string backendName = backend_->getName();
+    if (backendName == "llama.cpp") {
+        #ifdef CLLM_USE_LLAMA_CPP
+        // 动态转换为 LlamaCppBackend 并调用 cleanupKVCache
+        auto* llamaBackend = dynamic_cast<LlamaCppBackend*>(backend_.get());
+        if (llamaBackend) {
+            return llamaBackend->cleanupKVCache(requestId);
+        }
+        #endif
+    }
+    
+    // 其他后端不需要KV缓存清理
+    return false;
+}
+
+bool InferenceEngine::updateKVCacheRequestStatus(size_t requestId, RequestStatus status) const {
+    if (!backend_) {
+        return false;
+    }
+
+    std::string backendName = backend_->getName();
+    if (backendName == "llama.cpp") {
+        #ifdef CLLM_USE_LLAMA_CPP
+        auto* llamaBackend = dynamic_cast<LlamaCppBackend*>(backend_.get());
+        if (llamaBackend) {
+            auto* kvCacheManager = llamaBackend->getKVCacheManager();
+            if (kvCacheManager) {
+                kvCacheManager->updateRequestStatus(requestId, status);
+                return true;
+            }
+        }
+        #endif
+    }
+
+    return false;
+}
+
+size_t InferenceEngine::evictKVCachesIfNeeded(double evictionThreshold) const {
+    if (!backend_) {
+        return 0;
+    }
+
+    std::string backendName = backend_->getName();
+    if (backendName == "llama.cpp") {
+        #ifdef CLLM_USE_LLAMA_CPP
+        auto* llamaBackend = dynamic_cast<LlamaCppBackend*>(backend_.get());
+        if (llamaBackend) {
+            auto* kvCacheManager = llamaBackend->getKVCacheManager();
+            if (!kvCacheManager) {
+                return 0;
+            }
+            if (!kvCacheManager->shouldEvict(evictionThreshold)) {
+                return 0;
+            }
+            auto getSeqIdCallback = [llamaBackend](size_t requestId) -> int32_t {
+                return llamaBackend->getSequenceId(requestId);
+            };
+            return kvCacheManager->evictLRUCache(
+                llamaBackend->getContext(),
+                evictionThreshold,
+                getSeqIdCallback
+            );
+        }
+        #endif
+    }
+
+    return 0;
 }
 
 } // namespace inference

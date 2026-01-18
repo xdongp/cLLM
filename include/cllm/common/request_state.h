@@ -38,6 +38,7 @@ struct RequestState {
     bool isCompleted = false;                   ///< 是否已完成
     bool isRunning = false;                     ///< 是否正在运行
     bool isFailed = false;                      ///< 是否失败
+    bool isTimeout = false;                     ///< 是否超时
     std::string errorMessage;                   ///< 错误信息
     
     /**
@@ -73,6 +74,74 @@ struct RequestState {
      * @return 计算后的优先级
      */
     float calculatePriority(size_t currentTime) const;
+    
+    /**
+     * @brief 判断请求状态：PENDING
+     * PENDING: 未完成、未失败、未运行（等待处理）
+     * @return true 如果是PENDING状态
+     */
+    bool isPending() const {
+        return !isCompleted && !isFailed && !isTimeout && !isRunning;
+    }
+    
+    /**
+     * @brief 判断请求状态：PROCESSING
+     * PROCESSING: 正在运行、未完成、未失败（正在处理中）
+     * @return true 如果是PROCESSING状态
+     */
+    bool isProcessing() const {
+        return isRunning && !isCompleted && !isFailed && !isTimeout;
+    }
+    
+    /**
+     * @brief 判断请求状态：COMPLETED
+     * COMPLETED: 已完成（成功完成）
+     * @return true 如果是COMPLETED状态
+     */
+    bool isCompletedState() const {
+        return isCompleted;
+    }
+    
+    /**
+     * @brief 判断请求状态：FAILED
+     * FAILED: 失败（处理失败）
+     * @return true 如果是FAILED状态
+     */
+    bool isFailedState() const {
+        return isFailed;
+    }
+    
+    /**
+     * @brief 判断请求状态：TIMEOUT（基于时间戳判断）
+     * TIMEOUT: 处理时间超过超时阈值
+     * @param currentTime 当前时间
+     * @param timeoutSeconds 超时时间（秒）
+     * @return true 如果是TIMEOUT状态
+     */
+    bool checkTimeout(size_t currentTimeMs, float timeoutSeconds) const {
+        if (startTime == 0) return false;  // 未开始处理
+        if (isCompleted || isFailed || isTimeout) return false;  // 已完成/失败/超时
+        if (currentTimeMs < startTime) return false;
+        float elapsedSeconds = static_cast<float>(currentTimeMs - startTime) / 1000.0f;
+        return elapsedSeconds > timeoutSeconds;
+    }
+
+    /**
+     * @brief 判断请求状态：TIMEOUT（标记状态）
+     * @return true 如果是TIMEOUT状态
+     */
+    bool isTimeoutState() const {
+        return isTimeout;
+    }
+    
+    /**
+     * @brief 判断请求是否为活跃状态（PENDING或PROCESSING）
+     * 活跃状态：可以继续处理或等待处理
+     * @return true 如果是活跃状态
+     */
+    bool isActive() const {
+        return !isCompleted && !isFailed && !isTimeout;
+    }
 };
 
 }  // namespace cllm

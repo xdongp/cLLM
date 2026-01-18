@@ -25,10 +25,19 @@ void SchedulerBatchProcessor::processBatch(std::vector<RequestState>& batch) {
     const int MAX_ITERATIONS = Config::instance().schedulerMaxIterations(); // 防止无限循环
     int iterationCount = 0;
     
+    // 调试：记录批处理中的请求信息
+    CLLM_INFO("processBatch: Starting batch processing with %zu requests", batch.size());
+    for (size_t i = 0; i < batch.size(); ++i) {
+        CLLM_INFO("processBatch: Request %zu - ID=%llu, maxTokens=%d, generatedTokens=%zu, isCompleted=%d, isFailed=%d",
+                  i, batch[i].requestId, batch[i].maxTokens, batch[i].generatedTokens.size(),
+                  batch[i].isCompleted ? 1 : 0, batch[i].isFailed ? 1 : 0);
+    }
+    
     while (!isBatchComplete(batch)) {
         auto activeRequests = getActiveRequests(batch);
         
         if (activeRequests.empty()) {
+            CLLM_INFO("processBatch: No active requests, breaking loop");
             break;
         }
         
@@ -43,23 +52,33 @@ void SchedulerBatchProcessor::processBatch(std::vector<RequestState>& batch) {
             break;
         }
         
+        CLLM_DEBUG("processBatch: Iteration %d, active requests: %zu", iterationCount, activeRequests.size());
         processIteration(batch);
     }
     
     CLLM_INFO("Batch processing completed after %d iterations", iterationCount);
+    
+    // 调试：记录最终状态
+    for (size_t i = 0; i < batch.size(); ++i) {
+        CLLM_INFO("processBatch: Final state - Request %zu - ID=%llu, generatedTokens=%zu, isCompleted=%d, isFailed=%d",
+                  i, batch[i].requestId, batch[i].generatedTokens.size(),
+                  batch[i].isCompleted ? 1 : 0, batch[i].isFailed ? 1 : 0);
+    }
 }
 
 bool SchedulerBatchProcessor::isBatchComplete(const std::vector<RequestState>& batch) const {
     for (size_t i = 0; i < batch.size(); ++i) {
         const auto& req = batch[i];
         bool completed = req.isCompleted || req.isFailed || 
-                        req.generatedTokens.size() >= req.maxTokens;
-        CLLM_DEBUG("isBatchComplete - Request %zu: isCompleted=%d, isFailed=%d, generatedTokens=%zu, maxTokens=%d, completed=%d", 
-                  i, req.isCompleted, req.isFailed, req.generatedTokens.size(), req.maxTokens, completed);
+                        req.generatedTokens.size() >= static_cast<size_t>(req.maxTokens);
+        CLLM_DEBUG("isBatchComplete - Request %zu (ID=%llu): isCompleted=%d, isFailed=%d, generatedTokens=%zu, maxTokens=%d, completed=%d", 
+                  i, req.requestId, req.isCompleted, req.isFailed, req.generatedTokens.size(), req.maxTokens, completed);
         if (!completed) {
+            CLLM_DEBUG("isBatchComplete - Request %zu (ID=%llu) is NOT complete, batch continues", i, req.requestId);
             return false;
         }
     }
+    CLLM_DEBUG("isBatchComplete - All requests are complete");
     return true;
 }
 
@@ -69,12 +88,20 @@ std::vector<RequestState> SchedulerBatchProcessor::getActiveRequests(
     std::vector<RequestState> active;
     
     for (const auto& req : batch) {
-        if (!req.isCompleted && !req.isFailed && 
-            req.generatedTokens.size() < req.maxTokens) {
+        bool isActive = !req.isCompleted && !req.isFailed && 
+                       req.generatedTokens.size() < static_cast<size_t>(req.maxTokens);
+        if (isActive) {
             active.push_back(req);
+            CLLM_DEBUG("getActiveRequests - Request ID=%llu is active (generatedTokens=%zu, maxTokens=%d)",
+                      req.requestId, req.generatedTokens.size(), req.maxTokens);
+        } else {
+            CLLM_DEBUG("getActiveRequests - Request ID=%llu is NOT active (isCompleted=%d, isFailed=%d, generatedTokens=%zu, maxTokens=%d)",
+                      req.requestId, req.isCompleted ? 1 : 0, req.isFailed ? 1 : 0,
+                      req.generatedTokens.size(), req.maxTokens);
         }
     }
     
+    CLLM_DEBUG("getActiveRequests - Found %zu active requests out of %zu total", active.size(), batch.size());
     return active;
 }
 
@@ -178,6 +205,11 @@ void SchedulerBatchProcessor::updateRequestStates(
             CLLM_DEBUG("Request %zu reached max tokens limit (%zu >= %d), marking as completed", 
                       i, batch[i].generatedTokens.size(), batch[i].maxTokens);
             batch[i].isCompleted = true;
+            
+            // Phase 7: 触发完成回调
+            if (scheduler_) {
+                scheduler_->triggerResponseCallback(batch[i].requestId, batch[i]);
+            }
             continue;
         }
         
@@ -192,6 +224,11 @@ void SchedulerBatchProcessor::updateRequestStates(
         if (fullLogits.empty()) {
             CLLM_ERROR("Request %zu got empty logits from model!", i);
             batch[i].isFailed = true;
+            
+            // Phase 7: 触发失败回调
+            if (scheduler_) {
+                scheduler_->triggerResponseCallback(batch[i].requestId, batch[i]);
+            }
             continue;
         }
         
@@ -281,6 +318,11 @@ void SchedulerBatchProcessor::updateRequestStates(
         if (nextToken == -1) {
             CLLM_ERROR("Sampler returned invalid token (-1) for request %zu", i);
             batch[i].isFailed = true;
+            
+            // Phase 7: 触发失败回调
+            if (scheduler_) {
+                scheduler_->triggerResponseCallback(batch[i].requestId, batch[i]);
+            }
             continue;
         }
         
@@ -294,9 +336,19 @@ void SchedulerBatchProcessor::updateRequestStates(
         if (eosReached) {
             CLLM_DEBUG("Request %zu - Reached EOS token (%d), completing", i, batch[i].eosTokenId);
             batch[i].isCompleted = true;
+            
+            // Phase 7: 触发完成回调
+            if (scheduler_) {
+                scheduler_->triggerResponseCallback(batch[i].requestId, batch[i]);
+            }
         } else if (maxTokensReached) {
             CLLM_DEBUG("Request %zu - Reached max tokens (%zu), completing", i, batch[i].generatedTokens.size());
             batch[i].isCompleted = true;
+            
+            // Phase 7: 触发完成回调
+            if (scheduler_) {
+                scheduler_->triggerResponseCallback(batch[i].requestId, batch[i]);
+            }
         } else {
             CLLM_DEBUG("Request %zu - Continuing generation", i);
         }

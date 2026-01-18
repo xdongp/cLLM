@@ -324,7 +324,10 @@ Tensor LibTorchBackend::forward(const std::vector<int> &inputIds) {
 
 Tensor LibTorchBackend::forwardBatch(const std::vector<int> &flatInputIds,
                                       const std::vector<std::pair<size_t, size_t>> &requestPositions,
-                                      size_t batchSize) {
+                                      size_t batchSize,
+                                      const std::vector<size_t> &sequenceIds) {
+    // sequenceIds 参数未使用（LibTorchBackend 不需要序列ID管理）
+    (void)sequenceIds;
     if (!initialized_) {
         throw std::runtime_error("LibTorchBackend::forwardBatch: backend not initialized");
     }

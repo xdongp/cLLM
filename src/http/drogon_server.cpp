@@ -108,15 +108,37 @@ void DrogonServer::handleRequest(
     
     HttpResponse response = handler_ptr->handleRequest(request);
     
-    auto resp = drogon::HttpResponse::newHttpResponse();
-    resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
-    resp->setBody(response.getBody());
-    
-    for (const auto& header : response.getAllHeaders()) {
-        resp->addHeader(header.first, header.second);
+    // 检查是否为流式响应
+    if (response.isStreaming()) {
+        // 使用 Drogon 原生 SSE 支持
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
+        
+        // 设置 SSE headers
+        for (const auto& header : response.getAllHeaders()) {
+            resp->addHeader(header.first, header.second);
+        }
+        
+        // 合并所有 chunks 作为响应体（Drogon 会立即发送）
+        std::string streamBody;
+        for (const auto& chunk : response.getChunks()) {
+            streamBody += chunk;
+        }
+        resp->setBody(streamBody);
+        
+        callback(resp);
+    } else {
+        // 非流式响应（原有逻辑）
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(static_cast<drogon::HttpStatusCode>(response.getStatusCode()));
+        resp->setBody(response.getBody());
+        
+        for (const auto& header : response.getAllHeaders()) {
+            resp->addHeader(header.first, header.second);
+        }
+        
+        callback(resp);
     }
-    
-    callback(resp);
 }
 
 void DrogonServer::health(const drogon::HttpRequestPtr& req,

@@ -29,6 +29,12 @@ struct SchedulerConfig {
     
     size_t schedulerLoopInterval = 100;    ///< 调度器循环间隔（微秒）
     size_t idleLoopInterval = 10000;       ///< 空闲循环间隔（微秒）
+    
+    // Phase 5: KV缓存淘汰配置
+    double kvCacheEvictionThreshold = 0.8;  ///< KV缓存淘汰阈值（0.0-1.0）
+    
+    // Phase 6: HTTP层并发检查配置
+    size_t maxConcurrentRequests = 8;      ///< 最大并发请求数（超过此值返回HTTP 429）
 };
 
 }

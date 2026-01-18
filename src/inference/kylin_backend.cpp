@@ -680,8 +680,11 @@ kylin::Tensor KylinBackend::forward(const std::vector<int> &inputIds) {
 kylin::Tensor KylinBackend::forwardBatch(
     const std::vector<int> &flatInputIds,
     const std::vector<std::pair<size_t, size_t>> &requestPositions,
-    size_t batchSize
+    size_t batchSize,
+    const std::vector<size_t> &sequenceIds
 ) {
+    // sequenceIds 参数未使用（KylinBackend 不需要序列ID管理）
+    (void)sequenceIds;
     if (!initialized_) {
         throw std::runtime_error("KylinBackend::forwardBatch: backend not initialized");
     }

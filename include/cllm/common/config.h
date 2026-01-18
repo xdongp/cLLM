@@ -93,6 +93,7 @@ public:
     int backendLlamaCppBatchSize() const;
     int backendLlamaCppNumThreads() const;
     int backendLlamaCppGpuLayers() const;
+    int backendLlamaCppNSeqMax() const;  // n_seq_max (1-256, default: 1)
     bool backendLlamaCppUseMmap() const;
     bool backendLlamaCppUseMlock() const;
     

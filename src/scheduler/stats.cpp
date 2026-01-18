@@ -8,8 +8,8 @@ namespace cllm {
 void SchedulerStats::update(const RequestState& request) {
     completedRequests++;
     
-    float requestTime = request.completionTime - request.arrivalTime;
-    float waitTime = request.startTime - request.arrivalTime;
+    float requestTime = static_cast<float>(request.completionTime - request.arrivalTime) / 1000.0f;
+    float waitTime = static_cast<float>(request.startTime - request.arrivalTime) / 1000.0f;
     
     float currentAvgRequestTime = averageRequestTime.load();
     float currentAvgWaitTime = averageWaitTime.load();

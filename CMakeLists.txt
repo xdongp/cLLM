@@ -228,6 +228,8 @@ add_library(cllm_core
     src/inference/backend_factory.cpp
     src/inference/kylin_backend.cpp
     src/inference/libtorch_backend.cpp
+    src/inference/llama_cpp_backend.cpp
+    src/inference/kv_cache_manager.cpp
     src/scheduler/scheduler.cpp
     src/scheduler/stats.cpp
     src/scheduler/tracker.cpp
@@ -295,8 +297,17 @@ if(BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
     
-    # 注意：旧的测试文件已被删除，因为它们缺少必要的依赖
-    # 新的 llama.cpp 后端测试在下面定义
+    # HFTokenizer 专项测试 - 暂时注释掉，文件不存在
+    # add_executable(test_hf_tokenizer
+    #     tests/test_hf_tokenizer.cpp
+    # )
+    # target_link_libraries(test_hf_tokenizer
+    #     cllm_core
+    #     gtest
+    #     gtest_main
+    #     Threads::Threads
+    # )
+    # add_test(NAME HFTokenizerTest COMMAND test_hf_tokenizer)
     
     # GGUF Loader 完整测试 - 暂时注释掉，因为需要更新测试以适配新的GGUFLoader接口
     # add_executable(test_gguf_loader_complete
@@ -309,6 +320,15 @@ if(BUILD_TESTS)
     #     Threads::Threads
     # )
     # add_test(NAME GGUFLoaderCompleteTest COMMAND test_gguf_loader_complete)
+    
+    # GGUF Loader 手动测试程序 - 暂时注释掉，文件不存在
+    # add_executable(test_gguf_full
+    #     tests/test_gguf_loading.cpp
+    # )
+    # target_link_libraries(test_gguf_full
+    #     cllm_core
+    #     Threads::Threads
+    # )
     
     # Kylin引擎GGUF Q4_K_M推理测试
     add_executable(test_kylin_gguf_q4k
@@ -323,6 +343,15 @@ if(BUILD_TESTS)
     )
     add_test(NAME KylinGGUFQ4KTest COMMAND test_kylin_gguf_q4k)
     
+    # 简单的 hello 推理测试 - 暂时注释掉，文件不存在
+    # add_executable(test_hello_inference
+    #     tests/test_hello_inference.cpp
+    # )
+    # target_link_libraries(test_hello_inference
+    #     cllm_core
+    #     Threads::Threads
+    # )
+    
     # llama.cpp 后端 GGUF 测试
     add_executable(test_llama_cpp_backend_gguf
         tests/test_llama_cpp_backend_gguf.cpp
@@ -333,25 +362,169 @@ if(BUILD_TESTS)
         spdlog::spdlog
     )
     
-    # llama.cpp 后端直接测试
-    add_executable(test_llama_cpp_direct
-        tests/test_llama_cpp_direct.cpp
-    )
-    target_link_libraries(test_llama_cpp_direct
-        cllm_core
-        Threads::Threads
-        spdlog::spdlog
-    )
-    
     # 条件链接 llama.cpp（如果可用）
     if(LLAMA_CPP_FOUND)
         target_compile_definitions(test_llama_cpp_backend_gguf PRIVATE CLLM_USE_LLAMA_CPP)
-        target_compile_definitions(test_llama_cpp_direct PRIVATE CLLM_USE_LLAMA_CPP)
     else()
         message(WARNING "⚠️  test_llama_cpp_backend_gguf requires llama.cpp, but it's not available")
-        message(WARNING "⚠️  test_llama_cpp_direct requires llama.cpp, but it's not available")
     endif()
     
+    # Phase 2: 序列ID管理单元测试
+    add_executable(test_sequence_id_manager
+        tests/test_sequence_id_manager.cpp
+    )
+    target_link_libraries(test_sequence_id_manager
+        cllm_core
+        gtest
+        gtest_main
+        Threads::Threads
+        spdlog::spdlog
+    )
+    if(LLAMA_CPP_FOUND)
+        target_compile_definitions(test_sequence_id_manager PRIVATE CLLM_USE_LLAMA_CPP)
+        add_test(NAME SequenceIdManagerTest COMMAND test_sequence_id_manager)
+    else()
+        message(WARNING "⚠️  test_sequence_id_manager requires llama.cpp, but it's not available")
+    endif()
+    
+    # Phase 2: 序列ID管理单元测试（简化版，不依赖后端初始化）
+    add_executable(test_sequence_id_manager_simple
+        tests/test_sequence_id_manager_simple.cpp
+    )
+    target_link_libraries(test_sequence_id_manager_simple
+        gtest
+        gtest_main
+        Threads::Threads
+        spdlog::spdlog
+    )
+    add_test(NAME SequenceIdManagerSimpleTest COMMAND test_sequence_id_manager_simple)
+    
+    # Phase 1: 状态转换专项测试
+    add_executable(test_state_transition
+        tests/test_state_transition.cpp
+    )
+    target_link_libraries(test_state_transition
+        cllm_core
+        gtest
+        gtest_main
+        Threads::Threads
+        spdlog::spdlog
+    )
+    add_test(NAME StateTransitionTest COMMAND test_state_transition)
+    
+    # Phase 1: 状态转换专项测试（简化版，不依赖 Scheduler 初始化）
+    add_executable(test_state_transition_simple
+        tests/test_state_transition_simple.cpp
+    )
+    target_link_libraries(test_state_transition_simple
+        cllm_core
+        gtest
+        gtest_main
+        Threads::Threads
+        spdlog::spdlog
+    )
+    add_test(NAME StateTransitionSimpleTest COMMAND test_state_transition_simple)
+    
+    # Phase 3: 超时检测机制
+    add_executable(test_timeout_detection
+        tests/test_timeout_detection.cpp
+    )
+    target_link_libraries(test_timeout_detection
+        gtest
+        gtest_main
+        Threads::Threads
+        spdlog::spdlog
+    )
+    add_test(NAME TimeoutDetectionTest COMMAND test_timeout_detection)
+    
+    # Phase 4: KV缓存统计管理
+    add_executable(test_kv_cache_manager
+        tests/test_kv_cache_manager.cpp
+    )
+    target_link_libraries(test_kv_cache_manager
+        cllm_core
+        gtest
+        gtest_main
+        Threads::Threads
+        spdlog::spdlog
+    )
+    add_test(NAME KVCacheManagerTest COMMAND test_kv_cache_manager)
+    
+    # Phase 5: KV缓存LRU淘汰
+    add_executable(test_kv_cache_lru_eviction
+        tests/test_kv_cache_lru_eviction.cpp
+    )
+    target_link_libraries(test_kv_cache_lru_eviction
+        cllm_core
+        gtest
+        gtest_main
+        Threads::Threads
+        spdlog::spdlog
+    )
+    add_test(NAME KVCacheLRUEvictionTest COMMAND test_kv_cache_lru_eviction)
+    
+    # Phase 6: HTTP层并发检查
+    add_executable(test_http_concurrency
+        tests/test_http_concurrency.cpp
+    )
+    target_link_libraries(test_http_concurrency
+        cllm_core
+        gtest
+        gtest_main
+        Threads::Threads
+        spdlog::spdlog
+        nlohmann_json::nlohmann_json
+    )
+    add_test(NAME HttpConcurrencyTest COMMAND test_http_concurrency)
+    
+    # Phase 7: 响应回调机制
+    add_executable(test_response_callback
+        tests/test_response_callback.cpp
+    )
+    target_link_libraries(test_response_callback
+        cllm_core
+        gtest
+        gtest_main
+        Threads::Threads
+        spdlog::spdlog
+    )
+    add_test(NAME ResponseCallbackTest COMMAND test_response_callback)
+    
+    # Phase 7: 响应回调机制（简化测试）
+    add_executable(test_response_callback_simple
+        tests/test_response_callback_simple.cpp
+    )
+    target_link_libraries(test_response_callback_simple
+        cllm_core
+        gtest
+        gtest_main
+        Threads::Threads
+        spdlog::spdlog
+    )
+    add_test(NAME ResponseCallbackSimpleTest COMMAND test_response_callback_simple)
+    
+    # Phase 7: 集成测试 - /generate接口（简化版）
+    add_executable(test_generate_simple
+        tests/test_generate_simple.cpp
+    )
+    target_link_libraries(test_generate_simple
+        cllm_core
+        gtest
+        gtest_main
+        Threads::Threads
+        spdlog::spdlog
+        nlohmann_json::nlohmann_json
+    )
+    add_test(NAME GenerateSimpleTest COMMAND test_generate_simple)
+    
+    # 加载Qwen模型的测试程序
+    add_executable(load_qwen_model
+        examples/load_qwen_model.cpp
+    )
+    target_link_libraries(load_qwen_model
+        cllm_core
+        Threads::Threads
+    )
 endif()
 
 if(BUILD_EXAMPLES)

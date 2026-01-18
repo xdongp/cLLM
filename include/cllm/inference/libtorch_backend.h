@@ -70,7 +70,8 @@ public:
     kylin::Tensor forwardBatch(
         const std::vector<int> &flatInputIds,
         const std::vector<std::pair<size_t, size_t>> &requestPositions,
-        size_t batchSize
+        size_t batchSize,
+        const std::vector<size_t> &sequenceIds = {}
     ) override;
 
     /**

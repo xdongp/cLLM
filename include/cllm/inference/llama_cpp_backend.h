@@ -7,6 +7,7 @@
 #pragma once
 
 #include "cllm/inference/backend_interface.h"
+#include "cllm/inference/kv_cache_manager.h"
 #include "cllm/kylin/tensor.h"
 #include "cllm/model/config.h"
 #include "cllm/tokenizer/gguf_tokenizer.h"
@@ -14,8 +15,6 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <unordered_map>
-#include <mutex>
 
 // Forward declarations for llama.cpp types
 // 注意：实际类型定义在 llama.h 中
@@ -73,12 +72,14 @@ public:
      * @param flatInputIds 展平后的所有 token id
      * @param requestPositions 每个请求的起止位置
      * @param batchSize 批大小
+     * @param sequenceIds 每个请求的序列ID（requestId），用于序列ID管理
      * @return [total_tokens, vocab_size] logits 张量
      */
     Tensor forwardBatch(
         const std::vector<int> &flatInputIds,
         const std::vector<std::pair<size_t, size_t>> &requestPositions,
-        size_t batchSize
+        size_t batchSize,
+        const std::vector<size_t> &sequenceIds = {}
     ) override;
 
     /**
@@ -110,6 +111,48 @@ public:
      */
     void setNGpuLayers(int nGpuLayers);
 
+    /**
+     * @brief 为请求分配序列ID
+     * @param requestId 请求ID
+     * @return 分配的序列ID，如果失败返回 -1
+     */
+    int32_t allocateSequenceId(size_t requestId);
+
+    /**
+     * @brief 释放请求的序列ID
+     * @param requestId 请求ID
+     * @return true 如果成功释放，false 否则
+     */
+    bool releaseSequenceId(size_t requestId);
+
+    /**
+     * @brief 获取请求对应的序列ID
+     * @param requestId 请求ID
+     * @return 序列ID，如果未分配返回 -1
+     */
+    int32_t getSequenceId(size_t requestId) const;
+
+    /**
+     * @brief 清理请求的KV缓存（Phase 4）
+     * @param requestId 请求ID
+     * @return true 如果成功清理，false 否则
+     * 
+     * 协调 KV 缓存管理器清理 llama.cpp 中的 KV 缓存。
+     */
+    bool cleanupKVCache(size_t requestId);
+
+    /**
+     * @brief 获取KV缓存管理器（Phase 4）
+     * @return KV缓存管理器的指针
+     */
+    KVCacheManager* getKVCacheManager() { return kvCacheManager_.get(); }
+
+    /**
+     * @brief 获取 llama.cpp 上下文句柄（Phase 5）
+     * @return llama.cpp 上下文句柄
+     */
+    ::llama_context* getContext() { return ctx_; }
+
 private:
     /**
      * @brief 从 ModelConfig 创建 llama_model_params
@@ -132,60 +175,35 @@ private:
      */
     std::vector<int32_t> convertToLlamaTokens(const std::vector<int> &inputIds);
 
+    /**
+     * @brief 初始化序列ID池
+     */
+    void initializeSequenceIdPool();
+
     std::string modelPath_;              ///< GGUF 模型路径
     ModelConfig config_;                 ///< 模型配置
-    struct llama_model* model_;         ///< llama.cpp 模型句柄
-    struct llama_context* ctx_;          ///< llama.cpp 上下文句柄
+    ::llama_model* model_;         ///< llama.cpp 模型句柄
+    ::llama_context* ctx_;          ///< llama.cpp 上下文句柄
     std::unique_ptr<GGUFTokenizer> tokenizer_; ///< GGUF tokenizer（用于编码/解码）
     bool initialized_;                   ///< 是否已初始化
     
     // llama.cpp 参数结构（在 initialize 时创建）
     // 使用指针避免在头文件中需要完整类型定义
-    struct llama_model_params* modelParams_;
-    struct llama_context_params* contextParams_;
+    ::llama_model_params* modelParams_;
+    ::llama_context_params* contextParams_;
     
     int numThreads_;                     ///< CPU 线程数
     int nGpuLayers_;                     ///< GPU 层数
-    size_t currentPosition_;              ///< 当前位置（用于单序列 forward，已弃用，保留用于兼容）
-    // 使用 int32_t 而不是 llama_seq_id，因为 llama_seq_id 在头文件中不可见（只在 .cpp 中包含 llama.h）
-    mutable std::mutex seqPositionsMutex_;  ///< 保护 seqPositions_ 的互斥锁
-    std::unordered_map<int32_t, size_t> seqPositions_;  ///< 每个序列的位置映射（seq_id -> position）
-    std::unordered_map<int32_t, size_t> seqLengths_;   ///< 每个序列的上次长度（seq_id -> length），用于检测新请求
-    
-    // ========== 位置管理方法（统一 forward() 和 forwardBatch() 的逻辑）==========
-    
-    /**
-     * @brief 获取序列的当前位置（线程安全）
-     * @param seqId 序列 ID
-     * @return 当前位置，如果不存在则返回 0
-     */
-    size_t getSeqPosition(int32_t seqId) const;
-    
-    /**
-     * @brief 更新序列的位置（线程安全）
-     * @param seqId 序列 ID
-     * @param position 新位置
-     */
-    void updateSeqPosition(int32_t seqId, size_t position);
-    
-    /**
-     * @brief 重置序列的位置（线程安全）
-     * @param seqId 序列 ID
-     */
-    void resetSeqPosition(int32_t seqId);
-    
-    /**
-     * @brief 检查序列是否已有位置记录（线程安全）
-     * @param seqId 序列 ID
-     * @return true 如果已有记录，false 否则
-     */
-    bool hasSeqPosition(int32_t seqId) const;
-    
-    /**
-     * @brief 清空 llama.cpp KV cache 中指定序列的数据
-     * @param seqId 序列 ID
-     */
-    void clearKVCacheForSequence(int32_t seqId);
+    size_t currentPosition_;              ///< 当前推理位置（用于增量推理）
+
+    // Phase 2: 序列ID管理
+    std::map<size_t, int32_t> requestIdToSeqId_;  ///< requestId 到 seqId 的映射
+    std::vector<int32_t> availableSeqIds_;         ///< 可用序列ID池
+    mutable std::mutex sequenceIdMutex_;             ///< 序列ID管理互斥锁（mutable，允许 const 方法使用）
+    int32_t nSeqMax_;                              ///< 最大序列数（从配置读取）
+
+    // Phase 4: KV缓存统计管理
+    std::unique_ptr<KVCacheManager> kvCacheManager_;  ///< KV缓存统计管理器
 };
 
 } // namespace inference

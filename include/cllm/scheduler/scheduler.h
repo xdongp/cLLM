@@ -15,6 +15,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <functional>
 
 #include "cllm/scheduler/config.h"
 #include "cllm/scheduler/stats.h"
@@ -36,6 +37,7 @@ enum class SchedulerError {
     SCHEDULER_NOT_RUNNING,       ///< 调度器未运行
     REQUEST_NOT_FOUND,           ///< 请求未找到
     REQUEST_TIMEOUT,             ///< 请求超时
+    REQUEST_QUEUE_FULL,          ///< 请求队列已满
     BATCH_PROCESSING_FAILED,     ///< 批处理失败
     INVALID_REQUEST              ///< 无效请求
 };
@@ -62,6 +64,13 @@ public:
 private:
     SchedulerError error_;  ///< 错误类型
 };
+
+/**
+ * @brief Phase 7: 响应回调函数类型
+ * @param requestId 请求ID
+ * @param state 请求状态
+ */
+using ResponseCallback = std::function<void(size_t requestId, const RequestState& state)>;
 
 /**
  * @brief 调度器类
@@ -171,11 +180,34 @@ public:
      */
     void resetStats();
     
+    /**
+     * @brief Phase 6: 获取运行中请求数量
+     * @return 运行中请求数量
+     */
+    size_t getRunningCount() const;
+    
+    /**
+     * @brief Phase 6: 获取最大并发请求数
+     * @return 最大并发请求数
+     */
+    size_t getMaxConcurrentRequests() const;
+    
+    /**
+     * @brief Phase 7: 设置响应回调函数
+     * @param callback 回调函数
+     */
+    void setResponseCallback(ResponseCallback callback);
+    
+    // Phase 7: 触发响应回调（供内部使用）
+    void triggerResponseCallback(size_t requestId, const RequestState& state);
+    
 private:
     void schedulerLoop();  ///< 调度器主循环
     void processRequests();  ///< 处理请求
     void processBatch(std::vector<RequestState>& batch);  ///< 处理批次
-    float getCurrentTime();  ///< 获取当前时间
+    void checkRequestTimeout();  ///< Phase 3: 检查请求超时
+    void checkKVCachEviction();  ///< Phase 5: 检查KV缓存淘汰
+    size_t getCurrentTime();  ///< 获取当前时间（毫秒）
     
     RequestQueue requestQueue_;        ///< 请求队列
     BatchManager batchManager_;        ///< 批处理管理器
@@ -201,6 +233,10 @@ private:
     std::condition_variable queueCondition_;   ///< 队列条件变量
     
     SchedulerStats stats_;             ///< 统计信息
+    
+    // Phase 7: 响应回调
+    ResponseCallback responseCallback_;  ///< 响应回调函数
+    mutable std::mutex callbackMutex_;   ///< 回调互斥锁
 };
 
 }

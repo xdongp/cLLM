@@ -313,6 +313,22 @@ int Config::backendLlamaCppGpuLayers() const {
     return config_["backend"]["llama_cpp"]["n_gpu_layers"].as<int>(0);
 }
 
+int Config::backendLlamaCppNSeqMax() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // 默认值为1（llama.cpp的默认值），范围：1-256（LLAMA_MAX_SEQ）
+    int nSeqMax = config_["backend"]["llama_cpp"]["n_seq_max"].as<int>(1);
+    // 验证范围：1-256
+    if (nSeqMax < 1) {
+        CLLM_WARN("backend.llama_cpp.n_seq_max (%d) is less than 1, using default value 1", nSeqMax);
+        return 1;
+    }
+    if (nSeqMax > 256) {
+        CLLM_WARN("backend.llama_cpp.n_seq_max (%d) exceeds LLAMA_MAX_SEQ (256), using 256", nSeqMax);
+        return 256;
+    }
+    return nSeqMax;
+}
+
 bool Config::backendLlamaCppUseMmap() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return config_["backend"]["llama_cpp"]["use_mmap"].as<bool>(true);

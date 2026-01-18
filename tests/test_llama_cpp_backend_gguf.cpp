@@ -198,28 +198,27 @@ int main(int argc, char** argv) {
             std::vector<int> currentInput = inputIds;
             
             for (size_t i = 0; i < maxNewTokens; ++i) {
-                std::vector<int> inputForForward;
-                if (i == 0) {
-                    inputForForward = currentInput;
-                } else {
-                    inputForForward = {currentInput.back()};
-                }
+                // 执行前向推理
+                kylin::Tensor logitsTensor = engine.forward(currentInput);
                 
-                kylin::Tensor logitsTensor = engine.forward(inputForForward);
-                
-                size_t seqLen = inputForForward.size();
+                // 获取最后一个位置的 logits（[seq_len, vocab_size]）
+                size_t seqLen = currentInput.size();
                 size_t vocabSize = config.vocabSize;
                 
+                // 提取最后一个 token 的 logits（[seq_len, vocab_size] -> [vocab_size]）
                 const float* logitsPtr = logitsTensor.data();
                 const float* lastLogitsPtr = logitsPtr + (seqLen - 1) * vocabSize;
                 
+                // 创建 FloatArray 并复制数据（Sampler 需要 FloatArray 而不是原始指针）
                 FloatArray logits(vocabSize);
                 std::memcpy(logits.data(), lastLogitsPtr, vocabSize * sizeof(float));
                 
+                // 采样下一个 token
                 int nextToken = sampler->sample(logits, temperature);
                 generatedIds.push_back(nextToken);
                 currentInput.push_back(nextToken);
                 
+                // 检查 EOS token
                 if (nextToken == tokenizer->getEosId()) {
                     break;
                 }

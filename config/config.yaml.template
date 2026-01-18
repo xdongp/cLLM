@@ -19,8 +19,20 @@ model:
 
 # HTTP 配置
 http:
-  max_input_tokens: 120    # 最大输入 token（过长 prompt 会被裁剪）
-  timeout_ms: 30000        # HTTP 请求超时时间(毫秒)
+  max_input_tokens: 120           # 最大输入 token（过长 prompt 会被裁剪）
+  timeout_ms: 30000               # HTTP 请求超时时间(毫秒)
+  max_concurrent_requests: 8      # HTTP Server最大并发请求数（超过此值立即返回429）
+                                   # 建议设置为序列ID数量（n_seq_max）或略大（如8-16）
+                                   # 作用：在HTTP层就拒绝超载请求，避免请求进入队列后等待
+
+# 队列配置
+queue:
+  max_size: 1000                  # HTTP请求队列最大长度
+                                   # HTTP层内部请求队列的最大容量
+                                   # 当队列满时，新请求会被拒绝
+                                   # 作用：限制等待处理的请求数量，防止内存无限增长
+                                   # 注意：这个队列是HTTP层到调度层的缓冲，通常远大于 max_concurrent_requests
+  priority_weight: 1.0            # 优先级权重（用于请求优先级计算）
 
 # API 端点配置
 api:
@@ -63,42 +75,71 @@ api:
 
 # 调度器配置
 scheduler:
-  max_iterations: 1000
-  batch_timeout_ms: 500
-  max_batch_size: 32
-  context_usage_threshold: 0.75
-  default_temperature: 0.7
-  default_top_p: 0.9
-  default_top_k: 50
-  default_max_tokens: 100
-  request_timeout: 60.0
-  loop_interval: 10
-  idle_loop_interval: 100
-  wait_poll_interval_ms: 10
+  max_iterations: 1000            # 每个请求的最大推理迭代次数
+  batch_timeout_ms: 500           # 批处理超时时间（毫秒）
+  max_batch_size: 32              # 最大批处理大小（应该 ≤ n_seq_max）
+  context_usage_threshold: 0.75   # 上下文使用率阈值（0.0-1.0）
+                                   # 当运行中请求的总上下文长度达到 max_context_length × threshold 时，不再接受新请求
+  default_temperature: 0.7        # 默认温度参数
+  default_top_p: 0.9              # 默认 Top-P 参数
+  default_top_k: 50               # 默认 Top-K 参数
+  default_max_tokens: 100         # 默认最大生成 token 数
+  request_timeout: 60.0           # 请求超时时间（秒）
+  loop_interval: 10               # 调度器循环间隔（微秒，活跃时）
+  idle_loop_interval: 100         # 调度器循环间隔（微秒，空闲时）
+  wait_poll_interval_ms: 10       # 等待轮询间隔（毫秒）
+  sequence_reuse_delay_ms: 0      # 序列ID重用延迟（毫秒）
+                                   # 默认0ms，因为通过序列ID池管理，确保重用前已完全清理
+                                   # 如果出现序列ID重用冲突，可以设置50-100ms的延迟
 
 # 资源配置
 resources:
-  max_batch_size: 8
-  max_context_length: 2048
-  kv_cache_max_size: 100
-  kv_cache_max_memory_mb: 4096
-  memory_limit_mb: 16384
+  max_batch_size: 8               # 最大批处理大小（应该 ≤ n_seq_max）
+  max_context_length: 2048        # 最大上下文长度（单个序列支持的最大token数）
+  kv_cache_max_size: 8            # 最大KV缓存数量（应该等于或略小于 n_seq_max）
+                                   # 限制同时保持KV缓存的请求数量
+  kv_cache_max_memory_mb: 4096    # KV缓存最大内存限制（MB）
+                                   # 当内存使用超过此限制时，触发LRU淘汰
+  memory_limit_mb: 16384          # 总内存限制（MB）
 
 # 缓存配置
 cache:
-  default_max_size: 100
-  default_max_memory_mb: 4096
-  enable_lru: true
-  enable_memory_limit: true
-  enable_stats: true
-  eviction_threshold: 0.8
-  cleanup_interval: 1000
+  default_max_size: 100           # 默认缓存最大数量（已弃用，使用 resources.kv_cache_max_size）
+  default_max_memory_mb: 4096     # 默认缓存最大内存（已弃用，使用 resources.kv_cache_max_memory_mb）
+  enable_lru: true                # 启用LRU淘汰策略
+  enable_memory_limit: true       # 启用内存限制
+  enable_stats: true              # 启用缓存统计
+  eviction_strategy: "LRU"        # 缓存淘汰策略（当前仅支持LRU）
+                                   # LRU: Least Recently Used，淘汰最久未使用的缓存
+  eviction_threshold: 0.8         # 缓存淘汰触发阈值（0.0-1.0）
+                                   # 当缓存使用率达到此阈值时，开始触发淘汰
+                                   # 例如：0.8表示使用率达到80%时开始淘汰
+  cleanup_interval: 1000          # KV缓存清理检查间隔（毫秒）
+                                   # 定期检查KV缓存是否需要清理的间隔时间
+                                   # 过短的间隔会增加CPU开销，过长的间隔可能导致内存不及时释放
 
-# LibTorch 后端配置
+# 后端配置
 backend:
+  # LibTorch 后端配置
   libtorch:
-    seq_len_candidates: [8, 16, 32, 64, 128, 256]
-    fallback_seq_len: 8
+    seq_len_candidates: [8, 16, 32, 64, 128, 256]  # TorchScript模型支持的序列长度候选列表
+    fallback_seq_len: 8                            # 无法探测时的回退序列长度
+  
+  # llama.cpp 后端配置
+  llama_cpp:
+    n_batch: 512                   # llama.cpp批处理大小（一次处理的最大token数）
+    n_threads: 0                   # CPU线程数（0表示使用默认值）
+    n_gpu_layers: 0                # GPU层数（0表示仅使用CPU）
+    n_seq_max: 8                   # llama.cpp最大序列数（定义支持的最大并行序列数）
+                                   # **默认值**：1（llama.cpp的默认值，单序列处理模式）
+                                   # **取值范围**：1-256（LLAMA_MAX_SEQ）
+                                   # **建议值**：等于或略小于 http.max_concurrent_requests
+                                   # **作用**：限制llama.cpp内部可同时处理的序列数量，影响KV cache的分配
+                                   #   - 每个序列最多可以使用 n_ctx / n_seq_max 的tokens
+                                   #   - 例如：n_ctx=2048, n_seq_max=8，每个序列最多256个tokens
+                                   # **注意**：如果设置的值不在1-256范围内，会自动调整到有效范围
+    use_mmap: true                 # 使用内存映射加载模型
+    use_mlock: false               # 锁定内存页面（防止被交换到磁盘）
 
 # 日志配置
 logging:

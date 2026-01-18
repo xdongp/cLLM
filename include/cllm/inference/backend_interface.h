@@ -63,6 +63,7 @@ public:
      * @param flatInputIds 展平后的所有 token id
      * @param requestPositions 每个请求在 flatInputIds 中的起止位置 [start, end)
      * @param batchSize 批大小（请求数）
+     * @param sequenceIds 每个请求的序列ID（requestId），用于序列ID管理（可选，默认空向量）
      * @return [total_tokens, vocab_size] logits 张量
      * 
      * @throws std::runtime_error 如果推理失败
@@ -71,7 +72,8 @@ public:
     virtual Tensor forwardBatch(
         const std::vector<int> &flatInputIds,
         const std::vector<std::pair<size_t, size_t>> &requestPositions,
-        size_t batchSize
+        size_t batchSize,
+        const std::vector<size_t> &sequenceIds = {}
     ) = 0;
 
     /**
