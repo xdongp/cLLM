@@ -14,6 +14,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <mutex>
 
 // Forward declarations for llama.cpp types
 // 注意：实际类型定义在 llama.h 中
@@ -144,7 +146,46 @@ private:
     
     int numThreads_;                     ///< CPU 线程数
     int nGpuLayers_;                     ///< GPU 层数
-    size_t currentPosition_;              ///< 当前位置（用于增量推理）
+    size_t currentPosition_;              ///< 当前位置（用于单序列 forward，已弃用，保留用于兼容）
+    // 使用 int32_t 而不是 llama_seq_id，因为 llama_seq_id 在头文件中不可见（只在 .cpp 中包含 llama.h）
+    mutable std::mutex seqPositionsMutex_;  ///< 保护 seqPositions_ 的互斥锁
+    std::unordered_map<int32_t, size_t> seqPositions_;  ///< 每个序列的位置映射（seq_id -> position）
+    std::unordered_map<int32_t, size_t> seqLengths_;   ///< 每个序列的上次长度（seq_id -> length），用于检测新请求
+    
+    // ========== 位置管理方法（统一 forward() 和 forwardBatch() 的逻辑）==========
+    
+    /**
+     * @brief 获取序列的当前位置（线程安全）
+     * @param seqId 序列 ID
+     * @return 当前位置，如果不存在则返回 0
+     */
+    size_t getSeqPosition(int32_t seqId) const;
+    
+    /**
+     * @brief 更新序列的位置（线程安全）
+     * @param seqId 序列 ID
+     * @param position 新位置
+     */
+    void updateSeqPosition(int32_t seqId, size_t position);
+    
+    /**
+     * @brief 重置序列的位置（线程安全）
+     * @param seqId 序列 ID
+     */
+    void resetSeqPosition(int32_t seqId);
+    
+    /**
+     * @brief 检查序列是否已有位置记录（线程安全）
+     * @param seqId 序列 ID
+     * @return true 如果已有记录，false 否则
+     */
+    bool hasSeqPosition(int32_t seqId) const;
+    
+    /**
+     * @brief 清空 llama.cpp KV cache 中指定序列的数据
+     * @param seqId 序列 ID
+     */
+    void clearKVCacheForSequence(int32_t seqId);
 };
 
 } // namespace inference
