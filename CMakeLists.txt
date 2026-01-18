@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(cllm VERSION 1.0.0 LANGUAGES CXX)
+project(cllm VERSION 1.0.0 LANGUAGES C CXX)
 
 # Find Drogon (temporarily commented out for testing)
 # find_package(Drogon REQUIRED)
@@ -53,6 +53,25 @@ list(APPEND CMAKE_PREFIX_PATH "${TORCH_PATH}")
 find_package(Torch REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 message(STATUS "Found LibTorch: ${TORCH_LIBRARIES}")
+
+# Find llama.cpp
+set(LLAMA_CPP_BUILD_DIR "${CMAKE_SOURCE_DIR}/third_party/llama.cpp/build")
+if(EXISTS "${LLAMA_CPP_BUILD_DIR}/llama-config.cmake")
+    list(APPEND CMAKE_PREFIX_PATH "${LLAMA_CPP_BUILD_DIR}")
+    find_package(Llama QUIET HINTS "${LLAMA_CPP_BUILD_DIR}")
+    if(Llama_FOUND)
+        message(STATUS "✅ Found llama.cpp: ${llama_LIBRARY}")
+        set(LLAMA_CPP_FOUND TRUE)
+    else()
+        message(WARNING "⚠️  llama.cpp not found, LlamaCppBackend will not be available")
+        message(STATUS "   Build llama.cpp first: cd third_party/llama.cpp && mkdir -p build && cd build && cmake .. && make -j$(sysctl -n hw.ncpu)")
+        set(LLAMA_CPP_FOUND FALSE)
+    endif()
+else()
+    message(WARNING "⚠️  llama.cpp build directory not found, LlamaCppBackend will not be available")
+    message(STATUS "   Build llama.cpp first: cd third_party/llama.cpp && mkdir -p build && cd build && cmake .. && make -j$(sysctl -n hw.ncpu)")
+    set(LLAMA_CPP_FOUND FALSE)
+endif()
 
 # Tokenizers 选项 (✅ 默认启用)
 option(USE_TOKENIZERS_CPP "Use tokenizers-cpp for HuggingFace tokenizer" ON)
@@ -227,6 +246,7 @@ add_library(cllm_core
     src/tokenizer/native_tokenizer.cpp
     src/tokenizer/unicode_utils.cpp
     src/tokenizer/unified_tokenizer.cpp
+    src/tokenizer/gguf_tokenizer.cpp
     src/http/request.cpp
     src/http/response.cpp
     src/http/request_validator.cpp
@@ -242,7 +262,7 @@ add_library(cllm_core
     ${CTOKENIZER_SOURCES}
 )
 
-target_link_libraries(cllm_core
+target_link_libraries(cllm_core PRIVATE
     Threads::Threads
     bs_thread_pool
     spdlog::spdlog
@@ -252,6 +272,18 @@ target_link_libraries(cllm_core
     ${TOKENIZERS_LIBRARIES}  # ✅ Add tokenizers-cpp
     Drogon::Drogon
 )
+
+# Link llama.cpp if available
+if(LLAMA_CPP_FOUND)
+    target_sources(cllm_core PRIVATE src/inference/llama_cpp_backend.cpp)
+    # 添加 llama.cpp include 目录
+    include_directories(${CMAKE_SOURCE_DIR}/third_party/llama.cpp/include)
+    target_link_libraries(cllm_core PRIVATE llama)
+    target_compile_definitions(cllm_core PRIVATE CLLM_USE_LLAMA_CPP)
+    message(STATUS "✅ Linked llama.cpp library")
+else()
+    message(STATUS "ℹ️  llama.cpp not available, LlamaCppBackend disabled")
+endif()
 
 # Set ASIO_STANDALONE flag to use header-only version
 if(NOT asio_FOUND)
@@ -305,8 +337,47 @@ if(BUILD_TESTS)
         gtest
         gtest_main
         Threads::Threads
+        spdlog::spdlog
     )
     add_test(NAME KylinGGUFQ4KTest COMMAND test_kylin_gguf_q4k)
+    
+    # 简单的 hello 推理测试
+    add_executable(test_hello_inference
+        tests/test_hello_inference.cpp
+    )
+    target_link_libraries(test_hello_inference
+        cllm_core
+        Threads::Threads
+    )
+    
+    # llama.cpp 后端 GGUF 测试
+    add_executable(test_llama_cpp_backend_gguf
+        tests/test_llama_cpp_backend_gguf.cpp
+    )
+    target_link_libraries(test_llama_cpp_backend_gguf
+        cllm_core
+        Threads::Threads
+        spdlog::spdlog
+    )
+    
+    # llama.cpp 后端直接测试
+    add_executable(test_llama_cpp_direct
+        tests/test_llama_cpp_direct.cpp
+    )
+    target_link_libraries(test_llama_cpp_direct
+        cllm_core
+        Threads::Threads
+        spdlog::spdlog
+    )
+    
+    # 条件链接 llama.cpp（如果可用）
+    if(LLAMA_CPP_FOUND)
+        target_compile_definitions(test_llama_cpp_backend_gguf PRIVATE CLLM_USE_LLAMA_CPP)
+        target_compile_definitions(test_llama_cpp_direct PRIVATE CLLM_USE_LLAMA_CPP)
+    else()
+        message(WARNING "⚠️  test_llama_cpp_backend_gguf requires llama.cpp, but it's not available")
+        message(WARNING "⚠️  test_llama_cpp_direct requires llama.cpp, but it's not available")
+    endif()
     
     # 加载Qwen模型的测试程序
     add_executable(load_qwen_model
