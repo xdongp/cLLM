@@ -50,6 +50,62 @@ static std::vector<std::string> splitUtf8(const std::string& s) {
     return out;
 }
 
+static std::string codepointToUtf8(uint32_t cp) {
+    std::string out;
+    if (cp <= 0x7F) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp <= 0x7FF) {
+        out.push_back(static_cast<char>(0xC0 | ((cp >> 6) & 0x1F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp <= 0xFFFF) {
+        out.push_back(static_cast<char>(0xE0 | ((cp >> 12) & 0x0F)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xF0 | ((cp >> 18) & 0x07)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+    return out;
+}
+
+static std::string byteEncodeWithTable(
+    const std::string& s,
+    const std::unordered_map<unsigned char, std::string>& encoder
+) {
+    std::string out;
+    for (unsigned char ch : s) {
+        auto it = encoder.find(ch);
+        if (it != encoder.end()) {
+            out += it->second;
+        } else {
+            out.push_back(static_cast<char>(ch));
+        }
+    }
+    return out;
+}
+
+static std::string byteDecodeWithTable(
+    const std::string& s,
+    const std::unordered_map<std::string, unsigned char>& decoder
+) {
+    if (decoder.empty()) {
+        return s;
+    }
+    std::string out;
+    auto chars = splitUtf8(s);
+    for (const auto& ch : chars) {
+        auto it = decoder.find(ch);
+        if (it != decoder.end()) {
+            out.push_back(static_cast<char>(it->second));
+        } else {
+            out += ch;
+        }
+    }
+    return out;
+}
+
 static bool isSpecialTokenString(const std::string& token) {
     if (token.size() >= 4 && token.rfind("<|", 0) == 0 && token.rfind("|>") == token.size() - 2) {
         return true;
@@ -238,6 +294,21 @@ void GGUFTokenizer::loadSpecialTokens(const GGUFLoader& loader) {
         }
     }
     
+    // 如果未从元数据获取到 UNK，尝试从词表中推断
+    if (unkTokenId_ == -1) {
+        const std::vector<std::string> unkCandidates = {
+            "<|unk|>", "<unk>", "[UNK]", "<|unknown|>", "<|unk>"
+        };
+        for (const auto& cand : unkCandidates) {
+            auto it = tokenToIdMap_.find(cand);
+            if (it != tokenToIdMap_.end()) {
+                unkTokenId_ = it->second;
+                specialTokenIds_.insert(unkTokenId_);
+                break;
+            }
+        }
+    }
+    
     // 输出特殊token信息
     CLLM_INFO("GGUFTokenizer::loadSpecialTokens: BOS token ID: %d", bosTokenId_);
     CLLM_INFO("GGUFTokenizer::loadSpecialTokens: EOS token ID: %d", eosTokenId_);
@@ -360,25 +431,67 @@ std::vector<int> GGUFTokenizer::encode(const std::string& text, bool addSpecialT
             continue;
         }
         
+        // byte-level 预编码（确保与词表编码一致）
+        std::string byteEncoded = byteEncodeWithTable(word, byteEncoder_);
+
         // 应用 BPE 合并
-        std::vector<std::string> bpeTokens = bpe(word);
+        std::vector<std::string> bpeTokens = bpe(byteEncoded);
         
         // 4. 将 BPE tokens 转换为 token IDs
+        auto appendByteFallback = [&](const std::string& raw) -> bool {
+            bool appended = false;
+            for (unsigned char ch : raw) {
+                auto beIt = byteEncoder_.find(ch);
+                if (beIt == byteEncoder_.end()) {
+                    continue;
+                }
+                auto tokIt = tokenToIdMap_.find(beIt->second);
+                if (tokIt != tokenToIdMap_.end()) {
+                    tokenIds.push_back(tokIt->second);
+                    appended = true;
+                }
+            }
+            return appended;
+        };
+
         for (const auto& token : bpeTokens) {
             auto it = tokenToIdMap_.find(token);
             if (it != tokenToIdMap_.end()) {
                 tokenIds.push_back(it->second);
+                continue;
+            }
+
+            // byte-level fallback（避免中文等字符导致空编码）
+            if (appendByteFallback(token)) {
+                continue;
+            }
+
+            // 如果仍找不到，使用 UNK token
+            if (unkTokenId_ != -1) {
+                tokenIds.push_back(unkTokenId_);
             } else {
-                // 如果找不到，使用 UNK token
-                if (unkTokenId_ != -1) {
-                    tokenIds.push_back(unkTokenId_);
-                } else {
-                    CLLM_WARN("GGUFTokenizer::encode: Token not found in vocab: %s", token.c_str());
-                }
+                CLLM_WARN("GGUFTokenizer::encode: Token not found in vocab: %s", token.c_str());
             }
         }
     }
     
+    // 确保非空编码（避免 total tokens=0）
+    if (tokenIds.empty() && !text.empty()) {
+        int fallbackId = -1;
+        if (unkTokenId_ != -1) {
+            fallbackId = unkTokenId_;
+        } else if (bosTokenId_ != -1) {
+            fallbackId = bosTokenId_;
+        } else if (eosTokenId_ != -1) {
+            fallbackId = eosTokenId_;
+        } else if (vocabSize_ > 0) {
+            fallbackId = 0;
+        }
+        if (fallbackId != -1) {
+            tokenIds.push_back(fallbackId);
+        }
+    }
+
     // 如果需要，添加EOS token
     if (addSpecialTokens && eosTokenId_ != -1) {
         tokenIds.push_back(eosTokenId_);
@@ -427,6 +540,9 @@ std::string GGUFTokenizer::decode(const std::vector<int>& ids, bool skipSpecialT
             }
         }
     }
+
+    // 将 byte-encoded 文本还原为 UTF-8
+    text = byteDecodeWithTable(text, byteDecoder_);
     
     return text;
 }
@@ -482,23 +598,32 @@ ModelType GGUFTokenizer::getModelType() const {
 }
 
 void GGUFTokenizer::buildByteEncoder() {
-    // 构建字节编码器：将字节 (0-255) 映射到 UTF-8 字符串
-    // 这是 byte-level BPE 的基础
-    // 对于大多数 BPE tokenizer，字节直接映射到自身或特殊格式
+    // GPT-2/llama-style byte encoder
     byteEncoder_.clear();
     byteDecoder_.clear();
-    
-    for (int i = 0; i < 256; ++i) {
-        unsigned char byte = static_cast<unsigned char>(i);
-        std::string byteStr;
-        byteStr.push_back(static_cast<char>(byte));
-        
-        // 对于可打印 ASCII 字符（33-126），直接使用
-        // 对于其他字符，也直接使用（byte-level 特性）
-        byteEncoder_[byte] = byteStr;
-        byteDecoder_[byteStr] = byte;
+
+    std::vector<int> bytes;
+    for (int b = 33; b <= 126; ++b) bytes.push_back(b);
+    for (int b = 161; b <= 172; ++b) bytes.push_back(b);
+    for (int b = 174; b <= 255; ++b) bytes.push_back(b);
+
+    std::vector<int> unicode = bytes;
+    int n = 0;
+    for (int b = 0; b < 256; ++b) {
+        if (std::find(bytes.begin(), bytes.end(), b) == bytes.end()) {
+            bytes.push_back(b);
+            unicode.push_back(256 + n);
+            ++n;
+        }
     }
-    
+
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        unsigned char byte = static_cast<unsigned char>(bytes[i]);
+        std::string mapped = codepointToUtf8(static_cast<uint32_t>(unicode[i]));
+        byteEncoder_[byte] = mapped;
+        byteDecoder_[mapped] = byte;
+    }
+
     CLLM_DEBUG("GGUFTokenizer::buildByteEncoder: Built byte encoder/decoder (256 entries)");
 }
 
