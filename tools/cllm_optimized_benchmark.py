@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-API基准测试脚本 - 用于测试xLLM API服务器的性能表现
+cLLM优化基准测试脚本 - 对标Ollama性能
+使用更大的max_tokens参数以提升吞吐量
 """
 
 import requests
@@ -8,15 +9,16 @@ import json
 import time
 import argparse
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("xLLM-api-benchmark")
+logger = logging.getLogger("cLLM-optimized-benchmark")
 
 
-class APIBenchmarkTester:
-    """API基准测试器"""
+class CLMLOptimizedBenchmarkTester:
+    """cLLM优化基准测试器"""
     
     def __init__(self, server_url: str):
         self.server_url = server_url
@@ -46,7 +48,7 @@ class APIBenchmarkTester:
                 self.generate_url,
                 headers={"Content-Type": "application/json"},
                 data=json.dumps(payload),
-                timeout=300
+                timeout=600
             )
             end_time = time.time()
             
@@ -140,7 +142,7 @@ class APIBenchmarkTester:
             result = self.send_api_request(prompt, max_tokens)
             results.append(result)
             status = "✓" if result["success"] else "✗"
-            logger.info(f"  Request {i+1}/{num_requests}: {status} {result['response_time']:.2f}s")
+            logger.info(f"  Request {i+1}/{num_requests}: {status} {result['response_time']:.2f}s - Generated: {result.get('generated_tokens', 0)} tokens")
         
         total_time = time.time() - start_time
         logger.info(f"Total time: {total_time:.2f}s")
@@ -166,7 +168,7 @@ class APIBenchmarkTester:
                 results.append(result)
                 index = future_to_index[future]
                 status = "✓" if result["success"] else "✗"
-                logger.info(f"  Request {index+1}/{num_requests}: {status} {result['response_time']:.2f}s")
+                logger.info(f"  Request {index+1}/{num_requests}: {status} {result['response_time']:.2f}s - Generated: {result.get('generated_tokens', 0)} tokens")
         
         total_time = time.time() - start_time
         logger.info(f"Total time: {total_time:.2f}s")
@@ -198,52 +200,108 @@ class APIBenchmarkTester:
         logger.info(f"  Avg generated tokens: {stats.get('avg_generated_tokens', 0):.2f}")
 
 
+def load_prompts_from_file(file_path: str) -> List[str]:
+    """从文件加载prompts，每行一个"""
+    if not os.path.exists(file_path):
+        logger.warning(f"Prompt file not found: {file_path}")
+        return []
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            prompts = [line.strip() for line in f if line.strip()]
+        logger.info(f"Loaded {len(prompts)} prompts from {file_path}")
+        return prompts
+    except Exception as e:
+        logger.error(f"Failed to load prompts from {file_path}: {e}")
+        return []
+
+
+def get_prompts(prompts_file: str, num_requests: int) -> List[str]:
+    """获取prompts列表，支持从文件读取或使用默认prompts"""
+    # 尝试从文件加载
+    prompts = load_prompts_from_file(prompts_file) if prompts_file else []
+    
+    # 如果文件加载失败或没有指定文件，使用默认prompts
+    if not prompts:
+        logger.info("Using default prompts")
+        prompts = [
+            "人工智能是计算机科学的一个分支，它企图了解智能的实质，并生产出一种新的能以人类智能相似的方式做出反应的智能机器。",
+            "机器学习是人工智能的一个分支，它使计算机能够在不被明确编程的情况下从数据中学习。",
+            "深度学习是机器学习的一个子集，它模仿人脑的工作方式来学习数据中的模式。",
+            "自然语言处理是人工智能领域中的一个重要方向，致力于让计算机理解和生成人类语言。",
+            "计算机视觉是人工智能的一个重要应用领域，旨在让计算机能够像人类一样理解和解释图像和视频。"
+        ]
+    
+    # 如果prompts数量不足，循环使用
+    expanded_prompts = []
+    for i in range(num_requests):
+        expanded_prompts.append(prompts[i % len(prompts)])
+    
+    return expanded_prompts
+
+
 def main():
-    parser = argparse.ArgumentParser(description="xLLM API Benchmark Tool")
-    parser.add_argument("--server-url", type=str, default="http://localhost:8000", help="xLLM server URL")
+    parser = argparse.ArgumentParser(description="cLLM Optimized Benchmark Tool")
+    parser.add_argument("--server-url", type=str, default="http://localhost:8080", help="cLLM server URL")
     parser.add_argument("--test-type", choices=["api-sequential", "api-concurrent", "all"], 
                        default="all", help="Test type")
-    parser.add_argument("--requests", type=int, default=20, help="Number of requests")
-    parser.add_argument("--concurrency", type=int, default=10, help="Concurrency level")
-    parser.add_argument("--max-tokens", type=int, default=50, help="Max tokens to generate")
+    parser.add_argument("--requests", type=int, default=10, help="Number of requests")
+    parser.add_argument("--concurrency", type=int, default=5, help="Concurrency level")
+    parser.add_argument("--max-tokens", type=int, default=600, help="Max tokens to generate (optimized for Ollama comparison)")
+    parser.add_argument("--output-file", type=str, default="", help="Output JSON file for test results")
+    parser.add_argument("--prompts-file", type=str, default="data/test_prompts_500.txt", help="File containing prompts (one per line)")
     
     args = parser.parse_args()
     
-    tester = APIBenchmarkTester(server_url=args.server_url)
+    tester = CLMLOptimizedBenchmarkTester(server_url=args.server_url)
     
-    prompts = [
-        "人工智能是计算机科学的一个分支，它企图了解智能的实质，并生产出一种新的能以人类智能相似的方式做出反应的智能机器。",
-        "机器学习是人工智能的一个分支，它使计算机能够在不被明确编程的情况下从数据中学习。",
-        "深度学习是机器学习的一个子集，它模仿人脑的工作方式来学习数据中的模式。",
-        "自然语言处理是人工智能领域中的一个重要方向，致力于让计算机理解和生成人类语言。",
-        "计算机视觉是人工智能的一个重要应用领域，旨在让计算机能够像人类一样理解和解释图像和视频。"
-    ]
+    # 获取prompts列表
+    prompts = get_prompts(args.prompts_file, args.requests)
     
     logger.info("=" * 50)
-    logger.info("xLLM API Benchmark Tool")
+    logger.info("cLLM Optimized Benchmark Tool")
     logger.info("=" * 50)
     logger.info(f"Server URL: {args.server_url}")
     logger.info(f"Test type: {args.test_type}")
     logger.info(f"Number of requests: {args.requests}")
     logger.info(f"Concurrency: {args.concurrency}")
-    logger.info(f"Max tokens: {args.max_tokens}")
+    logger.info(f"Max tokens: {args.max_tokens} (optimized for Ollama comparison)")
     logger.info("=" * 50)
     
     try:
+        seq_stats = None
+        conc_stats = None
         if args.test_type in ["api-sequential", "api-concurrent", "all"]:
             if not tester.check_server_health():
-                logger.error("Error: Cannot connect to xLLM server, please ensure the server is running")
+                logger.error("Error: Cannot connect to cLLM server, please ensure that cLLM is running")
                 return
             
             if args.test_type in ["api-sequential", "all"]:
                 seq_results = tester.run_api_sequential_test(args.requests, args.max_tokens, prompts)
                 seq_stats = tester.calculate_statistics(seq_results)
-                tester.print_statistics(seq_stats, "API Sequential Test")
+                tester.print_statistics(seq_stats, "cLLM API Sequential Test (Optimized)")
             
             if args.test_type in ["api-concurrent", "all"]:
                 conc_results = tester.run_api_concurrent_test(args.requests, args.max_tokens, args.concurrency, prompts)
                 conc_stats = tester.calculate_statistics(conc_results)
-                tester.print_statistics(conc_stats, "API Concurrent Test")
+                tester.print_statistics(conc_stats, "cLLM API Concurrent Test (Optimized)")
+
+        if args.output_file:
+            output_dir = os.path.dirname(args.output_file)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            output_data = {
+                "test_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "server_url": args.server_url,
+                "requests": args.requests,
+                "concurrency": args.concurrency,
+                "max_tokens": args.max_tokens,
+                "sequential": seq_stats,
+                "concurrent": conc_stats
+            }
+            with open(args.output_file, "w", encoding="utf-8") as f:
+                json.dump(output_data, f, ensure_ascii=False, indent=2)
+            logger.info(f"Results saved to: {args.output_file}")
     
     except KeyboardInterrupt:
         logger.info("\nBenchmark interrupted by user")

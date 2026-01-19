@@ -522,16 +522,44 @@ Tensor LlamaCppBackend::forwardBatch(
         float* logitsPtr = llama_get_logits(ctx_);
         
         if (logitsPtr) {
-            // 只复制最后一个位置的 logits（这是我们需要用于采样的位置）
-            // 将 llama.cpp 的 logits 复制到 result 的最后一行（totalTokens - 1 位置）
-            size_t lastPosIndex = totalTokens - 1;
-            std::memcpy(
-                result.data() + lastPosIndex * config_.vocabSize,
-                logitsPtr,
-                config_.vocabSize * sizeof(float)
-            );
-            CLLM_DEBUG("[LlamaCppBackend::forwardBatch] Copied %zu logits to position %zu", 
-                      config_.vocabSize, lastPosIndex);
+            // 跟踪哪些 token 位置需要 logits，以及它们在 batch 中的索引
+            // llama_get_logits(ctx_) 返回的 logits 是按 batch.logits[i] = 1 的顺序连续存储的
+            size_t logitsOffset = 0;
+            size_t tokenIdx = 0;
+            
+            for (size_t batchIdx = 0; batchIdx < batchSize; ++batchIdx) {
+                const auto& pos = requestPositions[batchIdx];
+                size_t seqStart = pos.first;
+                size_t seqEnd = pos.second;
+                
+                size_t actualSeqStart = seqStart;
+                size_t actualSeqEnd = seqEnd;
+                if (!isNewRequest[batchIdx]) {
+                    if (seqEnd == seqStart) {
+                        continue;
+                    }
+                    actualSeqStart = seqEnd - 1;
+                }
+                
+                // 遍历该请求的所有 token
+                for (size_t i = actualSeqStart; i < actualSeqEnd; ++i) {
+                    if (batch.logits[tokenIdx]) {
+                        // 这个 token 需要 logits，从 logitsPtr 中提取
+                        size_t resultPos = i;  // 在 result 中的位置
+                        std::memcpy(
+                            result.data() + resultPos * config_.vocabSize,
+                            logitsPtr + logitsOffset * config_.vocabSize,
+                            config_.vocabSize * sizeof(float)
+                        );
+                        CLLM_DEBUG("[LlamaCppBackend::forwardBatch] Copied logits for request %zu, token position %zu (batch tokenIdx=%zu, logitsOffset=%zu)", 
+                                  batchIdx, resultPos, tokenIdx, logitsOffset);
+                        logitsOffset++;
+                    }
+                    tokenIdx++;
+                }
+            }
+            
+            CLLM_DEBUG("[LlamaCppBackend::forwardBatch] Extracted logits for %zu positions", logitsOffset);
         } else {
             CLLM_WARN("[LlamaCppBackend::forwardBatch] Failed to get logits, returning zero tensor");
         }

@@ -1,0 +1,31 @@
+{
+  "test_time": "2026-01-19 19:49:34",
+  "server_url": "http://localhost:18085",
+  "requests": 160,
+  "concurrency": 5,
+  "max_tokens": 50,
+  "sequential": {
+    "total_requests": 160,
+    "successful_requests": 159,
+    "failed_requests": 1,
+    "avg_response_time": 1.0331264906709299,
+    "min_response_time": 0.8592979907989502,
+    "max_response_time": 1.213270902633667,
+    "avg_throughput": 48.0611235794196,
+    "avg_tokens_per_second": 48.74679459865738,
+    "total_tokens_processed": 10010,
+    "avg_generated_tokens": 50.0
+  },
+  "concurrent": {
+    "total_requests": 160,
+    "successful_requests": 159,
+    "failed_requests": 1,
+    "avg_response_time": 4.012107594208148,
+    "min_response_time": 0.9446752071380615,
+    "max_response_time": 4.615263938903809,
+    "avg_throughput": 61.62946814435468,
+    "avg_tokens_per_second": 12.726514666335389,
+    "total_tokens_processed": 10017,
+    "avg_generated_tokens": 50.0
+  }
+}

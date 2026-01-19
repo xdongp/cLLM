@@ -4,7 +4,7 @@
 # 服务器配置
 server:
   host: "0.0.0.0"          # 服务器监听地址
-  port: 8080               # 服务器监听端口
+  port: 18085               # 服务器监听端口
   num_threads: 8           # Drogon 工作线程数（0 表示使用硬件并发数）- 优化：增加线程数提升并发处理能力
   min_threads: 4           # 最小线程数（避免 /generate 阻塞导致 /health 卡住）- 优化：增加最小线程数
   use_libtorch: false      # 是否使用 LibTorch 后端（否则使用 Kylin）
@@ -104,8 +104,8 @@ backend:
   llama_cpp:
     n_batch: 512          # 优化：减少批处理大小以避免内存问题
     n_threads: 8          # 优化：增加线程数以充分利用CPU
-    n_gpu_layers: 0       # GPU层数（0表示仅使用CPU，因为我们编译时没有启用Metal）
-    n_seq_max: 32         # 优化：增加最大序列数以支持更多并发请求（从8增加到32，提升并发性能）
+    n_gpu_layers: 99       # GPU层数（99表示使用全部GPU层）
+    n_seq_max: 32          # 优化：减少最大序列数以避免内存问题
     use_mmap: true        # 使用内存映射
     use_mlock: false      # 使用内存锁定
 
