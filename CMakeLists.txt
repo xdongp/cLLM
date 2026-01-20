@@ -261,7 +261,7 @@ add_library(cllm_core
     src/http/generate_endpoint.cpp
     src/http/encode_endpoint.cpp
     src/http/benchmark_endpoint.cpp
-    src/http/drogon_server.cpp
+    src/http/http_server.cpp
     src/http/json_request_parser.cpp
     src/http/request_queue.cpp
     ${CTOKENIZER_SOURCES}

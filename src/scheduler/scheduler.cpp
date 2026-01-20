@@ -36,6 +36,8 @@ Scheduler::Scheduler(
     config_.schedulerLoopInterval = Config::instance().schedulerLoopInterval();
     config_.idleLoopInterval = Config::instance().schedulerIdleLoopInterval();
     config_.contextUsageThreshold = Config::instance().schedulerContextUsageThreshold();
+    // 🔥 修复：增加最大并发请求数，支持32并发测试
+    config_.maxConcurrentRequests = 64;  // 从默认8增加到64，支持高并发场景
     
     kvCache_ = new KVCache(
         static_cast<size_t>(Config::instance().serverKvCacheMaxSize()),
@@ -71,6 +73,8 @@ Scheduler::Scheduler(
     config_.schedulerLoopInterval = Config::instance().schedulerLoopInterval();
     config_.idleLoopInterval = Config::instance().schedulerIdleLoopInterval();
     config_.contextUsageThreshold = Config::instance().schedulerContextUsageThreshold();
+    // 🔥 修复：增加最大并发请求数，支持32并发测试
+    config_.maxConcurrentRequests = 64;  // 从默认8增加到64，支持高并发场景
     
     modelExecutor_ = new ModelExecutor(modelPath, quantization);
     kvCache_ = new KVCache(

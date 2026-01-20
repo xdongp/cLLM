@@ -5,7 +5,7 @@
  * @date 2026-01-10
  */
 
-#include "cllm/http/drogon_server.h"
+#include "cllm/http/http_server.h"
 
 #include <signal.h>
 #include <getopt.h>
@@ -15,6 +15,8 @@
 #include <filesystem>
 #include <optional>
 #include <vector>
+#include <thread>
+#include <chrono>
 
 #include "cllm/http/handler.h"
 #include "cllm/http/health_endpoint.h"
@@ -48,7 +50,7 @@ void signalHandler(int signal) {
     
     // 停止服务器
     CLLM_INFO("Stopping HTTP server...");
-    cllm::DrogonServer::stop();
+    cllm::HttpServer::stop();
     
     CLLM_INFO("Shutdown complete");
     cllm::Logger::instance().flush();
@@ -537,9 +539,9 @@ int main(int argc, char* argv[]) {
         CLLM_INFO("  - POST %s", cllm::Config::instance().apiEndpointEncodePath().c_str());
         CLLM_INFO("  - POST /benchmark");
         
-        // 初始化并启动 Drogon 服务器
-        CLLM_INFO("Initializing Drogon HTTP server...");
-        cllm::DrogonServer::init(host, port, httpHandler.get());
+        // 初始化并启动 HTTP 服务器（自研高性能服务器）
+        CLLM_INFO("Initializing HTTP server...");
+        cllm::HttpServer::init(host, port, httpHandler.get());
         
         CLLM_INFO("========================================");
         CLLM_INFO("✓ cLLM Server is ready!");
@@ -547,8 +549,13 @@ int main(int argc, char* argv[]) {
         CLLM_INFO("Press Ctrl+C to stop the server");
         CLLM_INFO("========================================");
         
-        // Start server (blocking)
-        cllm::DrogonServer::start();
+        // Start server (启动后台线程)
+        cllm::HttpServer::start();
+        
+        // 保持服务器运行（主线程等待）
+        while (cllm::HttpServer::isRunning()) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
         
         // Keep endpoint objects alive
         healthEndpoint.reset();

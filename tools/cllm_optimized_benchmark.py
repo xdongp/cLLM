@@ -263,14 +263,18 @@ def main():
     prompts = get_prompts(args.prompts_file, args.requests)
 
     # 🔥 对标 Stage 15/16 的专用模式：
-    # 固定参数：n_requests=40, concurrency=8, max_tokens=50，prompt 与 Stage 15 完全一致
+    # 固定参数：n_requests=40, concurrency=16, max_tokens=50，prompt 与 Stage 15 完全一致
     if args.test_type == "api-concurrent-stage15":
         args.requests = 40
-        args.concurrency = 8
+        args.concurrency = 16
         args.max_tokens = 50
         # Stage 15 使用的固定 prompt
         stage15_prompt = "人工智能是计算机科学的一个分支"
         prompts = [stage15_prompt] * args.requests
+    
+    # 🔥 api-concurrent 模式：提升并发数到16
+    if args.test_type == "api-concurrent":
+        args.concurrency = 16
     
     logger.info("=" * 50)
     logger.info("cLLM Optimized Benchmark Tool")

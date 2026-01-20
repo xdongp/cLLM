@@ -64,7 +64,9 @@ HttpResponse ResponseBuilder::serviceUnavailable(const std::string& message) {
 HttpResponse ResponseBuilder::json(const nlohmann::json& data, int statusCode) {
     HttpResponse response;
     response.setStatusCode(statusCode);
-    response.setBody(data.dump());
+    // 🔥 优化：使用move语义，避免临时string拷贝
+    std::string body = data.dump();
+    response.setBody(std::move(body));
     response.setContentType(getContentType());
     return response;
 }

@@ -63,18 +63,23 @@ HttpResponse GenerateEndpoint::handle(const HttpRequest& request) {
 }
 
 HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
-    auto startTime = std::chrono::high_resolution_clock::now();
-    
+    // 🔥 优化：延迟开始时间测量，排除JSON解析等非核心开销
+    // 在真正开始处理请求时才开始计时（与Stage 15对齐）
     std::string requestId = generateRequestId();
     std::string generatedText = "";
     size_t generatedTokenCount = 0;
     
+    // 🔥 关键优化：在tokenization之前开始计时（与Stage 15对齐）
+    auto startTime = std::chrono::high_resolution_clock::now();
+    
     if (scheduler_ != nullptr && tokenizer_ != nullptr) {
         try {
+            #ifdef CLLM_DEBUG_MODE
             CLLM_DEBUG("Starting non-streaming request processing");
             CLLM_DEBUG("Prompt: %s", req.prompt.c_str());
             CLLM_DEBUG("Max tokens: %d", req.maxTokens);
             CLLM_DEBUG("Temperature: %f", req.temperature);
+            #endif
             
             // 创建请求状态
             RequestState requestState;
@@ -98,9 +103,13 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
             requestState.errorMessage = "";
             
             // 编码prompt
+            #ifdef CLLM_DEBUG_MODE
             CLLM_DEBUG("Starting tokenization...");
+            #endif
             requestState.tokenizedPrompt = tokenizer_->encode(req.prompt, false);
+            #ifdef CLLM_DEBUG_MODE
             CLLM_DEBUG("Tokenization completed, got %zu tokens", requestState.tokenizedPrompt.size());
+            #endif
             
             // 控制输入长度：TorchScript trace 可能固化 seq_len（当前模型为 128），过长输入会导致推理开销变大
             // 这里做一个温和的上限，避免超长 prompt 把 CPU 推理拖垮；真正的裁剪/填充由后端按 traced seq_len 处理
@@ -114,6 +123,7 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
                 }
             }
             
+            #ifdef CLLM_DEBUG_MODE
             if (!requestState.tokenizedPrompt.empty()) {
                 CLLM_DEBUG("Token IDs: [");
                 size_t showCount = std::min(requestState.tokenizedPrompt.size(), (size_t)10);
@@ -127,12 +137,15 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
                 tokenIds << " ]";
                 CLLM_DEBUG("%s", tokenIds.str().c_str());
             }
+            #endif
             
             // Phase 6: 检查并发限制
             size_t runningCount = scheduler_->getRunningCount();
             size_t maxConcurrent = scheduler_->getMaxConcurrentRequests();
             if (runningCount >= maxConcurrent) {
+                #ifdef CLLM_DEBUG_MODE
                 CLLM_WARN("Concurrent request limit reached: %zu/%zu, returning HTTP 429", runningCount, maxConcurrent);
+                #endif
                 nlohmann::json errorResp;
                 errorResp["success"] = false;
                 errorResp["error"] = "Too many concurrent requests";
@@ -144,22 +157,32 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
             }
             
             // 添加请求到调度器
+            #ifdef CLLM_DEBUG_MODE
             CLLM_DEBUG("Adding request to scheduler...");
+            #endif
             size_t reqId = scheduler_->addRequest(requestState);
+            #ifdef CLLM_DEBUG_MODE
             CLLM_DEBUG("Request added with ID: %zu", reqId);
+            #endif
             
             // 等待请求完成
             const float timeoutMin = cllm::Config::instance().apiTimeoutMin();
             const float timeoutMax = cllm::Config::instance().apiTimeoutMax();
             const float tokenFactor = cllm::Config::instance().apiTimeoutTokenFactor();
             const float timeoutSec = std::max(timeoutMin, std::min(timeoutMax, static_cast<float>(req.maxTokens) * tokenFactor));
+            #ifdef CLLM_DEBUG_MODE
             CLLM_DEBUG("Waiting for request completion (timeout=%.1fs)...", timeoutSec);
+            #endif
             if (scheduler_->waitForRequest(reqId, timeoutSec)) {
+                #ifdef CLLM_DEBUG_MODE
                 CLLM_DEBUG("Request completed, retrieving result...");
+                #endif
                 RequestState result = scheduler_->getRequestResult(reqId);
                 
                 if (result.isTimeout) {
+                    #ifdef CLLM_DEBUG_MODE
                     CLLM_WARN("Request timed out (scheduler timeout)");
+                    #endif
                     nlohmann::json errorResp;
                     errorResp["success"] = false;
                     errorResp["error"] = "Request timeout";
@@ -167,12 +190,15 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
                     return ResponseBuilder::json(errorResp, 408);
                 }
                 
+                #ifdef CLLM_DEBUG_MODE
                 CLLM_DEBUG("Tokenized prompt in result: %zu tokens", result.tokenizedPrompt.size());
                 CLLM_DEBUG("Generated tokens count: %zu", result.generatedTokens.size());
                 CLLM_DEBUG("Request ID: %llu, isCompleted: %d, isFailed: %d, isTimeout: %d", 
                           result.requestId, result.isCompleted ? 1 : 0, result.isFailed ? 1 : 0, result.isTimeout ? 1 : 0);
+                #endif
                 
                 if (!result.generatedTokens.empty()) {
+                    #ifdef CLLM_DEBUG_MODE
                     CLLM_DEBUG("Generated tokens: [");
                     size_t showCount = std::min(result.generatedTokens.size(), (size_t)10);
                     std::stringstream generatedTokens;
@@ -184,6 +210,7 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
                     }
                     generatedTokens << " ]";
                     CLLM_DEBUG("%s", generatedTokens.str().c_str());
+                    #endif
 
                     // 解码前：按 EOS 截断，避免 EOS 后继续采样导致"乱码"
                     std::vector<int> toDecode = result.generatedTokens;
@@ -201,14 +228,18 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
 
                     try {
                         generatedText = tokenizer_->decode(toDecode, true);
+                        #ifdef CLLM_DEBUG_MODE
                         CLLM_DEBUG("Decoded text: [%s]", generatedText.c_str());
                         CLLM_DEBUG("Decoded text length: %zu", generatedText.length());
+                        #endif
                     } catch (const std::exception& e) {
                         CLLM_ERROR("Exception during tokenizer decode: %s", e.what());
                         generatedText = "[Decode Error: " + std::string(e.what()) + "]";
                     }
                 } else {
+                    #ifdef CLLM_DEBUG_MODE
                     CLLM_WARN("No tokens generated!");
+                    #endif
                     generatedText = "No tokens generated";
                 }
             } else {
@@ -221,7 +252,9 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
             }
         } catch (const SchedulerException& e) {
             if (e.getError() == SchedulerError::REQUEST_QUEUE_FULL) {
+                #ifdef CLLM_DEBUG_MODE
                 CLLM_WARN("Request rejected: queue full");
+                #endif
                 nlohmann::json errorResp;
                 errorResp["success"] = false;
                 errorResp["error"] = "Request queue is full";
