@@ -220,6 +220,7 @@ private:
     std::map<size_t, RequestState> completedRequests_;  ///< 已完成的请求
     
     std::thread schedulerThread_;      ///< 调度器线程
+    std::thread cleanupThread_;        ///< 异步清理线程
     std::atomic<bool> running_{false}; ///< 运行状态
     
     size_t maxBatchSize_;              ///< 最大批处理大小
@@ -237,6 +238,13 @@ private:
     // Phase 7: 响应回调
     ResponseCallback responseCallback_;  ///< 响应回调函数
     mutable std::mutex callbackMutex_;   ///< 回调互斥锁
+    
+    // 异步资源清理
+    std::queue<size_t> cleanupQueue_;    ///< 清理任务队列
+    mutable std::mutex cleanupMutex_;    ///< 清理队列互斥锁
+    std::condition_variable cleanupCondition_;  ///< 清理条件变量
+    void cleanupLoop();                 ///< 清理线程循环
+    void cleanupRequestAsync(size_t requestId);  ///< 异步清理请求资源
 };
 
 }

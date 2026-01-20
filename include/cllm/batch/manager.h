@@ -65,11 +65,13 @@ public:
      * @brief 组装一个批次
      * @param pendingRequests 待处理请求
      * @param runningRequests 运行中请求
+     * @param availableSeqIds 可用的序列ID数量（用于限制批处理大小，0表示不限制）
      * @return 组装好的批次请求
      */
     std::vector<RequestState> formBatch(
         const std::vector<RequestState>& pendingRequests,
-        const std::vector<RequestState>& runningRequests
+        const std::vector<RequestState>& runningRequests,
+        size_t availableSeqIds = 0
     );
     
     /**

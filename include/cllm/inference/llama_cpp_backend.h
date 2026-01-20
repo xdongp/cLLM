@@ -153,6 +153,20 @@ public:
      */
     ::llama_context* getContext() { return ctx_; }
 
+    /**
+     * @brief 监控序列ID池使用情况
+     * @return 序列ID池使用率（0.0-1.0）
+     * 
+     * 用于监控序列ID池的使用情况，当使用率超过阈值时记录警告。
+     */
+    double getSequenceIdPoolUsage() const;
+
+    /**
+     * @brief 获取可用序列ID数量
+     * @return 可用序列ID数量
+     */
+    size_t getAvailableSequenceIdCount() const;
+
 private:
     /**
      * @brief 从 ModelConfig 创建 llama_model_params

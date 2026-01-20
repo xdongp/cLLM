@@ -9,6 +9,7 @@
 #include "cllm/inference/llama_cpp_backend.h"
 #include <chrono>
 #include <stdexcept>
+#include <queue>
 
 namespace cllm {
 
@@ -99,6 +100,7 @@ void Scheduler::start() {
     
     running_ = true;
     schedulerThread_ = std::thread(&Scheduler::schedulerLoop, this);
+    cleanupThread_ = std::thread(&Scheduler::cleanupLoop, this);
 }
 
 void Scheduler::stop() {
@@ -107,6 +109,13 @@ void Scheduler::stop() {
     }
     
     running_ = false;
+    
+    // 通知清理线程退出
+    cleanupCondition_.notify_all();
+    
+    if (cleanupThread_.joinable()) {
+        cleanupThread_.join();
+    }
     
     if (schedulerThread_.joinable()) {
         schedulerThread_.join();
@@ -367,9 +376,23 @@ void Scheduler::processRequests() {
     std::vector<RequestState> running = getRunningRequests();  // 获取当前运行中的请求（PENDING或PROCESSING）
     std::vector<RequestState> pending = requestQueue_.getPendingRequests();  // 从队列获取待处理请求
     
-    // 2. formBatch 形成批处理（可能包含来自 RequestQueue 的新请求和运行中的请求）
-    // formBatch 会根据 maxConcurrentRequests 和资源限制决定哪些请求可以加入批处理
-    std::vector<RequestState> batch = batchManager_.formBatch(pending, running);
+    // 2. 获取可用序列ID数量（用于批处理调度优化）
+    size_t availableSeqIds = 0;
+    if (modelExecutor_) {
+        availableSeqIds = modelExecutor_->getAvailableSequenceIdCount();
+        if (availableSeqIds > 0) {
+            CLLM_DEBUG("[Scheduler::processRequests] Available sequence IDs: %zu", availableSeqIds);
+        }
+    }
+    
+    // 3. formBatch 形成批处理（可能包含来自 RequestQueue 的新请求和运行中的请求）
+    // formBatch 会根据 maxConcurrentRequests、资源限制和可用序列ID数量决定哪些请求可以加入批处理
+    std::vector<RequestState> batch = batchManager_.formBatch(pending, running, availableSeqIds);
+    
+    if (!batch.empty() && availableSeqIds > 0) {
+        CLLM_DEBUG("[Scheduler::processRequests] Formed batch of %zu requests (availableSeqIds: %zu)", 
+                  batch.size(), availableSeqIds);
+    }
     
     // 如果 formBatch 返回空，但队列中还有请求，可能是因为资源限制
     // 这种情况下，我们仍然需要继续处理，但需要通知调度器继续尝试
@@ -501,10 +524,8 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
                 
                 if (modelExecutor_) {
                     modelExecutor_->updateKVCacheRequestStatus(request.requestId, inference::RequestStatus::COMPLETED);
-                    // Phase 4: 清理KV缓存（需要 seq_id）
-                    modelExecutor_->cleanupKVCache(request.requestId);
-                    // Phase 2: 释放序列ID
-                    modelExecutor_->releaseSequenceId(request.requestId);
+                    // 优化：异步清理资源，避免阻塞主流程
+                    cleanupRequestAsync(request.requestId);
                 }
                 
                 requestTracker_.markAsCompleted(request.requestId);
@@ -522,10 +543,8 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
                 
                 if (modelExecutor_) {
                     modelExecutor_->updateKVCacheRequestStatus(request.requestId, inference::RequestStatus::FAILED);
-                    // Phase 4: 清理KV缓存（需要 seq_id）
-                    modelExecutor_->cleanupKVCache(request.requestId);
-                    // Phase 2: 释放序列ID
-                    modelExecutor_->releaseSequenceId(request.requestId);
+                    // 优化：异步清理资源，避免阻塞主流程
+                    cleanupRequestAsync(request.requestId);
                 }
                 
                 requestTracker_.markAsFailed(request.requestId, request.errorMessage);
@@ -611,8 +630,8 @@ void Scheduler::checkRequestTimeout() {
             
             if (modelExecutor_) {
                 modelExecutor_->updateKVCacheRequestStatus(requestId, inference::RequestStatus::TIMEOUT);
-                modelExecutor_->cleanupKVCache(requestId);
-                modelExecutor_->releaseSequenceId(requestId);
+                // 优化：异步清理资源，避免阻塞主流程
+                cleanupRequestAsync(requestId);
             }
             
             requestTracker_.markAsFailed(requestId, request.errorMessage);
@@ -646,6 +665,60 @@ size_t Scheduler::getCurrentTime() {
     return static_cast<size_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(duration).count()
     );
+}
+
+void Scheduler::cleanupRequestAsync(size_t requestId) {
+    std::lock_guard<std::mutex> lock(cleanupMutex_);
+    cleanupQueue_.push(requestId);
+    cleanupCondition_.notify_one();
+}
+
+void Scheduler::cleanupLoop() {
+    size_t processedCount = 0;
+    while (running_) {
+        std::unique_lock<std::mutex> lock(cleanupMutex_);
+        
+        // 等待清理任务或停止信号
+        cleanupCondition_.wait_for(lock, std::chrono::milliseconds(100), [this]() {
+            return !cleanupQueue_.empty() || !running_;
+        });
+        
+        // 处理所有待清理的请求
+        size_t batchSize = cleanupQueue_.size();
+        while (!cleanupQueue_.empty()) {
+            size_t requestId = cleanupQueue_.front();
+            cleanupQueue_.pop();
+            
+            // 释放锁，执行清理操作
+            lock.unlock();
+            
+            auto startTime = std::chrono::high_resolution_clock::now();
+            if (modelExecutor_) {
+                // Phase 4: 清理KV缓存
+                modelExecutor_->cleanupKVCache(requestId);
+                // Phase 2: 释放序列ID
+                modelExecutor_->releaseSequenceId(requestId);
+            }
+            auto endTime = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
+            
+            processedCount++;
+            
+            // 每处理100个请求记录一次统计信息
+            if (processedCount % 100 == 0) {
+                CLLM_DEBUG("[Scheduler::cleanupLoop] Processed %zu cleanup tasks (avg time: %.2f us)", 
+                          processedCount, static_cast<double>(duration));
+            }
+            
+            // 重新获取锁，继续处理下一个任务
+            lock.lock();
+        }
+        
+        if (batchSize > 0) {
+            CLLM_DEBUG("[Scheduler::cleanupLoop] Processed batch of %zu cleanup tasks", batchSize);
+        }
+    }
+    CLLM_INFO("[Scheduler::cleanupLoop] Cleanup thread exiting (total processed: %zu)", processedCount);
 }
 
 }

@@ -169,6 +169,8 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
                 
                 CLLM_DEBUG("Tokenized prompt in result: %zu tokens", result.tokenizedPrompt.size());
                 CLLM_DEBUG("Generated tokens count: %zu", result.generatedTokens.size());
+                CLLM_DEBUG("Request ID: %llu, isCompleted: %d, isFailed: %d, isTimeout: %d", 
+                          result.requestId, result.isCompleted ? 1 : 0, result.isFailed ? 1 : 0, result.isTimeout ? 1 : 0);
                 
                 if (!result.generatedTokens.empty()) {
                     CLLM_DEBUG("Generated tokens: [");

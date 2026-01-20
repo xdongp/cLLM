@@ -15,6 +15,8 @@
 #include <chrono>
 #include <functional>
 #include <vector>
+#include <list>
+#include <unordered_map>
 
 namespace cllm {
 namespace inference {
@@ -26,6 +28,7 @@ KVCacheManager::KVCacheManager(size_t maxItems, size_t maxMemoryMb)
     , maxMemoryMb_(maxMemoryMb) {
     CLLM_INFO("[KVCacheManager] Initialized with maxItems=%zu, maxMemoryMb=%zu", 
               maxItems_, maxMemoryMb_);
+    // LRU列表和映射在构造时自动初始化为空
 }
 
 void KVCacheManager::updateKVCacheStats(size_t requestId, size_t sequenceLength) {
@@ -50,6 +53,9 @@ void KVCacheManager::updateKVCacheStats(size_t requestId, size_t sequenceLength)
     totalItems_ += sequenceLength;
     totalMemoryMb_ += memoryMb;
     
+    // 更新LRU列表（O(1)时间复杂度）
+    updateLRU(requestId);
+    
     CLLM_DEBUG("[KVCacheManager] Updated stats for requestId=%zu: items=%zu, memory=%zuMB, totalItems=%zu, totalMemory=%zuMB",
                requestId, sequenceLength, memoryMb, totalItems_, totalMemoryMb_);
 }
@@ -64,6 +70,10 @@ KVCacheStats KVCacheManager::getKVCacheStats(size_t requestId) const {
         // 但 KVCacheStats 不是 mutable 的，所以我们需要创建一个新的对象
         KVCacheStats stats = it->second;
         stats.lastAccessTime = std::chrono::steady_clock::now();
+        
+        // 更新LRU列表（O(1)时间复杂度）
+        // 注意：由于 lruList_ 和 lruMap_ 是 mutable 的，可以直接更新
+        updateLRU(requestId);
         
         // 注意：这里不能直接修改 it->second，因为 const 方法
         // 如果需要更新访问时间，应该在非 const 方法中处理
@@ -115,10 +125,13 @@ bool KVCacheManager::removeKVCache(llama_context* ctx, size_t requestId, int32_t
     totalItems_ -= stats.itemCount;
     totalMemoryMb_ -= stats.memoryMb;
     
-    // 3. 删除统计信息
+    // 3. 从LRU列表中移除（O(1)时间复杂度）
+    removeFromLRU(requestId);
+    
+    // 4. 删除统计信息
     statsMap_.erase(it);
     
-    // 4. 删除请求状态（如果存在）
+    // 5. 删除请求状态（如果存在）
     requestStatus_.erase(requestId);
     
     CLLM_DEBUG("[KVCacheManager] Removed KV cache for requestId=%zu: items=%zu, memory=%zuMB, remainingItems=%zu, remainingMemory=%zuMB",
@@ -178,6 +191,27 @@ size_t KVCacheManager::calculateMemoryUsage(size_t itemCount) const {
     return itemCount * estimateMemoryPerItem();
 }
 
+void KVCacheManager::updateLRU(size_t requestId) const {
+    // O(1) 时间复杂度的 LRU 更新
+    auto it = lruMap_.find(requestId);
+    if (it != lruMap_.end()) {
+        // 如果已存在，从列表中移除
+        lruList_.erase(it->second);
+    }
+    // 添加到列表尾部（最近使用的）
+    lruList_.push_back(requestId);
+    lruMap_[requestId] = std::prev(lruList_.end());
+}
+
+void KVCacheManager::removeFromLRU(size_t requestId) const {
+    // O(1) 时间复杂度的 LRU 移除
+    auto it = lruMap_.find(requestId);
+    if (it != lruMap_.end()) {
+        lruList_.erase(it->second);
+        lruMap_.erase(it);
+    }
+}
+
 bool KVCacheManager::shouldEvict(double evictionThreshold) const {
     std::lock_guard<std::mutex> lock(mutex_);
     
@@ -212,24 +246,13 @@ size_t KVCacheManager::evictLRUCache(llama_context* ctx, double evictionThreshol
                totalItems_, itemsThreshold, totalMemoryMb_, memoryThreshold, evictionThreshold);
     
     // 持续淘汰直到条目数和内存都低于阈值
+    // 使用高效的LRU列表（O(1)时间复杂度），避免排序
     while (totalItems_ > itemsThreshold || totalMemoryMb_ > memoryThreshold) {
-        // 找到最久未使用的、可淘汰的请求
-        // 1. 按照最后访问时间排序
-        std::vector<std::pair<size_t, std::chrono::steady_clock::time_point>> sortedRequests;
-        for (const auto& pair : statsMap_) {
-            sortedRequests.emplace_back(pair.first, pair.second.lastAccessTime);
-        }
-        
-        // 按最后访问时间升序排序（最久未使用的在前）
-        std::sort(sortedRequests.begin(), sortedRequests.end(),
-                  [](const auto& a, const auto& b) {
-                      return a.second < b.second;
-                  });
-        
-        // 2. 找到第一个可淘汰的请求（状态为 PENDING 或 COMPLETED）
+        // 从LRU列表头部开始查找（最久未使用的在前）
         bool foundEvictable = false;
-        for (const auto& pair : sortedRequests) {
-            size_t requestId = pair.first;
+        
+        for (auto it = lruList_.begin(); it != lruList_.end(); ++it) {
+            size_t requestId = *it;
             
             // 检查请求状态
             auto statusIt = requestStatus_.find(requestId);
@@ -261,6 +284,9 @@ size_t KVCacheManager::evictLRUCache(llama_context* ctx, double evictionThreshol
                     // 从总条目数和内存占用中减去该请求的统计信息
                     totalItems_ -= stats.itemCount;
                     totalMemoryMb_ -= stats.memoryMb;
+                    
+                    // 从LRU列表中移除（O(1)时间复杂度）
+                    removeFromLRU(requestId);
                     
                     // 删除统计信息和请求状态
                     statsMap_.erase(statsIt);

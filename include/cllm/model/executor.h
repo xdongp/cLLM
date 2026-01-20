@@ -183,6 +183,16 @@ public:
      * @return 淘汰的请求数量
      */
     size_t evictKVCachesIfNeeded(double evictionThreshold) const;
+
+    /**
+     * @brief 获取可用的序列ID数量（用于批处理调度优化）
+     * 
+     * 只对支持序列ID管理的后端（如 llama.cpp）有效
+     * 对于不支持的后端，返回 0（表示不限制）
+     * 
+     * @return 可用的序列ID数量，如果不支持则返回 0
+     */
+    size_t getAvailableSequenceIdCount() const;
     
 private:
     void _loadFullPrecisionModel();

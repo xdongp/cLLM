@@ -258,5 +258,25 @@ size_t InferenceEngine::evictKVCachesIfNeeded(double evictionThreshold) const {
     return 0;
 }
 
+size_t InferenceEngine::getAvailableSequenceIdCount() const {
+    if (!backend_) {
+        return 0;
+    }
+    
+    // 只对 LlamaCppBackend 有效
+    std::string backendName = backend_->getName();
+    if (backendName == "llama.cpp") {
+        #ifdef CLLM_USE_LLAMA_CPP
+        auto* llamaBackend = dynamic_cast<LlamaCppBackend*>(backend_.get());
+        if (llamaBackend) {
+            return llamaBackend->getAvailableSequenceIdCount();
+        }
+        #endif
+    }
+    
+    // 其他后端不支持序列ID管理，返回 0（表示不限制）
+    return 0;
+}
+
 } // namespace inference
 } // namespace cllm

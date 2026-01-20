@@ -12,6 +12,8 @@
 #pragma once
 
 #include <map>
+#include <list>
+#include <unordered_map>
 #include <mutex>
 #include <cstddef>
 #include <chrono>
@@ -206,8 +208,30 @@ private:
      */
     size_t calculateMemoryUsage(size_t itemCount) const;
 
+    /**
+     * @brief 更新LRU列表（O(1)时间复杂度）
+     * @param requestId 请求ID
+     * 
+     * 注意：使用 mutable 允许在 const 方法中更新LRU顺序
+     */
+    void updateLRU(size_t requestId) const;
+
+    /**
+     * @brief 从LRU列表中移除
+     * @param requestId 请求ID
+     * 
+     * 注意：使用 mutable 允许在 const 方法中更新LRU顺序
+     */
+    void removeFromLRU(size_t requestId) const;
+
     std::map<size_t, KVCacheStats> statsMap_;           ///< requestId 到统计信息的映射
     std::map<size_t, RequestStatus> requestStatus_;     ///< requestId 到请求状态的映射（用于淘汰保护）
+    
+    // 高效的LRU数据结构：使用 std::list + std::unordered_map 实现 O(1) 的LRU操作
+    // 使用 mutable 允许在 const 方法中更新LRU顺序（不改变逻辑状态）
+    mutable std::list<size_t> lruList_;                         ///< LRU列表（按访问时间排序，最久未使用的在前）
+    mutable std::unordered_map<size_t, std::list<size_t>::iterator> lruMap_;  ///< requestId 到LRU列表迭代器的映射（用于O(1)查找和更新）
+    
     mutable std::mutex mutex_;                          ///< 保护并发访问
 
     size_t totalItems_;                                 ///< 总条目数

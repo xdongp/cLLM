@@ -27,7 +27,8 @@ BatchManager::~BatchManager() {
 
 std::vector<RequestState> BatchManager::formBatch(
     const std::vector<RequestState>& pendingRequests,
-    const std::vector<RequestState>& runningRequests
+    const std::vector<RequestState>& runningRequests,
+    size_t availableSeqIds
 ) {
     std::vector<RequestState> batch;
     size_t currentBatchLength = 0;
@@ -40,6 +41,11 @@ std::vector<RequestState> BatchManager::formBatch(
     
     size_t avgLength = calculateAverageRequestLength(pendingRequests);
     size_t dynamicBatchSize = calculateOptimalBatchSize(pendingRequests, avgLength);
+    
+    // 优化：考虑序列ID可用性，限制批处理大小
+    if (availableSeqIds > 0) {
+        dynamicBatchSize = std::min(dynamicBatchSize, availableSeqIds);
+    }
     
     for (const auto& request : pendingRequests) {
         size_t requestLength = request.getTotalLength();

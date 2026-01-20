@@ -475,6 +475,14 @@ size_t ModelExecutor::evictKVCachesIfNeeded(double evictionThreshold) const {
     return inferenceEngine_->evictKVCachesIfNeeded(evictionThreshold);
 }
 
+size_t ModelExecutor::getAvailableSequenceIdCount() const {
+    if (!inferenceEngine_) {
+        return 0;
+    }
+
+    return inferenceEngine_->getAvailableSequenceIdCount();
+}
+
 int ModelExecutor::sampleToken(const std::vector<int>& inputIds, float temperature) {
     if (!isModelLoaded_) {
         throw std::runtime_error("Model is not loaded");

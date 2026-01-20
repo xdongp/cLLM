@@ -645,8 +645,18 @@ int32_t LlamaCppBackend::allocateSequenceId(size_t requestId) {
     // 建立映射
     requestIdToSeqId_[requestId] = seqId;
     
-    CLLM_DEBUG("[LlamaCppBackend] Allocated seq_id %d for request %zu (remaining: %zu)",
-              seqId, requestId, availableSeqIds_.size());
+    // 监控序列ID池使用情况
+    size_t used = requestIdToSeqId_.size();
+    double usage = static_cast<double>(used) / static_cast<double>(nSeqMax_);
+    
+    CLLM_DEBUG("[LlamaCppBackend] Allocated seq_id %d for request %zu (remaining: %zu, usage: %.1f%%)",
+              seqId, requestId, availableSeqIds_.size(), usage * 100);
+    
+    // 当使用率超过阈值时记录警告
+    if (usage > 0.8) {
+        CLLM_WARN("[LlamaCppBackend] Sequence ID pool usage high: %zu/%d (%.1f%%)",
+                  used, nSeqMax_, usage * 100);
+    }
     
     return seqId;
 }
@@ -669,8 +679,12 @@ bool LlamaCppBackend::releaseSequenceId(size_t requestId) {
     // 将 seqId 返回可用池
     availableSeqIds_.push_back(seqId);
     
-    CLLM_DEBUG("[LlamaCppBackend] Released seq_id %d for request %zu (available: %zu)",
-              seqId, requestId, availableSeqIds_.size());
+    // 监控序列ID池使用情况
+    size_t used = requestIdToSeqId_.size();
+    double usage = static_cast<double>(used) / static_cast<double>(nSeqMax_);
+    
+    CLLM_DEBUG("[LlamaCppBackend] Released seq_id %d for request %zu (available: %zu, usage: %.1f%%)",
+              seqId, requestId, availableSeqIds_.size(), usage * 100);
     
     return true;
 }
@@ -684,6 +698,30 @@ int32_t LlamaCppBackend::getSequenceId(size_t requestId) const {
     }
     
     return it->second;
+}
+
+double LlamaCppBackend::getSequenceIdPoolUsage() const {
+    std::lock_guard<std::mutex> lock(sequenceIdMutex_);
+    
+    if (nSeqMax_ == 0) {
+        return 0.0;
+    }
+    
+    size_t used = requestIdToSeqId_.size();
+    double usage = static_cast<double>(used) / static_cast<double>(nSeqMax_);
+    
+    // 当使用率超过80%时记录警告
+    if (usage > 0.8) {
+        CLLM_WARN("[LlamaCppBackend] Sequence ID pool usage high: %zu/%d (%.1f%%)",
+                  used, nSeqMax_, usage * 100);
+    }
+    
+    return usage;
+}
+
+size_t LlamaCppBackend::getAvailableSequenceIdCount() const {
+    std::lock_guard<std::mutex> lock(sequenceIdMutex_);
+    return availableSeqIds_.size();
 }
 
 bool LlamaCppBackend::cleanupKVCache(size_t requestId) {
