@@ -1,4 +1,5 @@
 #include "cllm/scheduler/batch_processor.h"
+#include <cstring>
 #include "cllm/common/request_state.h"
 #include "cllm/scheduler/scheduler.h"
 #include "cllm/batch/manager.h"
@@ -25,20 +26,48 @@ void SchedulerBatchProcessor::processBatch(std::vector<RequestState>& batch) {
     const int MAX_ITERATIONS = Config::instance().schedulerMaxIterations(); // 防止无限循环
     int iterationCount = 0;
     
-    // 调试：记录批处理中的请求信息
-    CLLM_INFO("processBatch: Starting batch processing with %zu requests", batch.size());
+    // 🔥 优化：减少日志输出（在生产环境中关闭详细日志）
+    #ifdef CLLM_DEBUG_MODE
+    CLLM_DEBUG("processBatch: Starting batch processing with %zu requests", batch.size());
     for (size_t i = 0; i < batch.size(); ++i) {
-        CLLM_INFO("processBatch: Request %zu - ID=%llu, maxTokens=%d, generatedTokens=%zu, isCompleted=%d, isFailed=%d",
+        CLLM_DEBUG("processBatch: Request %zu - ID=%llu, maxTokens=%d, generatedTokens=%zu, isCompleted=%d, isFailed=%d",
                   i, batch[i].requestId, batch[i].maxTokens, batch[i].generatedTokens.size(),
                   batch[i].isCompleted ? 1 : 0, batch[i].isFailed ? 1 : 0);
     }
+    #endif
+    
+    // 🔥 优化2: 初始化缓存（新批处理开始时清空）
+    cachedBatchInput_.clear();
+    cachedTokenCounts_.clear();
+    cachedRequestIds_.clear();
+    
+    // 🔥 优化1: 动态批处理重组阈值（当活跃请求数 < 50% 时考虑重组）
+    constexpr double BATCH_REGROUP_THRESHOLD = 0.5;
+    constexpr size_t MIN_EFFICIENT_BATCH_SIZE = 4;  // 最小高效批处理大小
     
     while (!isBatchComplete(batch)) {
         auto activeRequests = getActiveRequests(batch);
         
         if (activeRequests.empty()) {
-            CLLM_INFO("processBatch: No active requests, breaking loop");
+            #ifdef CLLM_DEBUG_MODE
+            CLLM_DEBUG("processBatch: No active requests, breaking loop");
+            #endif
             break;
+        }
+        
+        // 🔥 优化3: 动态批处理重组 - 如果活跃请求数 < 批处理大小的50%，提前结束
+        if (activeRequests.size() < batch.size() * BATCH_REGROUP_THRESHOLD && batch.size() > MIN_EFFICIENT_BATCH_SIZE) {
+            CLLM_DEBUG("processBatch: Active requests (%zu) < 50%% of batch size (%zu), batch efficiency degraded", 
+                      activeRequests.size(), batch.size());
+            
+            // 🔥 关键优化: 当批处理效率过低时，提前结束当前批处理
+            // 将剩余的活跃请求返回给Scheduler，让它可以与其他请求重组
+            if (activeRequests.size() <= 2 && batch.size() > MIN_EFFICIENT_BATCH_SIZE) {
+                CLLM_INFO("processBatch: Batch efficiency too low (%zu/%zu), breaking to allow regrouping", 
+                         activeRequests.size(), batch.size());
+                // 提前结束，剩余的活跃请求会在下次调度时重新处理
+                break;
+            }
         }
         
         // 超时保护
@@ -52,18 +81,23 @@ void SchedulerBatchProcessor::processBatch(std::vector<RequestState>& batch) {
             break;
         }
         
-        CLLM_DEBUG("processBatch: Iteration %d, active requests: %zu", iterationCount, activeRequests.size());
-        processIteration(batch);
+        CLLM_DEBUG("processBatch: Iteration %d, active requests: %zu (batch size: %zu)", 
+                  iterationCount, activeRequests.size(), batch.size());
+        
+        // 🔥 优化1: 传递已计算的活跃请求，避免在 processIteration 中重复计算
+        processIteration(batch, activeRequests);
     }
     
-    CLLM_INFO("Batch processing completed after %d iterations", iterationCount);
+    #ifdef CLLM_DEBUG_MODE
+    CLLM_DEBUG("Batch processing completed after %d iterations", iterationCount);
     
     // 调试：记录最终状态
     for (size_t i = 0; i < batch.size(); ++i) {
-        CLLM_INFO("processBatch: Final state - Request %zu - ID=%llu, generatedTokens=%zu, isCompleted=%d, isFailed=%d",
+        CLLM_DEBUG("processBatch: Final state - Request %zu - ID=%llu, generatedTokens=%zu, isCompleted=%d, isFailed=%d",
                   i, batch[i].requestId, batch[i].generatedTokens.size(),
                   batch[i].isCompleted ? 1 : 0, batch[i].isFailed ? 1 : 0);
     }
+    #endif
 }
 
 bool SchedulerBatchProcessor::isBatchComplete(const std::vector<RequestState>& batch) const {
@@ -105,46 +139,122 @@ std::vector<RequestState> SchedulerBatchProcessor::getActiveRequests(
     return active;
 }
 
-void SchedulerBatchProcessor::processIteration(std::vector<RequestState>& batch) {
-    CLLM_DEBUG("processIteration called with batch size: %zu", batch.size());
+void SchedulerBatchProcessor::processIteration(
+    std::vector<RequestState>& batch,
+    const std::vector<RequestState>& activeRequests
+) {
+    CLLM_DEBUG("processIteration called with batch size: %zu, active requests: %zu", 
+              batch.size(), activeRequests.size());
     
-    std::vector<RequestState> activeRequests = getActiveRequests(batch);
-    
-    CLLM_DEBUG("Active requests count: %zu", activeRequests.size());
-    
+    // 🔥 优化1: 直接使用传入的活跃请求，避免重复计算
     if (activeRequests.empty()) {
         CLLM_DEBUG("No active requests, returning");
         return;
     }
     
-    // Log active requests details
-    for (size_t i = 0; i < activeRequests.size(); ++i) {
-        CLLM_DEBUG("Active request %zu details:", i);
-        CLLM_DEBUG("  Request ID: %llu", activeRequests[i].requestId);
-        CLLM_DEBUG("  Generated tokens: %zu", activeRequests[i].generatedTokens.size());
-        CLLM_DEBUG("  Tokenized prompt size: %zu", activeRequests[i].tokenizedPrompt.size());
-        CLLM_DEBUG("  Max tokens: %d", activeRequests[i].maxTokens);
-        CLLM_DEBUG("  Temperature: %f", activeRequests[i].temperature);
-        CLLM_DEBUG("  TopK: %d", activeRequests[i].topK);
-        CLLM_DEBUG("  TopP: %f", activeRequests[i].topP);
-        
-        if (activeRequests[i].generatedTokens.empty()) {
-            CLLM_DEBUG("  First iteration, using full prompt");
-            std::string promptTokens;
-            for (size_t j = 0; j < std::min(activeRequests[i].tokenizedPrompt.size(), (size_t)10); ++j) {
-                promptTokens += " " + std::to_string(activeRequests[i].tokenizedPrompt[j]);
-            }
-            if (activeRequests[i].tokenizedPrompt.size() > 10) {
-                promptTokens += " ...";
-            }
-            CLLM_DEBUG("  Prompt tokens: [%s]", promptTokens.c_str());
-        } else {
-            CLLM_DEBUG("  Using last token: %d", activeRequests[i].generatedTokens.back());
-        }
-    }
+    // 🔥 优化: 减少调试日志输出（在生产环境中关闭详细日志）
+    // 只在DEBUG级别输出关键信息
+    CLLM_DEBUG("processIteration: %zu active requests", activeRequests.size());
     
-    CLLM_DEBUG("Calling batchManager_->prepareBatchInput...");
-    BatchInput input = batchManager_->prepareBatchInput(activeRequests);
+    // 🔥 优化2: 增量准备批处理输入（只更新新增的tokens）
+    BatchInput input;
+    
+    // 🔥 关键优化: 对于单请求、单token场景，直接构建BatchInput，跳过BatchManager的复杂逻辑
+    if (activeRequests.size() == 1) {
+        const auto& req = activeRequests[0];
+        size_t currentTokenCount = req.getTotalLength();
+        
+        // 检查是否是增量生成（有已生成的tokens）
+        if (!req.generatedTokens.empty()) {
+            // 🔥 单token增量生成：直接构建只包含新token的BatchInput（完全跳过BatchManager）
+            // llama.cpp支持增量推理，只需要传入新token即可
+            input.inputIds.clear();
+            input.inputIds.push_back(req.generatedTokens.back());  // 只包含最后一个token（新token）
+            input.requestPositions = {{0, 1}};
+            input.sequenceIds = {req.requestId};
+            input.batchSize = 1;
+            
+            // 更新缓存（用于后续迭代）
+            cachedTokenCounts_.clear();
+            cachedTokenCounts_.push_back(currentTokenCount);
+            cachedRequestIds_.clear();
+            cachedRequestIds_.push_back(req.requestId);
+            cachedBatchInput_ = input;  // 缓存用于下次迭代
+            
+            CLLM_DEBUG("Using direct batch input preparation (single request, single token, bypass BatchManager)");
+        } else {
+            // 首次生成：使用BatchManager准备完整prompt
+            input = batchManager_->prepareBatchInput(activeRequests);
+            
+            // 初始化缓存
+            cachedBatchInput_ = input;
+            cachedTokenCounts_.clear();
+            cachedRequestIds_.clear();
+            cachedTokenCounts_.push_back(currentTokenCount);
+            cachedRequestIds_.push_back(req.requestId);
+            
+            CLLM_DEBUG("Using full batch input preparation (first iteration, single request)");
+        }
+    } else if (!cachedBatchInput_.empty() && cachedRequestIds_.size() == activeRequests.size()) {
+        // 多请求场景：检查请求ID是否匹配（验证是否是同一个批处理）
+        bool idsMatch = true;
+        for (size_t i = 0; i < activeRequests.size() && i < cachedRequestIds_.size(); ++i) {
+            if (activeRequests[i].requestId != cachedRequestIds_[i]) {
+                idsMatch = false;
+                break;
+            }
+        }
+        
+        if (idsMatch) {
+            // 计算当前每个请求的token数量
+            std::vector<size_t> currentTokenCounts;
+            currentTokenCounts.reserve(activeRequests.size());
+            for (const auto& req : activeRequests) {
+                currentTokenCounts.push_back(req.getTotalLength());
+            }
+            
+            // 使用增量准备
+            input = batchManager_->prepareBatchInputIncremental(
+                activeRequests, 
+                cachedBatchInput_, 
+                cachedTokenCounts_
+            );
+            
+            // 更新缓存
+            cachedTokenCounts_ = currentTokenCounts;
+            cachedBatchInput_ = input;
+            
+            CLLM_DEBUG("Using incremental batch input preparation");
+        } else {
+            // 请求ID不匹配，完整重新构建
+            input = batchManager_->prepareBatchInput(activeRequests);
+            
+            // 更新缓存
+            cachedBatchInput_ = input;
+            cachedTokenCounts_.clear();
+            cachedRequestIds_.clear();
+            for (const auto& req : activeRequests) {
+                cachedTokenCounts_.push_back(req.getTotalLength());
+                cachedRequestIds_.push_back(req.requestId);
+            }
+            
+            CLLM_DEBUG("Using full batch input preparation (request IDs changed)");
+        }
+    } else {
+        // 首次迭代，完整构建
+        input = batchManager_->prepareBatchInput(activeRequests);
+        
+        // 初始化缓存
+        cachedBatchInput_ = input;
+        cachedTokenCounts_.clear();
+        cachedRequestIds_.clear();
+        for (const auto& req : activeRequests) {
+            cachedTokenCounts_.push_back(req.getTotalLength());
+            cachedRequestIds_.push_back(req.requestId);
+        }
+        
+        CLLM_DEBUG("Using full batch input preparation (first iteration)");
+    }
     
     CLLM_DEBUG("BatchInput prepared:");
     CLLM_DEBUG("  Batch size: %zu", input.batchSize);
@@ -161,10 +271,21 @@ void SchedulerBatchProcessor::processIteration(std::vector<RequestState>& batch)
     }
     CLLM_DEBUG("  Input IDs: [%s]", inputIdsStr.c_str());
     
+    // 🔥 关键修复：在调用executor->forward()之前，确保为每个requestId分配sequence ID
+    // 这对于新请求是必需的，对于已存在的请求，getSequenceId会返回已分配的ID
+    // 注意：LlamaCppBackend::forwardBatch()内部会自动分配sequence ID，但我们需要确保
+    // 在首次调用前就分配好，以便正确跟踪位置
+    // 实际上，forwardBatch()内部已经处理了sequence ID分配，所以这里不需要额外处理
+    // 问题可能在于位置计算，让我们确保BatchInput的requestPositions正确设置
+    
+    #ifdef CLLM_DEBUG_MODE
     CLLM_DEBUG("Calling executor_->forward(input)...");
+    #endif
     BatchOutput output = executor_->forward(input);
     
+    #ifdef CLLM_DEBUG_MODE
     CLLM_DEBUG("Model forward pass completed");
+    #endif
     
     CLLM_DEBUG("Calling updateRequestStates...");
     updateRequestStates(batch, output);
@@ -240,15 +361,16 @@ void SchedulerBatchProcessor::updateRequestStates(
             tokenizerVocabSize = fullLogits.size();
         }
         FloatArray logits(std::min(fullLogits.size(), tokenizerVocabSize));
-        for (size_t j = 0; j < logits.size(); ++j) {
-            logits[j] = fullLogits[j];
-        }
+        // 🔥 优化：使用memcpy替代循环拷贝，提升性能
+        std::memcpy(logits.data(), fullLogits.data(), logits.size() * sizeof(float));
         
         if (fullLogits.size() > tokenizerVocabSize) {
             CLLM_DEBUG("Request %zu - Clipped logits from %zu to %zu (tokenizer vocab_size)", 
                       i, fullLogits.size(), logits.size());
         }
         
+        // 🔥 优化：只在DEBUG模式下统计logits信息，减少生产环境开销
+        #ifdef CLLM_DEBUG_MODE
         // 统计 logits 信息
         float maxLogit = logits.empty() ? 0.0f : logits[0];
         float minLogit = logits.empty() ? 0.0f : logits[0];
@@ -303,6 +425,7 @@ void SchedulerBatchProcessor::updateRequestStates(
             CLLM_DEBUG("Request %zu - Max logit at index %zu: %.6f, Min logit at index %zu: %.6f",
                        i, maxIdx, logits[maxIdx], minIdx, logits[minIdx]);
         }
+        #endif
         
         // Get sampling parameters from request
         float temperature = batch[i].temperature;
@@ -337,6 +460,8 @@ void SchedulerBatchProcessor::updateRequestStates(
             CLLM_DEBUG("Request %zu - Reached EOS token (%d), completing", i, batch[i].eosTokenId);
             batch[i].isCompleted = true;
             
+            // 🔥 优化: 立即释放序列ID和KV缓存，避免阻塞后续批处理
+            // 注意: 这里不能直接调用modelExecutor_，需要通过scheduler_
             // Phase 7: 触发完成回调
             if (scheduler_) {
                 scheduler_->triggerResponseCallback(batch[i].requestId, batch[i]);
@@ -345,6 +470,7 @@ void SchedulerBatchProcessor::updateRequestStates(
             CLLM_DEBUG("Request %zu - Reached max tokens (%zu), completing", i, batch[i].generatedTokens.size());
             batch[i].isCompleted = true;
             
+            // 🔥 优化: 立即释放序列ID和KV缓存，避免阻塞后续批处理
             // Phase 7: 触发完成回调
             if (scheduler_) {
                 scheduler_->triggerResponseCallback(batch[i].requestId, batch[i]);

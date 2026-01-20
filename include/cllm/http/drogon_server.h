@@ -30,6 +30,9 @@ public:
     
     void encode(const drogon::HttpRequestPtr& req,
                std::function<void(const drogon::HttpResponsePtr&)>&& callback);
+    
+    void benchmark(const drogon::HttpRequestPtr& req,
+                  std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
 private:
     template<typename Func>

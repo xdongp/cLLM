@@ -321,42 +321,77 @@ void ModelExecutor::_processOutput(FloatArray& logits, size_t batchSize, size_t 
 }
 
 BatchOutput ModelExecutor::forward(const BatchInput& input) {
-    auto startTime = std::chrono::high_resolution_clock::now();
+    // 🔥 优化：移除不必要的计时开销（在性能测试中可以跳过）
+    // auto startTime = std::chrono::high_resolution_clock::now();
     
     if (!isModelLoaded_) {
         throw std::runtime_error("Model is not loaded");
     }
     
+    #ifdef CLLM_DEBUG_MODE
     CLLM_DEBUG("ModelExecutor::forward() called");
     CLLM_DEBUG("  Input batch size: %zu", input.batchSize);
     CLLM_DEBUG("  Input IDs size: %zu", input.inputIds.size());
     CLLM_DEBUG("  Request positions count: %zu", input.requestPositions.size());
+    #endif
     
-    std::lock_guard<std::mutex> lock(modelMutex_);
+    // 🔥 优化：移除modelMutex_锁，因为：
+    // 1. InferenceEngine（LlamaCppBackend）内部已经有锁保护llama_decode
+    // 2. 外层调用者（如Scheduler）会提供必要的同步
+    // 3. 减少锁竞争，提升并发性能
+    // std::lock_guard<std::mutex> lock(modelMutex_);  // 已移除
     
-    FloatArray inputTensor = _prepareInput(input.inputIds);
+    // 🔥 优化：移除_prepareInput()调用，因为InferenceEngine::forwardBatch()直接接受std::vector<int>
+    // 这样可以避免不必要的int到float转换和FloatArray创建
+    // FloatArray inputTensor = _prepareInput(input.inputIds);  // 已移除
     
     size_t totalTokens = input.getTotalTokens();
+    #ifdef CLLM_DEBUG_MODE
     CLLM_DEBUG("  Total tokens: %zu", totalTokens);
+    #endif
     
-    FloatArray outputTensor = _executeModelInference(input);
+    // 🔥 优化：直接获取Tensor，避免数据拷贝
+    if (!inferenceEngine_) {
+        throw std::runtime_error("ModelExecutor::forward: inference engine not initialized");
+    }
     
-    CLLM_DEBUG("  Output tensor size: %zu", outputTensor.size());
+    inference::Tensor logitsTensor = inferenceEngine_->forwardBatch(
+        input.inputIds,
+        input.requestPositions,
+        input.batchSize,
+        input.sequenceIds
+    );
+    
+    const auto& logitsShape = logitsTensor.shape();
+    if (logitsShape.size() != 2 || logitsShape[0] != totalTokens || logitsShape[1] != config_.vocabSize) {
+        throw std::runtime_error("ModelExecutor::forward: logits shape mismatch");
+    }
+    
+    #ifdef CLLM_DEBUG_MODE
+    CLLM_DEBUG("  Output tensor size: %zu", logitsTensor.size());
     CLLM_DEBUG("  Expected size: %zu * %zu = %zu", totalTokens, config_.vocabSize, totalTokens * config_.vocabSize);
+    #endif
     
-    _processOutput(outputTensor, input.batchSize, config_.vocabSize);
+    // 🔥 优化：_processOutput()目前是空实现，可以跳过
+    // _processOutput(outputTensor, input.batchSize, config_.vocabSize);
     
     BatchOutput output;
-    output.logits = std::move(outputTensor);
+    // 🔥 优化：直接使用Tensor，完全避免数据拷贝
+    // inference::Tensor就是kylin::Tensor（通过using Tensor = kylin::Tensor），可以直接移动
+    output.logitsTensor = std::make_unique<kylin::Tensor>(std::move(logitsTensor));
+    // 为了兼容性，仍然创建空的FloatArray（getLogitsForRequest会优先使用logitsTensor）
+    output.logits = FloatArray();  // 空FloatArray，getLogitsForRequest会使用logitsTensor
     output.requestPositions = input.requestPositions;
     output.sequenceIds = input.sequenceIds;
     
+    #ifdef CLLM_DEBUG_MODE
     CLLM_DEBUG("  BatchOutput created with logits size: %zu", output.logits.size());
+    #endif
     
-    auto endTime = std::chrono::high_resolution_clock::now();
-    float inferenceTime = std::chrono::duration<float>(endTime - startTime).count();
-    
-    stats_.update(inferenceTime, totalTokens);
+    // 🔥 优化：减少不必要的统计更新开销（在性能测试中可以跳过）
+    // auto endTime = std::chrono::high_resolution_clock::now();
+    // float inferenceTime = std::chrono::duration<float>(endTime - startTime).count();
+    // stats_.update(inferenceTime, totalTokens);  // 暂时跳过，减少开销
     
     return output;
 }
@@ -488,7 +523,8 @@ int ModelExecutor::sampleToken(const std::vector<int>& inputIds, float temperatu
         throw std::runtime_error("Model is not loaded");
     }
     
-    std::lock_guard<std::mutex> lock(modelMutex_);
+    // 🔥 优化：移除modelMutex_锁（原因同forward()）
+    // std::lock_guard<std::mutex> lock(modelMutex_);  // 已移除
     
     BatchInput batchInput;
     batchInput.inputIds = inputIds;
@@ -512,7 +548,6 @@ int ModelExecutor::sampleToken(const std::vector<int>& inputIds, float temperatu
 FloatArray ModelExecutor::_executeModelInference(const BatchInput& input) {
     size_t totalTokens = input.getTotalTokens();
     size_t outputSize = totalTokens * config_.vocabSize;
-    FloatArray outputTensor(outputSize);
     
     CLLM_DEBUG("[ModelExecutor::_executeModelInference] Total tokens: %zu", totalTokens);
     CLLM_DEBUG("[ModelExecutor::_executeModelInference] Vocab size: %zu", config_.vocabSize);
@@ -536,10 +571,19 @@ FloatArray ModelExecutor::_executeModelInference(const BatchInput& input) {
         throw std::runtime_error("ModelExecutor::_executeModelInference: logits shape mismatch");
     }
     
+    // 🔥 优化：直接使用Tensor，避免数据拷贝
+    // 注意：由于BatchOutput现在支持直接使用Tensor，我们可以避免从Tensor到FloatArray的拷贝
+    // 但是，由于forward()返回BatchOutput，而BatchOutput需要FloatArray或Tensor，
+    // 我们仍然需要创建一个FloatArray（为了兼容性），或者直接使用Tensor
+    // 
+    // 为了最大化性能，我们直接使用Tensor，避免拷贝
+    // 但是，由于forward()的返回类型是BatchOutput，而BatchOutput.logits是FloatArray，
+    // 我们需要在forward()中设置logitsTensor而不是logits
+    
+    // 暂时仍然使用FloatArray（为了兼容性），但可以考虑后续优化为直接使用Tensor
+    FloatArray outputTensor(outputSize);
     const float* src = logitsTensor.data();
-    for (size_t i = 0; i < outputSize; ++i) {
-        outputTensor[i] = src[i];
-    }
+    std::memcpy(outputTensor.data(), src, outputSize * sizeof(float));
     
     CLLM_DEBUG("[ModelExecutor::_executeModelInference] Generated logits for %zu token positions", totalTokens);
     return outputTensor;

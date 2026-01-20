@@ -20,6 +20,7 @@
 #include "cllm/http/health_endpoint.h"
 #include "cllm/http/generate_endpoint.h"
 #include "cllm/http/encode_endpoint.h"
+#include "cllm/http/benchmark_endpoint.h"
 #include "cllm/scheduler/scheduler.h"
 #include "cllm/model/executor.h"
 #include "cllm/tokenizer/manager.h"
@@ -521,11 +522,20 @@ int main(int argc, char* argv[]) {
             return endpoint->handle(req);
         });
         
+        // 🔥 优化：使用独立Scheduler模式（参考Stage 15），避免共享Scheduler的竞争
+        // 使用与Stage 15相同的配置：maxBatchSize=8, maxContextLength=2048
+        auto benchmarkEndpoint = std::make_unique<cllm::BenchmarkEndpoint>(
+            g_modelExecutor.get(), tokenizer, 8, 2048);
+        httpHandler->post("/benchmark", [endpoint = benchmarkEndpoint.get()](const cllm::HttpRequest& req) {
+            return endpoint->handle(req);
+        });
+        
         CLLM_INFO("Registered endpoints:");
         CLLM_INFO("  - GET  %s", cllm::Config::instance().apiEndpointHealthPath().c_str());
         CLLM_INFO("  - POST %s", cllm::Config::instance().apiEndpointGeneratePath().c_str());
         CLLM_INFO("  - POST %s", cllm::Config::instance().apiEndpointGenerateStreamPath().c_str());
         CLLM_INFO("  - POST %s", cllm::Config::instance().apiEndpointEncodePath().c_str());
+        CLLM_INFO("  - POST /benchmark");
         
         // 初始化并启动 Drogon 服务器
         CLLM_INFO("Initializing Drogon HTTP server...");
@@ -544,6 +554,7 @@ int main(int argc, char* argv[]) {
         healthEndpoint.reset();
         generateEndpoint.reset();
         encodeEndpoint.reset();
+        benchmarkEndpoint.reset();
     } catch (const std::exception& e) {
         CLLM_ERROR("Failed to start server: %s", e.what());
         cllm::Logger::instance().flush();

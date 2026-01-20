@@ -231,6 +231,10 @@ private:
     mutable std::mutex requestsMutex_;  ///< 请求互斥锁
     mutable std::mutex statsMutex_;     ///< 统计互斥锁
     std::condition_variable resultCondition_;  ///< 结果条件变量
+    
+    // 🔥 优化步骤1: 原子操作只读缓存（减少锁竞争）
+    std::atomic<size_t> cachedQueueSize_{0};      ///< 队列大小缓存（原子操作，快速读取）
+    std::atomic<size_t> cachedRunningCount_{0};   ///< 运行中请求数缓存（原子操作，快速读取）
     std::condition_variable queueCondition_;   ///< 队列条件变量
     
     SchedulerStats stats_;             ///< 统计信息

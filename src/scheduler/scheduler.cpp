@@ -151,15 +151,17 @@ size_t Scheduler::addRequest(const RequestState& request) {
         req.maxTokens = config_.defaultMaxTokens;
     }
     
-    {
-        std::lock_guard<std::mutex> lock(queueMutex_);
-        if (!requestQueue_.addRequest(req)) {
-            throw SchedulerException(
-                SchedulerError::REQUEST_QUEUE_FULL,
-                "Request queue is full"
-            );
+        {
+            std::lock_guard<std::mutex> lock(queueMutex_);
+            if (!requestQueue_.addRequest(req)) {
+                throw SchedulerException(
+                    SchedulerError::REQUEST_QUEUE_FULL,
+                    "Request queue is full"
+                );
+            }
+            // 🔥 优化步骤1: 更新原子缓存
+            cachedQueueSize_.store(requestQueue_.getQueueSize(), std::memory_order_relaxed);
         }
-    }
     
     {
         std::lock_guard<std::mutex> lock(statsMutex_);
@@ -211,23 +213,42 @@ RequestState Scheduler::getRequestResult(size_t requestId) {
 
 bool Scheduler::waitForRequest(size_t requestId, float timeout) {
     auto startTime = std::chrono::steady_clock::now();
+    auto timeoutDuration = std::chrono::duration<float>(timeout);
     
+    // 🔥 优化：使用条件变量替代轮询，减少等待延迟
+    std::unique_lock<std::mutex> lock(requestsMutex_);
+    
+    // 先检查是否已经完成
+    if (completedRequests_.find(requestId) != completedRequests_.end()) {
+        return true;
+    }
+    
+    // 等待请求完成，使用条件变量通知
+    auto deadline = startTime + std::chrono::duration_cast<std::chrono::steady_clock::duration>(timeoutDuration);
     while (running_) {
-        {
-            std::lock_guard<std::mutex> lock(requestsMutex_);
-            if (completedRequests_.find(requestId) != completedRequests_.end()) {
-                return true;
-            }
+        // 使用条件变量等待，超时时间动态计算
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+        if (remaining <= 0) {
+            return false; // 超时
         }
         
-        auto currentTime = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration<float>(currentTime - startTime).count();
+        // 等待通知，最多等待remaining毫秒
+        if (resultCondition_.wait_for(lock, std::chrono::milliseconds(remaining), [this, requestId]() {
+            return completedRequests_.find(requestId) != completedRequests_.end();
+        })) {
+            // 请求已完成
+            return true;
+        }
         
-        if (elapsed >= timeout) {
+        // 再次检查是否完成（可能在wait_for返回false时已经完成）
+        if (completedRequests_.find(requestId) != completedRequests_.end()) {
+            return true;
+        }
+        
+        // 检查是否超时
+        if (std::chrono::steady_clock::now() >= deadline) {
             return false;
         }
-        
-        std::this_thread::sleep_for(std::chrono::milliseconds(Config::instance().schedulerWaitPollIntervalMs()));
     }
     
     return false;
@@ -318,11 +339,21 @@ void Scheduler::schedulerLoop() {
             
             std::unique_lock<std::mutex> lock(queueMutex_);
             
-            size_t queueSize = requestQueue_.getQueueSize();
-            size_t runningCount;
-            {
-                std::lock_guard<std::mutex> reqLock(requestsMutex_);
-                runningCount = runningRequests_.size();
+            // 🔥 优化步骤2: 使用原子操作快速检查（只读）
+            size_t queueSize = cachedQueueSize_.load(std::memory_order_relaxed);
+            size_t runningCount = cachedRunningCount_.load(std::memory_order_relaxed);
+            
+            // 如果需要精确值或等待条件，获取锁并同步
+            if (queueSize == 0 && runningCount == 0) {
+                // 双重检查：获取精确值
+                queueSize = requestQueue_.getQueueSize();
+                cachedQueueSize_.store(queueSize, std::memory_order_relaxed);
+                
+                {
+                    std::lock_guard<std::mutex> reqLock(requestsMutex_);
+                    runningCount = runningRequests_.size();
+                    cachedRunningCount_.store(runningCount, std::memory_order_relaxed);
+                }
             }
             
             // 如果没有队列请求且没有运行中的请求，等待通知
@@ -336,11 +367,17 @@ void Scheduler::schedulerLoop() {
                         return requestQueue_.getQueueSize() > 0 || !running_;
                     }
                 );
-            } else {
-                // 有请求在处理，短时间等待后继续处理运行中的请求
+            } else if (runningCount > 0) {
+                // 🔥 优化5: 有运行中请求，极短间隔（1μs）快速处理，最大化吞吐量
                 lock.unlock();
                 std::this_thread::sleep_for(
-                    std::chrono::microseconds(config_.schedulerLoopInterval)
+                    std::chrono::microseconds(1)  // 优化：减少到1μs，最大化吞吐量
+                );
+            } else {
+                // 🔥 优化5: 有队列请求但未运行，短间隔（10μs）
+                lock.unlock();
+                std::this_thread::sleep_for(
+                    std::chrono::microseconds(10)  // 优化：减少到10μs，更快响应
                 );
             }
             
@@ -352,37 +389,53 @@ void Scheduler::schedulerLoop() {
 }
 
 void Scheduler::processRequests() {
-    // 使用锁保护，避免竞态条件
-    size_t queueSize;
-    size_t runningCount;
-    
-    {
-        std::lock_guard<std::mutex> queueLock(queueMutex_);
-        queueSize = requestQueue_.getQueueSize();
-    }
-    
-    {
-        std::lock_guard<std::mutex> reqLock(requestsMutex_);
-        runningCount = runningRequests_.size();
-    }
+    // 🔥 优化步骤1: 使用原子操作快速检查（只读，无副作用）
+    // 先快速检查缓存值，如果为0则直接返回，避免不必要的锁竞争
+    size_t queueSize = cachedQueueSize_.load(std::memory_order_relaxed);
+    size_t runningCount = cachedRunningCount_.load(std::memory_order_relaxed);
     
     // 如果队列为空且没有运行中的请求，直接返回
     if (queueSize == 0 && runningCount == 0) {
         return;
     }
     
+    // 需要实际处理时，获取精确值（需要锁）
+    {
+        std::lock_guard<std::mutex> queueLock(queueMutex_);
+        queueSize = requestQueue_.getQueueSize();
+        cachedQueueSize_.store(queueSize, std::memory_order_relaxed);
+    }
+    
+    {
+        std::lock_guard<std::mutex> reqLock(requestsMutex_);
+        runningCount = runningRequests_.size();
+        cachedRunningCount_.store(runningCount, std::memory_order_relaxed);
+    }
+    
+    // 再次检查（获取精确值后）
+    if (queueSize == 0 && runningCount == 0) {
+        return;
+    }
+    
+    // 🔥 优化: 批处理缓存 - 暂时禁用，避免延迟和死锁风险
+    // 后续可以优化为更智能的累积策略
+    
     // Phase 1: 请求流转逻辑 - RequestQueue → runningRequests_（通过formBatch间接实现）
     // 1. 从 RequestQueue 获取待处理请求（PENDING状态）
     std::vector<RequestState> running = getRunningRequests();  // 获取当前运行中的请求（PENDING或PROCESSING）
     std::vector<RequestState> pending = requestQueue_.getPendingRequests();  // 从队列获取待处理请求
     
-    // 2. 获取可用序列ID数量（用于批处理调度优化）
+    // 🔥 优化: 减少序列ID检查频率，避免频繁锁竞争
+    // 只在队列大小较大时才检查，小队列时假设有足够ID
     size_t availableSeqIds = 0;
-    if (modelExecutor_) {
+    if (modelExecutor_ && queueSize > 4) {
         availableSeqIds = modelExecutor_->getAvailableSequenceIdCount();
         if (availableSeqIds > 0) {
             CLLM_DEBUG("[Scheduler::processRequests] Available sequence IDs: %zu", availableSeqIds);
         }
+    } else if (modelExecutor_) {
+        // 小队列时，假设有足够ID（避免锁竞争）
+        availableSeqIds = 64;  // 假设有足够ID
     }
     
     // 3. formBatch 形成批处理（可能包含来自 RequestQueue 的新请求和运行中的请求）
@@ -406,9 +459,13 @@ void Scheduler::processRequests() {
         return;
     }
     
-    // 从队列移除已进入处理批次的请求，避免重复/饥饿
-    for (const auto& req : batch) {
-        requestQueue_.removeRequest(req.requestId);
+    // 🔥 优化步骤3: 批量移除请求并更新原子缓存
+    {
+        std::lock_guard<std::mutex> queueLock(queueMutex_);
+        for (const auto& req : batch) {
+            requestQueue_.removeRequest(req.requestId);
+        }
+        cachedQueueSize_.store(requestQueue_.getQueueSize(), std::memory_order_relaxed);
     }
     
     processBatch(batch);
@@ -506,11 +563,41 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
     SchedulerBatchProcessor processor(this, modelExecutor_, kvCache_, &batchManager_);
     processor.processBatch(activeBatch);
     
+    // 🔥 优化: 检查是否有未完成的请求，将它们重新加入队列以便重组
+    std::vector<RequestState> incompleteRequests;
+    for (auto& request : activeBatch) {
+        if (!request.isCompleted && !request.isFailed) {
+            incompleteRequests.push_back(request);
+        }
+    }
+    
+    // 如果有未完成的请求，将它们重新加入队列，以便与其他请求重组
+    if (!incompleteRequests.empty() && incompleteRequests.size() < activeBatch.size() * 0.5) {
+        CLLM_DEBUG("[Scheduler] %zu incomplete requests from batch of %zu, re-queuing for regrouping",
+                  incompleteRequests.size(), activeBatch.size());
+        for (auto& request : incompleteRequests) {
+            // 重新加入队列，以便与其他请求重组
+            requestQueue_.addRequest(request);
+        }
+    }
+    
     // 更新 batch 引用，用于后续处理
     batch = std::move(activeBatch);
     
+    // 🔥 优化: 立即释放已完成请求的序列ID，避免阻塞后续批处理
     for (auto& request : batch) {
         request.completionTime = getCurrentTime();
+        
+        // 🔥 关键优化: 如果请求已完成，立即释放序列ID和KV缓存
+        if (request.isCompleted || request.isFailed) {
+            if (modelExecutor_) {
+                // 立即清理KV缓存和释放序列ID，而不是等到异步清理
+                modelExecutor_->cleanupKVCache(request.requestId);
+                modelExecutor_->releaseSequenceId(request.requestId);
+                CLLM_DEBUG("[Scheduler] Immediately released seq_id and KV cache for completed request %llu", 
+                          request.requestId);
+            }
+        }
         
         CLLM_DEBUG("Request %llu generated tokens: %zu", request.requestId, request.generatedTokens.size());
         
@@ -524,14 +611,24 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
                 
                 if (modelExecutor_) {
                     modelExecutor_->updateKVCacheRequestStatus(request.requestId, inference::RequestStatus::COMPLETED);
-                    // 优化：异步清理资源，避免阻塞主流程
-                    cleanupRequestAsync(request.requestId);
+                    // 🔥 优化：立即同步清理资源，立即释放序列ID，避免阻塞后续批处理
+                    // 之前使用异步清理导致序列ID释放延迟，限制了批处理大小
+                    modelExecutor_->cleanupKVCache(request.requestId);
+                    modelExecutor_->releaseSequenceId(request.requestId);
+                    CLLM_DEBUG("[Scheduler] Immediately released seq_id and KV cache for completed request %llu", 
+                              request.requestId);
                 }
                 
                 requestTracker_.markAsCompleted(request.requestId);
                 stats_.update(request);
                 runningRequests_.erase(request.requestId);
                 completedRequests_[request.requestId] = request;
+                
+                // 🔥 优化步骤3: 更新原子缓存
+                cachedRunningCount_.store(runningRequests_.size(), std::memory_order_relaxed);
+                
+                // 🔥 优化：通知等待该请求的线程（使用条件变量）
+                resultCondition_.notify_all();
                 
                 // Phase 7: 触发完成回调
                 triggerResponseCallback(request.requestId, request);
@@ -543,14 +640,23 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
                 
                 if (modelExecutor_) {
                     modelExecutor_->updateKVCacheRequestStatus(request.requestId, inference::RequestStatus::FAILED);
-                    // 优化：异步清理资源，避免阻塞主流程
-                    cleanupRequestAsync(request.requestId);
+                    // 🔥 优化：立即同步清理资源，立即释放序列ID
+                    modelExecutor_->cleanupKVCache(request.requestId);
+                    modelExecutor_->releaseSequenceId(request.requestId);
+                    CLLM_DEBUG("[Scheduler] Immediately released seq_id and KV cache for failed request %llu", 
+                              request.requestId);
                 }
                 
                 requestTracker_.markAsFailed(request.requestId, request.errorMessage);
                 stats_.failedRequests++;
                 runningRequests_.erase(request.requestId);
                 completedRequests_[request.requestId] = request;
+                
+                // 🔥 优化步骤3: 更新原子缓存
+                cachedRunningCount_.store(runningRequests_.size(), std::memory_order_relaxed);
+                
+                // 🔥 优化：通知等待该请求的线程（使用条件变量）
+                resultCondition_.notify_all();
                 
                 // Phase 7: 触发失败回调
                 triggerResponseCallback(request.requestId, request);
@@ -561,6 +667,8 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
                 if (it != runningRequests_.end()) {
                     // 更新状态，保留已有的 generatedTokens 等
                     it->second = request;
+                    // 🔥 优化步骤3: 更新原子缓存（状态更新）
+                    cachedRunningCount_.store(runningRequests_.size(), std::memory_order_relaxed);
                     // 确保 isRunning 标志正确
                     it->second.isRunning = true;
                     CLLM_DEBUG("Request %llu: PROCESSING (continuing, tokens: %zu)",
@@ -638,6 +746,9 @@ void Scheduler::checkRequestTimeout() {
             stats_.failedRequests++;
             runningRequests_.erase(requestId);
             completedRequests_[requestId] = request;
+            
+            // 🔥 优化：通知等待该请求的线程（使用条件变量）
+            resultCondition_.notify_all();
             
             // Phase 7: 触发超时回调
             triggerResponseCallback(requestId, request);

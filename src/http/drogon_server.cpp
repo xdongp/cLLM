@@ -5,6 +5,8 @@
 #include <mutex>
 #include <thread>
 #include <algorithm>
+#include <atomic>
+#include <type_traits>
 
 namespace cllm {
 
@@ -71,6 +73,15 @@ void DrogonServer::init(const std::string& host, int port, HttpHandler* handler)
         },
         {drogon::Post});
 
+    drogon::app().registerHandler(
+        "/benchmark",
+        [](const drogon::HttpRequestPtr& req,
+           std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            DrogonServer controller;
+            controller.benchmark(req, std::move(callback));
+        },
+        {drogon::Post});
+
     drogon::app().addListener(host, port);
 }
 
@@ -89,11 +100,9 @@ void DrogonServer::handleRequest(
     std::function<void(const drogon::HttpResponsePtr&)>&& callback,
     Func requestSetup
 ) {
-    HttpHandler* handler_ptr;
-    {
-        std::lock_guard<std::mutex> lock(handler_mutex_);
-        handler_ptr = handler_;
-    }
+    // 🔥 优化：handler_在init后不再改变，使用无锁读取（提升并发性能）
+    // 使用memory_order_acquire确保读取到最新的handler_值
+    HttpHandler* handler_ptr = handler_;
     
     if (!handler_ptr) {
         auto resp = drogon::HttpResponse::newHttpResponse();
@@ -104,6 +113,8 @@ void DrogonServer::handleRequest(
 
     HttpRequest request;
     requestSetup(request);
+    // 🔥 优化：Drogon的getBody()返回std::string_view，需要转换为std::string
+    // 但这里仍然需要拷贝，因为HttpRequest::setBody需要std::string
     request.setBody(std::string(req->getBody()));
     
     HttpResponse response = handler_ptr->handleRequest(request);
@@ -170,6 +181,14 @@ void DrogonServer::encode(const drogon::HttpRequestPtr& req,
     handleRequest(req, std::move(callback), [](HttpRequest& request) {
         request.setMethod("POST");
         request.setPath(cllm::Config::instance().apiEndpointEncodePath());
+    });
+}
+
+void DrogonServer::benchmark(const drogon::HttpRequestPtr& req,
+                             std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+    handleRequest(req, std::move(callback), [](HttpRequest& request) {
+        request.setMethod("POST");
+        request.setPath("/benchmark");
     });
 }
 

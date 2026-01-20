@@ -260,6 +260,7 @@ add_library(cllm_core
     src/http/health_endpoint.cpp
     src/http/generate_endpoint.cpp
     src/http/encode_endpoint.cpp
+    src/http/benchmark_endpoint.cpp
     src/http/drogon_server.cpp
     src/http/json_request_parser.cpp
     src/http/request_queue.cpp
@@ -551,5 +552,27 @@ target_link_libraries(cllm_server
     Threads::Threads
     Drogon::Drogon
 )
+
+# 添加直接性能测试程序（参考 llama-bench）
+add_executable(direct_benchmark ${CMAKE_SOURCE_DIR}/tools/direct_benchmark.cpp)
+target_link_libraries(direct_benchmark
+    cllm_core
+    Threads::Threads
+    spdlog::spdlog
+)
+if(LLAMA_CPP_FOUND)
+    target_compile_definitions(direct_benchmark PRIVATE CLLM_USE_LLAMA_CPP)
+endif()
+
+# 添加渐进式性能测试程序（逐步验证各阶段性能衰减）
+add_executable(incremental_benchmark ${CMAKE_SOURCE_DIR}/tools/incremental_benchmark.cpp)
+target_link_libraries(incremental_benchmark
+    cllm_core
+    Threads::Threads
+    spdlog::spdlog
+)
+if(LLAMA_CPP_FOUND)
+    target_compile_definitions(incremental_benchmark PRIVATE CLLM_USE_LLAMA_CPP)
+endif()
 
 

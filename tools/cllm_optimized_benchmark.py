@@ -243,8 +243,12 @@ def get_prompts(prompts_file: str, num_requests: int) -> List[str]:
 def main():
     parser = argparse.ArgumentParser(description="cLLM Optimized Benchmark Tool")
     parser.add_argument("--server-url", type=str, default="http://localhost:8080", help="cLLM server URL")
-    parser.add_argument("--test-type", choices=["api-sequential", "api-concurrent", "all"], 
-                       default="all", help="Test type")
+    parser.add_argument(
+        "--test-type",
+        choices=["api-sequential", "api-concurrent", "api-concurrent-stage15", "all"],
+        default="all",
+        help="Test type",
+    )
     parser.add_argument("--requests", type=int, default=10, help="Number of requests")
     parser.add_argument("--concurrency", type=int, default=5, help="Concurrency level")
     parser.add_argument("--max-tokens", type=int, default=600, help="Max tokens to generate (optimized for Ollama comparison)")
@@ -257,6 +261,16 @@ def main():
     
     # 获取prompts列表
     prompts = get_prompts(args.prompts_file, args.requests)
+
+    # 🔥 对标 Stage 15/16 的专用模式：
+    # 固定参数：n_requests=40, concurrency=8, max_tokens=50，prompt 与 Stage 15 完全一致
+    if args.test_type == "api-concurrent-stage15":
+        args.requests = 40
+        args.concurrency = 8
+        args.max_tokens = 50
+        # Stage 15 使用的固定 prompt
+        stage15_prompt = "人工智能是计算机科学的一个分支"
+        prompts = [stage15_prompt] * args.requests
     
     logger.info("=" * 50)
     logger.info("cLLM Optimized Benchmark Tool")
@@ -271,7 +285,7 @@ def main():
     try:
         seq_stats = None
         conc_stats = None
-        if args.test_type in ["api-sequential", "api-concurrent", "all"]:
+        if args.test_type in ["api-sequential", "api-concurrent", "api-concurrent-stage15", "all"]:
             if not tester.check_server_health():
                 logger.error("Error: Cannot connect to cLLM server, please ensure that cLLM is running")
                 return
@@ -281,7 +295,7 @@ def main():
                 seq_stats = tester.calculate_statistics(seq_results)
                 tester.print_statistics(seq_stats, "cLLM API Sequential Test (Optimized)")
             
-            if args.test_type in ["api-concurrent", "all"]:
+            if args.test_type in ["api-concurrent", "api-concurrent-stage15", "all"]:
                 conc_results = tester.run_api_concurrent_test(args.requests, args.max_tokens, args.concurrency, prompts)
                 conc_stats = tester.calculate_statistics(conc_results)
                 tester.print_statistics(conc_stats, "cLLM API Concurrent Test (Optimized)")

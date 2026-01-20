@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <cstdint>
+#include <atomic>  // 🔥 优化: 用于原子操作
 
 namespace cllm {
 namespace inference {
@@ -439,15 +440,30 @@ Tensor LlamaCppBackend::forwardBatch(
             size_t requestId = sequenceIds[batchIdx];
             int32_t seqId = cachedSeqIds[batchIdx];
             
-            // 如果是新请求（首次分配），分配 seq_id
+            // 🔥 优化: 如果是新请求（首次分配），批量分配 seq_id（减少锁竞争）
             if (seqId == -1) {
                 seqId = allocateSequenceId(requestId);
                 if (seqId == -1) {
-                    throw std::runtime_error(
-                        "LlamaCppBackend::forwardBatch: failed to allocate seq_id for request " + std::to_string(requestId) + " (pool exhausted)"
-                    );
+                    // 如果分配失败，尝试等待并重试一次（可能刚有ID被释放）
+                    std::this_thread::sleep_for(std::chrono::microseconds(10));
+                    seqId = allocateSequenceId(requestId);
+                    if (seqId == -1) {
+                        throw std::runtime_error(
+                            "LlamaCppBackend::forwardBatch: failed to allocate seq_id for request " + std::to_string(requestId) + " (pool exhausted)"
+                        );
+                    }
                 }
                 cachedSeqIds[batchIdx] = seqId;
+            }
+            
+            // 🔥 获取序列的当前总长度（累计位置）
+            size_t currentSeqPosition = 0;
+            {
+                std::lock_guard<std::mutex> lock(sequenceIdMutex_);
+                auto posIt = seqIdToPosition_.find(seqId);
+                if (posIt != seqIdToPosition_.end()) {
+                    currentSeqPosition = posIt->second;
+                }
             }
             
             size_t actualSeqStart = seqStart;
@@ -459,18 +475,37 @@ Tensor LlamaCppBackend::forwardBatch(
                 actualSeqStart = seqEnd - 1;
             }
             
+            // 🔥 优化: 批量设置batch字段，减少循环开销
+            // 🔥 修复位置计算：使用绝对位置（累计位置），而不是相对位置
             for (size_t i = actualSeqStart; i < actualSeqEnd; ++i) {
                 batch.token[tokenIdx] = allTokens[i];
-                size_t posInSeq = isNewRequest[batchIdx] ? (i - seqStart) : (seqEnd - seqStart - 1);
+                
+                // 计算绝对位置：新请求从0开始，已存在请求从当前总长度开始
+                size_t posInSeq;
+                if (isNewRequest[batchIdx]) {
+                    // 新请求：位置从0开始，即 (i - seqStart)
+                    posInSeq = i - seqStart;
+                } else {
+                    // 已存在请求：位置从当前总长度开始，即 currentSeqPosition + (i - actualSeqStart)
+                    posInSeq = currentSeqPosition + (i - actualSeqStart);
+                }
+                
                 batch.pos[tokenIdx] = static_cast<llama_pos>(posInSeq);
                 batch.n_seq_id[tokenIdx] = 1;
                 // seq_id 必须指向有效的数组，不能为 nullptr
                 batch.seq_id[tokenIdx] = new llama_seq_id[1];
                 // Phase 2: 使用基于 requestId 的 seq_id（而不是批处理索引）
                 batch.seq_id[tokenIdx][0] = static_cast<llama_seq_id>(seqId);
-                // 只计算最后一个位置的 logits
+                // 只计算最后一个位置的 logits（参考llama-bench的方式）
                 batch.logits[tokenIdx] = (i == actualSeqEnd - 1);
                 ++tokenIdx;
+            }
+            
+            // 🔥 更新序列的总长度（累计位置）
+            {
+                std::lock_guard<std::mutex> lock(sequenceIdMutex_);
+                size_t tokensProcessed = actualSeqEnd - actualSeqStart;
+                seqIdToPosition_[seqId] = currentSeqPosition + tokensProcessed;
             }
         }
         batch.n_tokens = static_cast<int32_t>(actualTokenCount);
@@ -609,7 +644,7 @@ void LlamaCppBackend::initializeSequenceIdPool() {
     // 这里只需要初始化序列ID池
     CLLM_INFO("[LlamaCppBackend] Initializing sequence ID pool with n_seq_max=%d", nSeqMax_);
     
-    // 初始化可用序列ID池：0 到 n_seq_max-1
+    // 🔥 优化: 初始化时预分配所有ID到可用池
     availableSeqIds_.clear();
     availableSeqIds_.reserve(nSeqMax_);
     for (int32_t i = 0; i < nSeqMax_; ++i) {
@@ -619,77 +654,99 @@ void LlamaCppBackend::initializeSequenceIdPool() {
     // 清空映射
     requestIdToSeqId_.clear();
     
+    // 🔥 清空序列位置跟踪
+    seqIdToPosition_.clear();
+    
+    // 🔥 优化: 重置原子计数器
+    nextSeqId_.store(0, std::memory_order_relaxed);
+    
     CLLM_INFO("[LlamaCppBackend] Sequence ID pool initialized: %d available IDs", nSeqMax_);
 }
 
 int32_t LlamaCppBackend::allocateSequenceId(size_t requestId) {
-    std::lock_guard<std::mutex> lock(sequenceIdMutex_);
-    
-    // 检查是否已经分配过
-    auto it = requestIdToSeqId_.find(requestId);
-    if (it != requestIdToSeqId_.end()) {
-        CLLM_DEBUG("[LlamaCppBackend] Request %zu already has seq_id %d", requestId, it->second);
-        return it->second;
+    // 🔥 优化: 先快速检查是否已分配（无锁读取）
+    {
+        std::lock_guard<std::mutex> lock(sequenceIdMutex_);
+        auto it = requestIdToSeqId_.find(requestId);
+        if (it != requestIdToSeqId_.end()) {
+            CLLM_DEBUG("[LlamaCppBackend] Request %zu already has seq_id %d", requestId, it->second);
+            return it->second;
+        }
     }
     
-    // 检查可用池是否为空
-    if (availableSeqIds_.empty()) {
-        CLLM_WARN("[LlamaCppBackend] No available sequence IDs for request %zu (pool exhausted)", requestId);
-        return -1;
+    // 🔥 优化: 优先从可用池分配（复用已释放的ID）
+    int32_t seqId = -1;
+    {
+        std::lock_guard<std::mutex> lock(sequenceIdMutex_);
+        
+        // 再次检查（双重检查，避免竞态条件）
+        auto it = requestIdToSeqId_.find(requestId);
+        if (it != requestIdToSeqId_.end()) {
+            return it->second;
+        }
+        
+        // 优先从可用池分配
+        if (!availableSeqIds_.empty()) {
+            seqId = availableSeqIds_.back();
+            availableSeqIds_.pop_back();
+        } else {
+            // 可用池为空，使用原子计数器分配新ID
+            size_t nextId = nextSeqId_.fetch_add(1, std::memory_order_relaxed);
+            if (nextId >= static_cast<size_t>(nSeqMax_)) {
+                // 超出限制，尝试从已释放的ID中回收
+                CLLM_WARN("[LlamaCppBackend] Sequence ID pool exhausted for request %zu", requestId);
+                return -1;
+            }
+            seqId = static_cast<int32_t>(nextId);
+        }
+        
+        // 建立映射
+        requestIdToSeqId_[requestId] = seqId;
+        
+        // 🔥 初始化序列位置跟踪（新序列从位置0开始）
+        seqIdToPosition_[seqId] = 0;
     }
     
-    // 从可用池中分配一个序列ID
-    int32_t seqId = availableSeqIds_.back();
-    availableSeqIds_.pop_back();
-    
-    // 建立映射
-    requestIdToSeqId_[requestId] = seqId;
-    
-    // 监控序列ID池使用情况
-    size_t used = requestIdToSeqId_.size();
-    double usage = static_cast<double>(used) / static_cast<double>(nSeqMax_);
-    
-    CLLM_DEBUG("[LlamaCppBackend] Allocated seq_id %d for request %zu (remaining: %zu, usage: %.1f%%)",
-              seqId, requestId, availableSeqIds_.size(), usage * 100);
-    
-    // 当使用率超过阈值时记录警告
-    if (usage > 0.8) {
-        CLLM_WARN("[LlamaCppBackend] Sequence ID pool usage high: %zu/%d (%.1f%%)",
-                  used, nSeqMax_, usage * 100);
-    }
-    
+    CLLM_DEBUG("[LlamaCppBackend] Allocated seq_id %d for request %zu", seqId, requestId);
     return seqId;
 }
 
 bool LlamaCppBackend::releaseSequenceId(size_t requestId) {
-    std::lock_guard<std::mutex> lock(sequenceIdMutex_);
-    
-    // 查找 requestId 对应的 seqId
-    auto it = requestIdToSeqId_.find(requestId);
-    if (it == requestIdToSeqId_.end()) {
-        CLLM_WARN("[LlamaCppBackend] Request %zu not found in sequence ID mapping", requestId);
-        return false;
+    // 🔥 优化: 快速释放，减少锁持有时间
+    int32_t seqId = -1;
+    {
+        std::lock_guard<std::mutex> lock(sequenceIdMutex_);
+        
+        // 查找 requestId 对应的 seqId
+        auto it = requestIdToSeqId_.find(requestId);
+        if (it == requestIdToSeqId_.end()) {
+            CLLM_DEBUG("[LlamaCppBackend] Request %zu not found in sequence ID mapping (may have been released)", requestId);
+            return false;
+        }
+        
+        seqId = it->second;
+        
+        // 删除映射
+        requestIdToSeqId_.erase(it);
+        
+        // 🔥 清除序列位置跟踪（释放序列时清除位置信息）
+        seqIdToPosition_.erase(seqId);
+        
+        // 将 seqId 返回可用池（优先复用）
+        availableSeqIds_.push_back(seqId);
     }
     
-    int32_t seqId = it->second;
+    // 🔥 清理KV缓存（在释放序列ID之前，确保KV缓存被清理，避免序列ID复用时的位置不一致）
+    if (kvCacheManager_ && ctx_) {
+        kvCacheManager_->removeKVCache(ctx_, requestId, seqId);
+    }
     
-    // 删除映射
-    requestIdToSeqId_.erase(it);
-    
-    // 将 seqId 返回可用池
-    availableSeqIds_.push_back(seqId);
-    
-    // 监控序列ID池使用情况
-    size_t used = requestIdToSeqId_.size();
-    double usage = static_cast<double>(used) / static_cast<double>(nSeqMax_);
-    
-    CLLM_DEBUG("[LlamaCppBackend] Released seq_id %d for request %zu (available: %zu, usage: %.1f%%)",
-              seqId, requestId, availableSeqIds_.size(), usage * 100);
-    
+    CLLM_DEBUG("[LlamaCppBackend] Released seq_id %d for request %zu", seqId, requestId);
     return true;
 }
 
 int32_t LlamaCppBackend::getSequenceId(size_t requestId) const {
+    // 🔥 优化: 快速读取（虽然仍需要锁，但操作简单）
     std::lock_guard<std::mutex> lock(sequenceIdMutex_);
     
     auto it = requestIdToSeqId_.find(requestId);
@@ -720,8 +777,19 @@ double LlamaCppBackend::getSequenceIdPoolUsage() const {
 }
 
 size_t LlamaCppBackend::getAvailableSequenceIdCount() const {
+    // 🔥 优化: 快速估算可用数量（使用原子操作和锁的组合）
     std::lock_guard<std::mutex> lock(sequenceIdMutex_);
-    return availableSeqIds_.size();
+    size_t available = availableSeqIds_.size();
+    
+    // 如果可用池为空，但nextSeqId_还没达到上限，说明还有可用ID
+    if (available == 0) {
+        size_t nextId = nextSeqId_.load(std::memory_order_relaxed);
+        if (nextId < static_cast<size_t>(nSeqMax_)) {
+            available = nSeqMax_ - static_cast<int32_t>(nextId);
+        }
+    }
+    
+    return available;
 }
 
 bool LlamaCppBackend::cleanupKVCache(size_t requestId) {

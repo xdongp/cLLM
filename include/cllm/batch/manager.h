@@ -93,6 +93,19 @@ public:
     BatchInput prepareBatchInput(const std::vector<RequestState>& batch);
     
     /**
+     * @brief 🔥 优化: 增量准备批处理输入（只更新新增的tokens，减少数据复制）
+     * @param batch 请求批次（包含更新后的generatedTokens）
+     * @param previousInput 上次的批处理输入（用于增量更新）
+     * @param previousTokenCounts 上次每个请求的token数量（用于检测变化）
+     * @return 更新后的批处理输入数据
+     */
+    BatchInput prepareBatchInputIncremental(
+        const std::vector<RequestState>& batch,
+        const BatchInput& previousInput,
+        const std::vector<size_t>& previousTokenCounts
+    );
+    
+    /**
      * @brief 处理批处理输出
      * @param batch 请求批次
      * @param output 批处理输出数据

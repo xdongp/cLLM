@@ -69,11 +69,19 @@ public:
     ) const;
     
 private:
-    void processIteration(std::vector<RequestState>& batch);  ///< 处理一次迭代
+    void processIteration(
+        std::vector<RequestState>& batch,
+        const std::vector<RequestState>& activeRequests
+    );  ///< 处理一次迭代（接受已计算的活跃请求，避免重复计算）
     void updateRequestStates(  ///< 更新请求状态
         std::vector<RequestState>& batch,
         const BatchOutput& output
     );
+    
+    // 🔥 优化2: 增量批处理输入缓存
+    BatchInput cachedBatchInput_;                          ///< 缓存的批处理输入
+    std::vector<size_t> cachedTokenCounts_;                ///< 缓存的每个请求的token数量
+    std::vector<size_t> cachedRequestIds_;                 ///< 缓存的请求ID列表（用于验证）
     
     Scheduler* scheduler_;         ///< 调度器指针
     ModelExecutor* executor_;      ///< 模型执行器指针

@@ -211,10 +211,20 @@ private:
     size_t currentPosition_;              ///< 当前推理位置（用于增量推理）
 
     // Phase 2: 序列ID管理
-    std::map<size_t, int32_t> requestIdToSeqId_;  ///< requestId 到 seqId 的映射
-    std::vector<int32_t> availableSeqIds_;         ///< 可用序列ID池
+    // 🔥 优化: 使用无锁数据结构减少锁竞争
+    // 使用原子操作和thread_local缓存来优化序列ID分配
+    std::map<size_t, int32_t> requestIdToSeqId_;  ///< requestId 到 seqId 的映射（需要锁保护）
+    std::vector<int32_t> availableSeqIds_;         ///< 可用序列ID池（需要锁保护）
     mutable std::mutex sequenceIdMutex_;             ///< 序列ID管理互斥锁（mutable，允许 const 方法使用）
+    
+    // 🔥 优化: 批量分配序列ID，减少锁竞争
+    static constexpr size_t BATCH_ALLOCATION_SIZE = 8;  ///< 批量分配大小
+    std::atomic<size_t> nextSeqId_{0};                  ///< 下一个序列ID（原子操作，用于快速分配）
     int32_t nSeqMax_;                              ///< 最大序列数（从配置读取）
+    
+    // 🔥 序列位置跟踪：跟踪每个序列ID的当前总长度（累计位置）
+    // 用于确保 llama.cpp 的位置连续性要求
+    std::map<int32_t, size_t> seqIdToPosition_;    ///< seqId 到当前总长度的映射（需要锁保护）
 
     // Phase 4: KV缓存统计管理
     std::unique_ptr<KVCacheManager> kvCacheManager_;  ///< KV缓存统计管理器

@@ -27,6 +27,14 @@ BatchOutput BatchProcessor::processBatch(const BatchInput& input) {
         throw std::invalid_argument("Batch size cannot be zero");
     }
     
+    // 🔥 优化：对于单请求场景，跳过prepareBatchInput()和processBatchOutput()
+    // 因为它们对于单请求都是直接返回，但函数调用仍有开销
+    if (input.requestPositions.size() == 1) {
+        // 单请求场景：直接调用executor，跳过中间处理
+        return executor_->forward(input);
+    }
+    
+    // 多请求场景：需要填充/去填充处理
     prepareBatchInput(input);
     
     BatchOutput output = executor_->forward(input);
