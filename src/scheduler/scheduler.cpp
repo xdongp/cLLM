@@ -186,7 +186,7 @@ bool Scheduler::removeRequest(size_t requestId) {
         return false;
     }
     
-    std::lock_guard<std::mutex> lock(requestsMutex_);
+    std::unique_lock<std::shared_mutex> lock(requestsMutex_);  // 写操作使用独占锁
     
     if (runningRequests_.erase(requestId) > 0) {
         requestTracker_.removeRequest(requestId);
@@ -202,7 +202,7 @@ bool Scheduler::removeRequest(size_t requestId) {
 }
 
 RequestState Scheduler::getRequestResult(size_t requestId) {
-    std::lock_guard<std::mutex> lock(requestsMutex_);
+    std::shared_lock<std::shared_mutex> lock(requestsMutex_);  // 读操作使用共享锁
     
     auto it = completedRequests_.find(requestId);
     if (it != completedRequests_.end()) {
@@ -220,7 +220,7 @@ bool Scheduler::waitForRequest(size_t requestId, float timeout) {
     auto timeoutDuration = std::chrono::duration<float>(timeout);
     
     // 🔥 优化：使用条件变量替代轮询，减少等待延迟
-    std::unique_lock<std::mutex> lock(requestsMutex_);
+    std::unique_lock<std::shared_mutex> lock(requestsMutex_);  // 等待需要独占锁
     
     // 先检查是否已经完成
     if (completedRequests_.find(requestId) != completedRequests_.end()) {
@@ -259,7 +259,7 @@ bool Scheduler::waitForRequest(size_t requestId, float timeout) {
 }
 
 std::vector<RequestState> Scheduler::getRunningRequests() const {
-    std::lock_guard<std::mutex> lock(requestsMutex_);
+    std::shared_lock<std::shared_mutex> lock(requestsMutex_);  // 优化：使用共享锁，允许多个读
     
     std::vector<RequestState> requests;
     requests.reserve(runningRequests_.size());
@@ -278,7 +278,7 @@ std::vector<RequestState> Scheduler::getRunningRequests() const {
 }
 
 std::vector<RequestState> Scheduler::getCompletedRequests() const {
-    std::lock_guard<std::mutex> lock(requestsMutex_);
+    std::shared_lock<std::shared_mutex> lock(requestsMutex_);  // 优化：使用共享锁，允许多个读
     
     std::vector<RequestState> requests;
     requests.reserve(completedRequests_.size());
@@ -306,7 +306,7 @@ void Scheduler::resetStats() {
 }
 
 size_t Scheduler::getRunningCount() const {
-    std::lock_guard<std::mutex> lock(requestsMutex_);
+    std::shared_lock<std::shared_mutex> lock(requestsMutex_);  // 读操作使用共享锁
     return runningRequests_.size();
 }
 
@@ -354,7 +354,7 @@ void Scheduler::schedulerLoop() {
                 cachedQueueSize_.store(queueSize, std::memory_order_relaxed);
                 
                 {
-                    std::lock_guard<std::mutex> reqLock(requestsMutex_);
+                    std::shared_lock<std::shared_mutex> reqLock(requestsMutex_);  // 读操作使用共享锁
                     runningCount = runningRequests_.size();
                     cachedRunningCount_.store(runningCount, std::memory_order_relaxed);
                 }
@@ -411,7 +411,7 @@ void Scheduler::processRequests() {
     }
     
     {
-        std::lock_guard<std::mutex> reqLock(requestsMutex_);
+        std::shared_lock<std::shared_mutex> reqLock(requestsMutex_);  // 读操作使用共享锁
         runningCount = runningRequests_.size();
         cachedRunningCount_.store(runningCount, std::memory_order_relaxed);
     }
@@ -421,8 +421,43 @@ void Scheduler::processRequests() {
         return;
     }
     
-    // 🔥 优化: 批处理缓存 - 暂时禁用，避免延迟和死锁风险
-    // 后续可以优化为更智能的累积策略
+    // 🔥 关键优化: 批处理累积策略
+    // 如果队列请求较少且没有运行中的请求，等待更多请求到达
+    // 这样可以形成更大的批处理，提高吞吐量
+    constexpr size_t MIN_BATCH_SIZE_FOR_ACCUMULATION = 8;
+    constexpr size_t MAX_WAIT_MS_FOR_BATCH = 50;  // 最多等待50ms
+    
+    if (queueSize < MIN_BATCH_SIZE_FOR_ACCUMULATION && runningCount == 0) {
+        CLLM_DEBUG("[Scheduler::processRequests] Queue size (%zu) < %zu, waiting for more requests (max %dms)",
+                  queueSize, MIN_BATCH_SIZE_FOR_ACCUMULATION, MAX_WAIT_MS_FOR_BATCH);
+        
+        // 等待更多请求到达
+        std::unique_lock<std::mutex> lock(queueMutex_);
+        auto waitStart = std::chrono::steady_clock::now();
+        
+        // 等待直到队列足够大或超时
+        queueCondition_.wait_for(
+            lock,
+            std::chrono::milliseconds(MAX_WAIT_MS_FOR_BATCH),
+            [this]() {
+                return requestQueue_.getQueueSize() >= MIN_BATCH_SIZE_FOR_ACCUMULATION || !running_;
+            }
+        );
+        
+        auto waitEnd = std::chrono::steady_clock::now();
+        auto waitTime = std::chrono::duration_cast<std::chrono::milliseconds>(waitEnd - waitStart).count();
+        CLLM_DEBUG("[Scheduler::processRequests] Waited %lldms, queue size now: %zu",
+                  waitTime, requestQueue_.getQueueSize());
+        
+        // 更新队列大小
+        queueSize = requestQueue_.getQueueSize();
+        cachedQueueSize_.store(queueSize, std::memory_order_relaxed);
+        
+        // 如果等待后队列仍然为空，返回
+        if (queueSize == 0) {
+            return;
+        }
+    }
     
     // Phase 1: 请求流转逻辑 - RequestQueue → runningRequests_（通过formBatch间接实现）
     // 1. 从 RequestQueue 获取待处理请求（PENDING状态）
@@ -444,7 +479,9 @@ void Scheduler::processRequests() {
     
     // 3. formBatch 形成批处理（可能包含来自 RequestQueue 的新请求和运行中的请求）
     // formBatch 会根据 maxConcurrentRequests、资源限制和可用序列ID数量决定哪些请求可以加入批处理
-    std::vector<RequestState> batch = batchManager_.formBatch(pending, running, availableSeqIds);
+    // 🔥 优化步骤3: 使用批处理池，减少内存分配
+    auto& batch = batchPool_.acquire();
+    batch = batchManager_.formBatch(pending, running, availableSeqIds);
     
     if (!batch.empty() && availableSeqIds > 0) {
         CLLM_DEBUG("[Scheduler::processRequests] Formed batch of %zu requests (availableSeqIds: %zu)", 
@@ -456,10 +493,12 @@ void Scheduler::processRequests() {
     if (batch.empty() && queueSize > 0) {
         // 队列中有请求但无法形成批处理，可能是资源限制
         // 返回并让调度器稍后重试
+        batchPool_.release(batch);
         return;
     }
     
     if (batch.empty()) {
+        batchPool_.release(batch);
         return;
     }
     
@@ -477,81 +516,110 @@ void Scheduler::processRequests() {
 
 void Scheduler::processBatch(std::vector<RequestState>& batch) {
     // 在开始处理前，检查并合并已存在的请求状态
-    // 过滤掉已完成的请求，避免重复处理
-    std::vector<RequestState> activeBatch;
-    activeBatch.reserve(batch.size());
+    // 🔥 优化步骤2: 减少锁持有时间
+    // 步骤1: 快速复制需要处理的数据（短时间持有锁）
+    struct RequestInfo {
+        RequestState request;
+        bool existsInRunning;
+        bool isCompleted;
+        bool isFailed;
+        std::vector<int> existingTokens;
+        bool isPending;
+        bool isRunning;
+        size_t startTime;
+    };
+    
+    std::vector<RequestInfo> requestsToProcess;
+    requestsToProcess.reserve(batch.size());
     
     {
-        std::lock_guard<std::mutex> lock(requestsMutex_);
-        for (auto& request : batch) {
+        std::shared_lock<std::shared_mutex> lock(requestsMutex_);  // 读操作使用共享锁
+        for (const auto& request : batch) {
+            RequestInfo info;
+            info.request = request;
+            
             // 检查请求是否已经完成
             auto completedIt = completedRequests_.find(request.requestId);
             if (completedIt != completedRequests_.end()) {
                 CLLM_DEBUG("Request %llu already completed, filtering out (tokens: %zu)",
                          request.requestId, completedIt->second.generatedTokens.size());
-                // 已完成的请求不加入 activeBatch，直接跳过
-                continue;
+                continue;  // 已完成的请求不处理
             }
             
-            // 请求未完成，需要处理
+            // 检查请求是否在运行中
             auto it = runningRequests_.find(request.requestId);
             if (it != runningRequests_.end()) {
-                // 请求已存在，从 runningRequests_ 获取已有状态
-                // 保留已有的 generatedTokens、isCompleted、isFailed 等状态
-                CLLM_DEBUG("Request %llu already in runningRequests_, merging state (existing tokens: %zu, isCompleted: %d)",
-                          request.requestId, it->second.generatedTokens.size(), it->second.isCompleted ? 1 : 0);
-                
-                // 保存已有的状态
-                std::vector<int> existingTokens = it->second.generatedTokens;
-                bool existingCompleted = it->second.isCompleted;
-                bool existingFailed = it->second.isFailed;
-                
-                // 更新 batch 中的请求对象，保留已有状态
-                request.generatedTokens = std::move(existingTokens);
-                request.isCompleted = existingCompleted;
-                request.isFailed = existingFailed;
-                
-                // Phase 1: 状态转换 PENDING → PROCESSING
-                // 如果请求是PENDING状态，转换为PROCESSING状态
-                if (it->second.isPending()) {
-                    CLLM_DEBUG("Request %llu: PENDING → PROCESSING", request.requestId);
-                    it->second.isRunning = true;
-                    if (it->second.startTime == 0) {
-                        it->second.startTime = getCurrentTime();
-                    }
-                }
-                
-                // 更新运行中的请求状态
-                request.isRunning = it->second.isRunning;
-                request.startTime = it->second.startTime;
+                info.existsInRunning = true;
+                info.isCompleted = it->second.isCompleted;
+                info.isFailed = it->second.isFailed;
+                info.existingTokens = it->second.generatedTokens;
+                info.isPending = it->second.isPending();
+                info.isRunning = it->second.isRunning;
+                info.startTime = it->second.startTime;
             } else {
-                // 新请求，状态为PENDING，准备转换为PROCESSING
-                CLLM_DEBUG("Request %llu: NEW REQUEST (PENDING), will transition to PROCESSING", request.requestId);
-                request.startTime = getCurrentTime();
-                request.isRunning = false;  // 初始状态为PENDING（isRunning=false）
-                runningRequests_[request.requestId] = request;
+                info.existsInRunning = false;
             }
+            
+            requestsToProcess.push_back(std::move(info));
+        }
+    }
+    
+    // 步骤2: 在锁外处理数据（无锁）
+    std::vector<RequestState> activeBatch;
+    activeBatch.reserve(requestsToProcess.size());
+    
+    for (auto& info : requestsToProcess) {
+        auto& request = info.request;
+        
+        if (info.existsInRunning) {
+            // 请求已存在，合并状态
+            CLLM_DEBUG("Request %llu already in runningRequests_, merging state (existing tokens: %zu, isCompleted: %d)",
+                      request.requestId, info.existingTokens.size(), info.isCompleted ? 1 : 0);
+            
+            request.generatedTokens = std::move(info.existingTokens);
+            request.isCompleted = info.isCompleted;
+            request.isFailed = info.isFailed;
             
             // Phase 1: 状态转换 PENDING → PROCESSING
-            // 在批处理开始时，明确标记为PROCESSING状态
-            request.isRunning = true;
-            requestTracker_.markAsRunning(request.requestId);
-            if (modelExecutor_) {
-                modelExecutor_->updateKVCacheRequestStatus(request.requestId, inference::RequestStatus::PROCESSING);
-            }
-            
-            // 更新 runningRequests_ 中的状态
-            {
-                auto it = runningRequests_.find(request.requestId);
-                if (it != runningRequests_.end()) {
-                    it->second.isRunning = true;
-                    if (it->second.startTime == 0) {
-                        it->second.startTime = request.startTime;
-                    }
+            if (info.isPending) {
+                CLLM_DEBUG("Request %llu: PENDING → PROCESSING", request.requestId);
+                if (info.startTime == 0) {
+                    request.startTime = getCurrentTime();
                 }
             }
             
-            activeBatch.push_back(std::move(request));
+            request.isRunning = true;
+            request.startTime = info.startTime;
+        } else {
+            // 新请求
+            CLLM_DEBUG("Request %llu: NEW REQUEST (PENDING), will transition to PROCESSING", request.requestId);
+            request.startTime = getCurrentTime();
+            request.isRunning = false;
+        }
+        
+        // Phase 1: 状态转换 PENDING → PROCESSING
+        request.isRunning = true;
+        requestTracker_.markAsRunning(request.requestId);
+        if (modelExecutor_) {
+            modelExecutor_->updateKVCacheRequestStatus(request.requestId, inference::RequestStatus::PROCESSING);
+        }
+        
+        activeBatch.push_back(std::move(request));
+    }
+    
+    // 步骤3: 批量更新状态（短时间持有锁）
+    {
+        std::unique_lock<std::shared_mutex> lock(requestsMutex_);  // 写操作使用独占锁
+        for (const auto& request : activeBatch) {
+            auto it = runningRequests_.find(request.requestId);
+            if (it != runningRequests_.end()) {
+                it->second.isRunning = request.isRunning;
+                if (it->second.startTime == 0) {
+                    it->second.startTime = request.startTime;
+                }
+            } else {
+                runningRequests_[request.requestId] = request;
+            }
         }
     }
     
@@ -606,7 +674,7 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
         CLLM_DEBUG("Request %llu generated tokens: %zu", request.requestId, request.generatedTokens.size());
         
         {
-            std::lock_guard<std::mutex> lock(requestsMutex_);
+            std::unique_lock<std::shared_mutex> lock(requestsMutex_);  // 写操作使用独占锁
             if (request.isCompleted) {
                 // Phase 1: 状态转换 PROCESSING → COMPLETED
                 // 请求已完成，从 runningRequests_ 移除，添加到 completedRequests_
@@ -686,6 +754,9 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
     
     stats_.updateBatch(batch);
     
+    // 🔥 优化步骤3: 释放批处理对象回池
+    batchPool_.release(batch);
+    
     // Phase 1: 请求流转逻辑 - 请求完成后自动触发下一个请求的处理
     // 检查是否还有待处理的请求，如果有，通知调度器继续处理
     // 这样可以避免调度器在有空闲资源时还在等待
@@ -702,7 +773,7 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
 }
 
 void Scheduler::checkRequestTimeout() {
-    std::lock_guard<std::mutex> lock(requestsMutex_);
+    std::unique_lock<std::shared_mutex> lock(requestsMutex_);  // 写操作使用独占锁
     
     size_t currentTimeMs = getCurrentTime();
     std::vector<size_t> timeoutRequests;

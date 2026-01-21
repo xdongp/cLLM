@@ -10,7 +10,9 @@ RequestQueue::RequestQueue(size_t maxQueueSize, size_t maxContextLength)
     , totalRequests_(0)
     , completedRequests_(0)
     , totalWaitTime_(0)
-    , stopFlag_(false) {
+    , stopFlag_(false)
+    , queueDirty_(false)
+    , cachedQueueSize_(0) {
 }
 
 RequestQueue::~RequestQueue() {
@@ -32,8 +34,10 @@ bool RequestQueue::addRequest(const RequestState& request) {
     req.arrivalTime = currentTime;
     req.priority = req.calculatePriority(currentTime);
     
-    queue_.push(req);
+    queue_.push_back(req);
     totalRequests_++;
+    cachedQueueSize_.store(queue_.size(), std::memory_order_release);
+    queueDirty_.store(true, std::memory_order_release);
     
     condition_.notify_one();
     return true;
@@ -42,23 +46,14 @@ bool RequestQueue::addRequest(const RequestState& request) {
 bool RequestQueue::removeRequest(size_t requestId) {
     std::lock_guard<std::mutex> lock(queueMutex_);
     
-    std::vector<RequestState> tempQueue;
-    bool found = false;
+    auto it = std::remove_if(queue_.begin(), queue_.end(),
+        [requestId](const RequestState& req) {
+            return req.requestId == requestId;
+        });
     
-    while (!queue_.empty()) {
-        auto req = queue_.top();
-        queue_.pop();
-        
-        if (req.requestId == requestId) {
-            found = true;
-        } else {
-            tempQueue.push_back(req);
-        }
-    }
-    
-    for (const auto& req : tempQueue) {
-        queue_.push(req);
-    }
+    bool found = it != queue_.end();
+    queue_.erase(it, queue_.end());
+    cachedQueueSize_.store(queue_.size(), std::memory_order_release);
     
     return found;
 }
@@ -74,14 +69,37 @@ RequestState RequestQueue::getNextRequest() {
         return RequestState{};
     }
     
-    RequestState request = queue_.top();
-    queue_.pop();
-    
     auto currentTime = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()
     ).count();
+    
+    RequestState request;
+    if (queueDirty_.load(std::memory_order_acquire)) {
+        std::vector<RequestState> sortedQueue = queue_;
+        std::sort(sortedQueue.begin(), sortedQueue.end(), RequestComparator());
+        queueDirty_.store(false, std::memory_order_release);
+        
+        if (!sortedQueue.empty()) {
+            auto it = std::find(queue_.begin(), queue_.end(), sortedQueue.front());
+            if (it != queue_.end()) {
+                request = *it;
+                queue_.erase(it);
+            }
+        }
+    } else {
+        if (!queue_.empty()) {
+            request = queue_.front();
+            queue_.erase(queue_.begin());
+        }
+    }
+    
+    if (request.requestId == 0) {
+        return RequestState{};
+    }
+    
     size_t waitTime = currentTime - request.arrivalTime;
     totalWaitTime_ += waitTime;
+    cachedQueueSize_.store(queue_.size(), std::memory_order_release);
     
     return request;
 }
@@ -93,14 +111,28 @@ bool RequestQueue::tryGetNextRequest(RequestState& request) {
         return false;
     }
     
-    request = queue_.top();
-    queue_.pop();
-    
     auto currentTime = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()
     ).count();
+    
+    if (queueDirty_.load(std::memory_order_acquire)) {
+        std::vector<RequestState> sortedQueue = queue_;
+        std::sort(sortedQueue.begin(), sortedQueue.end(), RequestComparator());
+        queueDirty_.store(false, std::memory_order_release);
+        
+        auto it = std::find(queue_.begin(), queue_.end(), sortedQueue.front());
+        if (it != queue_.end()) {
+            request = *it;
+            queue_.erase(it);
+        }
+    } else {
+        request = queue_.front();
+        queue_.erase(queue_.begin());
+    }
+    
     size_t waitTime = currentTime - request.arrivalTime;
     totalWaitTime_ += waitTime;
+    cachedQueueSize_.store(queue_.size(), std::memory_order_release);
     
     return true;
 }
@@ -111,6 +143,8 @@ std::vector<RequestState> RequestQueue::formBatch(size_t maxContextLength) {
     std::vector<RequestState> batch;
     size_t currentBatchLength = 0;
     
+    std::lock_guard<std::mutex> runningLock(runningMutex_);
+    
     size_t runningLength = 0;
     for (const auto& req : runningRequests_) {
         runningLength += req.getTotalLength();
@@ -120,28 +154,46 @@ std::vector<RequestState> RequestQueue::formBatch(size_t maxContextLength) {
         return batch;
     }
     
-    std::vector<RequestState> tempQueue;
-    while (!queue_.empty()) {
-        tempQueue.push_back(queue_.top());
-        queue_.pop();
-    }
-    
-    size_t optimalBatchSize = calculateOptimalBatchSize(tempQueue);
-    size_t availableContext = maxContextLength - runningLength;
-    
-    for (auto& req : tempQueue) {
-        if (batch.size() >= optimalBatchSize) {
-            queue_.push(req);
-            continue;
-        }
+    if (queueDirty_.load(std::memory_order_acquire)) {
+        std::vector<RequestState> sortedQueue = queue_;
+        std::sort(sortedQueue.begin(), sortedQueue.end(), RequestComparator());
+        queueDirty_.store(false, std::memory_order_release);
         
-        if (currentBatchLength + req.getPromptLength() <= availableContext) {
-            batch.push_back(req);
-            currentBatchLength += req.getPromptLength();
-        } else {
-            queue_.push(req);
+        size_t optimalBatchSize = calculateOptimalBatchSize(sortedQueue);
+        size_t availableContext = maxContextLength - runningLength;
+        
+        auto it = queue_.begin();
+        auto sortedIt = sortedQueue.begin();
+        while (sortedIt != sortedQueue.end() && batch.size() < optimalBatchSize) {
+            if (currentBatchLength + sortedIt->getPromptLength() <= availableContext) {
+                it = std::find(queue_.begin(), queue_.end(), *sortedIt);
+                if (it != queue_.end()) {
+                    batch.push_back(*it);
+                    currentBatchLength += it->getPromptLength();
+                    it = queue_.erase(it);
+                }
+                ++sortedIt;
+            } else {
+                ++sortedIt;
+            }
+        }
+    } else {
+        size_t optimalBatchSize = calculateOptimalBatchSize(queue_);
+        size_t availableContext = maxContextLength - runningLength;
+        
+        auto it = queue_.begin();
+        while (it != queue_.end() && batch.size() < optimalBatchSize) {
+            if (currentBatchLength + it->getPromptLength() <= availableContext) {
+                batch.push_back(*it);
+                currentBatchLength += it->getPromptLength();
+                it = queue_.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
+    
+    cachedQueueSize_.store(queue_.size(), std::memory_order_release);
     
     return batch;
 }
@@ -149,34 +201,22 @@ std::vector<RequestState> RequestQueue::formBatch(size_t maxContextLength) {
 std::vector<RequestState> RequestQueue::getPendingRequests() const {
     std::lock_guard<std::mutex> lock(queueMutex_);
     
-    std::vector<RequestState> pending;
-    pending.reserve(queue_.size());
+    std::vector<RequestState> pending = queue_;
     
-    std::vector<RequestState> tempQueue;
-    tempQueue.reserve(queue_.size());
-    
-    // 一次性提取所有请求
-    while (!queue_.empty()) {
-        tempQueue.push_back(queue_.top());
-        queue_.pop();
-    }
-    
-    // 复制到结果并重建队列
-    for (auto& req : tempQueue) {
-        pending.push_back(std::move(req));
-        queue_.push(pending.back());
+    if (queueDirty_.load(std::memory_order_acquire)) {
+        std::sort(pending.begin(), pending.end(), RequestComparator());
     }
     
     return pending;
 }
 
 size_t RequestQueue::getQueueSize() const {
-    std::lock_guard<std::mutex> lock(queueMutex_);
-    return queue_.size();
+    return cachedQueueSize_.load(std::memory_order_acquire);
 }
 
 size_t RequestQueue::getRunningRequestsLength() const {
-    std::lock_guard<std::mutex> lock(queueMutex_);
+    std::lock_guard<std::mutex> lock(runningMutex_);
+    
     size_t total = 0;
     for (const auto& req : runningRequests_) {
         total += req.getTotalLength();
@@ -185,10 +225,10 @@ size_t RequestQueue::getRunningRequestsLength() const {
 }
 
 float RequestQueue::getAverageWaitTime() const {
-    std::lock_guard<std::mutex> lock(queueMutex_);
-    
     size_t completedCount = completedRequests_.load();
-    if (completedCount == 0 && queue_.empty()) {
+    size_t queueSize = cachedQueueSize_.load(std::memory_order_acquire);
+    
+    if (completedCount == 0 && queueSize == 0) {
         return 0.0f;
     }
     
@@ -196,23 +236,11 @@ float RequestQueue::getAverageWaitTime() const {
         std::chrono::steady_clock::now().time_since_epoch()
     ).count();
     
-    // 使用向量避免多次锁定
-    std::vector<RequestState> tempQueue;
-    tempQueue.reserve(queue_.size());
+    std::lock_guard<std::mutex> lock(queueMutex_);
     
     size_t queueWaitTime = 0;
-    
-    // 一次性提取并计算
-    while (!queue_.empty()) {
-        auto req = queue_.top();
-        queue_.pop();
+    for (const auto& req : queue_) {
         queueWaitTime += (currentTime - req.arrivalTime);
-        tempQueue.push_back(req);
-    }
-    
-    // 重建队列
-    for (auto& req : tempQueue) {
-        queue_.push(req);
     }
     
     size_t totalWait = totalWaitTime_.load() + queueWaitTime;
@@ -222,35 +250,24 @@ float RequestQueue::getAverageWaitTime() const {
 }
 
 size_t RequestQueue::getAverageRequestLength() const {
-    std::lock_guard<std::mutex> lock(queueMutex_);
+    size_t queueSize = cachedQueueSize_.load(std::memory_order_acquire);
     
-    if (queue_.empty()) {
+    if (queueSize == 0) {
         return 0;
     }
     
-    std::vector<RequestState> tempQueue;
-    tempQueue.reserve(queue_.size());
+    std::lock_guard<std::mutex> lock(queueMutex_);
     
     size_t totalLength = 0;
-    
-    // 一次性提取
-    while (!queue_.empty()) {
-        auto req = queue_.top();
-        queue_.pop();
+    for (const auto& req : queue_) {
         totalLength += req.getPromptLength();
-        tempQueue.push_back(req);
-    }
-    
-    // 重建队列
-    for (auto& req : tempQueue) {
-        queue_.push(req);
     }
     
     return totalLength / queue_.size();
 }
 
 void RequestQueue::updateRunningRequests(const std::vector<RequestState>& running) {
-    std::lock_guard<std::mutex> lock(queueMutex_);
+    std::lock_guard<std::mutex> lock(runningMutex_);
     
     for (const auto& oldReq : runningRequests_) {
         bool found = false;
@@ -270,12 +287,11 @@ void RequestQueue::updateRunningRequests(const std::vector<RequestState>& runnin
 
 void RequestQueue::clear() {
     std::lock_guard<std::mutex> lock(queueMutex_);
+    std::lock_guard<std::mutex> runningLock(runningMutex_);
     
-    while (!queue_.empty()) {
-        queue_.pop();
-    }
-    
+    queue_.clear();
     runningRequests_.clear();
+    cachedQueueSize_.store(0, std::memory_order_release);
 }
 
 void RequestQueue::updatePriorities() {
@@ -285,17 +301,11 @@ void RequestQueue::updatePriorities() {
         std::chrono::steady_clock::now().time_since_epoch()
     ).count();
     
-    std::vector<RequestState> tempQueue;
-    while (!queue_.empty()) {
-        auto req = queue_.top();
-        queue_.pop();
+    for (auto& req : queue_) {
         req.priority = req.calculatePriority(currentTime);
-        tempQueue.push_back(req);
     }
     
-    for (const auto& req : tempQueue) {
-        queue_.push(req);
-    }
+    queueDirty_.store(true, std::memory_order_release);
 }
 
 size_t RequestQueue::calculateOptimalBatchSize(const std::vector<RequestState>& requests) {

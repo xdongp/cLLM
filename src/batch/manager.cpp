@@ -12,14 +12,22 @@ BatchManager::BatchManager(size_t maxContextLength, size_t maxBatchSize)
     : maxContextLength_((maxContextLength != 0) ? maxContextLength : Config::instance().serverMaxContextLength())
     , maxBatchSize_((maxBatchSize != 0) ? maxBatchSize : Config::instance().serverMaxBatchSize())
     , contextUsageThreshold_(Config::instance().schedulerContextUsageThreshold())
-    , executor_(nullptr) {
+    , executor_(nullptr)
+    , lastBatchProcessingTimeMs_(0)
+    , adaptiveBatchSize_(8)
+    , minAdaptiveBatchSize_(1)
+    , maxAdaptiveBatchSize_(64) {
 }
 
 BatchManager::BatchManager(size_t maxContextLength, size_t maxBatchSize, ModelExecutor* executor)
     : maxContextLength_((maxContextLength != 0) ? maxContextLength : Config::instance().serverMaxContextLength())
     , maxBatchSize_((maxBatchSize != 0) ? maxBatchSize : Config::instance().serverMaxBatchSize())
     , contextUsageThreshold_(Config::instance().schedulerContextUsageThreshold())
-    , executor_(executor) {
+    , executor_(executor)
+    , lastBatchProcessingTimeMs_(0)
+    , adaptiveBatchSize_(8)
+    , minAdaptiveBatchSize_(1)
+    , maxAdaptiveBatchSize_(64) {
 }
 
 BatchManager::~BatchManager() {
@@ -53,12 +61,9 @@ std::vector<RequestState> BatchManager::formBatch(
     size_t avgLength = calculateAverageRequestLength(pendingRequests);
     size_t dynamicBatchSize = calculateOptimalBatchSize(pendingRequests, avgLength);
     
-    // 🔥 关键优化: 更激进的批处理大小策略，优先使用maxBatchSize_
-    // 对于小请求（avgLength < 100），直接使用maxBatchSize_，充分利用GPU
-    if (avgLength < 100 && pendingRequests.size() >= maxBatchSize_) {
-        dynamicBatchSize = maxBatchSize_;
-        CLLM_DEBUG("[BatchManager] Small requests (avgLength=%zu), using maxBatchSize_=%zu", avgLength, maxBatchSize_);
-    }
+    // 🔥 禁用动态批处理：由于性能严重下降，暂时禁用adaptiveBatchSize
+    // size_t adaptiveSize = adaptiveBatchSize(pendingRequests.size(), runningRequests.size());
+    // dynamicBatchSize = std::min(dynamicBatchSize, adaptiveSize);
     
     CLLM_DEBUG("[BatchManager::formBatch] avgLength=%zu, calculated dynamicBatchSize=%zu, maxBatchSize_=%zu",
               avgLength, dynamicBatchSize, maxBatchSize_);
@@ -398,6 +403,28 @@ size_t BatchManager::calculateOptimalBatchSize(
               avgRequestLength, dynamicBatchSize, maxBatchSize_, requests.size());
     
     return dynamicBatchSize;
+}
+
+size_t BatchManager::adaptiveBatchSize(size_t queueSize, size_t runningCount) {
+    std::lock_guard<std::mutex> lock(statsMutex_);
+    
+    if (lastBatchProcessingTimeMs_ > 500) {
+        adaptiveBatchSize_ = std::max(minAdaptiveBatchSize_, adaptiveBatchSize_ / 2);
+        CLLM_DEBUG("[BatchManager::adaptiveBatchSize] Last batch processing time too long (%zu ms), reducing batch size to %zu",
+                  lastBatchProcessingTimeMs_, adaptiveBatchSize_);
+    } else if (lastBatchProcessingTimeMs_ < 100 && queueSize > adaptiveBatchSize_ * 2) {
+        adaptiveBatchSize_ = std::min(maxAdaptiveBatchSize_, adaptiveBatchSize_ * 2);
+        CLLM_DEBUG("[BatchManager::adaptiveBatchSize] Last batch processing time short (%zu ms) and queue large (%zu), increasing batch size to %zu",
+                  lastBatchProcessingTimeMs_, queueSize, adaptiveBatchSize_);
+    }
+    
+    return adaptiveBatchSize_;
+}
+
+void BatchManager::updateBatchProcessingTime(size_t processingTimeMs) {
+    std::lock_guard<std::mutex> lock(statsMutex_);
+    lastBatchProcessingTimeMs_ = processingTimeMs;
+    CLLM_DEBUG("[BatchManager::updateBatchProcessingTime] Updated batch processing time to %zu ms", processingTimeMs);
 }
 
 bool BatchManager::canAddToBatch(

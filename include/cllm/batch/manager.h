@@ -127,6 +127,20 @@ public:
     );
     
     /**
+     * @brief 根据系统负载动态调整批处理大小
+     * @param queueSize 队列大小
+     * @param runningCount 运行中请求数
+     * @return 动态批处理大小
+     */
+    size_t adaptiveBatchSize(size_t queueSize, size_t runningCount);
+    
+    /**
+     * @brief 更新批处理时间
+     * @param processingTimeMs 批处理时间（毫秒）
+     */
+    void updateBatchProcessingTime(size_t processingTimeMs);
+    
+    /**
      * @brief 检查是否可以将请求添加到批次
      * @param request 请求对象
      * @param currentBatch 当前批次
@@ -174,6 +188,11 @@ private:
     
     mutable std::mutex statsMutex_; ///< 统计信息互斥锁
     BatchStats stats_;              ///< 统计信息
+    
+    size_t lastBatchProcessingTimeMs_;  ///< 上次批处理时间（毫秒）
+    size_t adaptiveBatchSize_;          ///< 自适应批处理大小
+    size_t minAdaptiveBatchSize_;      ///< 最小自适应批处理大小
+    size_t maxAdaptiveBatchSize_;      ///< 最大自适应批处理大小
 };
 
 }

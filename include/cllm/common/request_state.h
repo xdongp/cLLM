@@ -53,6 +53,40 @@ struct RequestState {
     explicit RequestState(size_t id) : requestId(id) {}
     
     /**
+     * @brief 拷贝构造函数
+     */
+    RequestState(const RequestState&) = default;
+    
+    /**
+     * @brief 拷贝赋值运算符
+     */
+    RequestState& operator=(const RequestState&) = default;
+    
+    /**
+     * @brief 移动构造函数
+     */
+    RequestState(RequestState&&) = default;
+    
+    /**
+     * @brief 移动赋值运算符
+     */
+    RequestState& operator=(RequestState&&) = default;
+    
+    /**
+     * @brief 相等运算符
+     */
+    bool operator==(const RequestState& other) const {
+        return requestId == other.requestId;
+    }
+    
+    /**
+     * @brief 不等运算符
+     */
+    bool operator!=(const RequestState& other) const {
+        return requestId != other.requestId;
+    }
+    
+    /**
      * @brief 获取提示长度
      * @return 提示的token数量
      */

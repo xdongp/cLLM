@@ -8,6 +8,7 @@
 #include "cllm/common/logger.h"
 #include "cllm/common/config.h"
 #include <algorithm>
+#include <chrono>
 
 namespace cllm {
 
@@ -26,6 +27,8 @@ void SchedulerBatchProcessor::processBatch(std::vector<RequestState>& batch) {
     const int MAX_ITERATIONS = Config::instance().schedulerMaxIterations(); // 防止无限循环
     int iterationCount = 0;
     
+    auto batchStartTime = std::chrono::steady_clock::now();
+    
     // 🔥 优化：减少日志输出（在生产环境中关闭详细日志）
     #ifdef CLLM_DEBUG_MODE
     CLLM_DEBUG("processBatch: Starting batch processing with %zu requests", batch.size());
@@ -42,9 +45,9 @@ void SchedulerBatchProcessor::processBatch(std::vector<RequestState>& batch) {
     cachedRequestIds_.clear();
     
     // 🔥 优化1: 动态批处理重组阈值（当活跃请求数 < 30% 时考虑重组）
-    // 优化：降低重组阈值以减少频繁重组
+    // 修复：更积极的重组策略，及时将慢速请求与新请求重组，减少响应时间长尾
     constexpr double BATCH_REGROUP_THRESHOLD = 0.3;
-    constexpr size_t MIN_EFFICIENT_BATCH_SIZE = 8;  // 最小高效批处理大小（增加到8）
+    constexpr size_t MIN_EFFICIENT_BATCH_SIZE = 6;  // 修复：增加最小批处理大小，避免过度频繁重组
     
     while (!isBatchComplete(batch)) {
         auto activeRequests = getActiveRequests(batch);
@@ -56,17 +59,19 @@ void SchedulerBatchProcessor::processBatch(std::vector<RequestState>& batch) {
             break;
         }
         
-        // 🔥 优化3: 动态批处理重组 - 如果活跃请求数 < 批处理大小的50%，提前结束
-        if (activeRequests.size() < batch.size() * BATCH_REGROUP_THRESHOLD && batch.size() > MIN_EFFICIENT_BATCH_SIZE) {
-            CLLM_DEBUG("processBatch: Active requests (%zu) < 50%% of batch size (%zu), batch efficiency degraded", 
+        // 🔥 优化3: 动态批处理重组 - 如果活跃请求数 < 批处理大小的30%，提前结束
+        // 修复：更积极的重组策略，当批处理效率下降时及时重组，避免慢速请求阻塞整个批处理
+        if (activeRequests.size() < batch.size() * BATCH_REGROUP_THRESHOLD) {
+            CLLM_DEBUG("processBatch: Active requests (%zu) < 30%% of batch size (%zu), batch efficiency degraded", 
                       activeRequests.size(), batch.size());
             
-            // 🔥 关键优化: 当批处理效率过低时，提前结束当前批处理
-            // 将剩余的活跃请求返回给Scheduler，让它可以与其他请求重组
-            if (activeRequests.size() <= 2 && batch.size() > MIN_EFFICIENT_BATCH_SIZE) {
-                CLLM_INFO("processBatch: Batch efficiency too low (%zu/%zu), breaking to allow regrouping", 
+            // 🔥 关键修复: 当批处理效率过低时，提前结束当前批处理
+            // 将剩余的活跃请求返回给Scheduler，让它可以与新到达的请求重组
+            // 这样可以避免慢速请求一直占用批处理资源，导致响应时间长尾
+            if (activeRequests.size() <= 3) {
+                CLLM_INFO("processBatch: Batch efficiency too low (%zu/%zu), breaking to allow regrouping with new requests", 
                          activeRequests.size(), batch.size());
-                // 提前结束，剩余的活跃请求会在下次调度时重新处理
+                // 提前结束，剩余的活跃请求会在下次调度时与新请求重组
                 break;
             }
         }
@@ -99,6 +104,18 @@ void SchedulerBatchProcessor::processBatch(std::vector<RequestState>& batch) {
                   batch[i].isCompleted ? 1 : 0, batch[i].isFailed ? 1 : 0);
     }
     #endif
+    
+    // 🔥 优化: 记录批处理时间并更新自适应批处理大小
+    auto batchEndTime = std::chrono::steady_clock::now();
+    auto processingTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        batchEndTime - batchStartTime
+    ).count();
+    
+    if (batchManager_) {
+        batchManager_->updateBatchProcessingTime(processingTimeMs);
+        CLLM_DEBUG("processBatch: Batch processing time: %zu ms, batch size: %zu", 
+                  processingTimeMs, batch.size());
+    }
 }
 
 bool SchedulerBatchProcessor::isBatchComplete(const std::vector<RequestState>& batch) const {

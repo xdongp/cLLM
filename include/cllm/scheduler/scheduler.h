@@ -13,6 +13,7 @@
 #include <map>
 #include <thread>
 #include <mutex>
+#include <shared_mutex>
 #include <condition_variable>
 #include <atomic>
 #include <functional>
@@ -71,6 +72,48 @@ private:
  * @param state 请求状态
  */
 using ResponseCallback = std::function<void(size_t requestId, const RequestState& state)>;
+
+/**
+ * @brief 批处理池（优化：减少内存分配）
+ * 
+ * 预分配批处理对象，避免频繁的内存分配和释放。
+ * 提高CPU缓存友好性，减少内存碎片。
+ */
+class BatchPool {
+private:
+    static constexpr size_t POOL_SIZE = 16;
+    static constexpr size_t BATCH_CAPACITY = 32;
+    
+    std::array<std::vector<RequestState>, POOL_SIZE> pool_;
+    std::atomic<size_t> nextIndex_{0};
+    
+public:
+    BatchPool() {
+        for (auto& batch : pool_) {
+            batch.reserve(BATCH_CAPACITY);
+        }
+    }
+    
+    /**
+     * @brief 从池中获取一个批处理对象
+     * @return 批处理对象的引用
+     */
+    std::vector<RequestState>& acquire() {
+        size_t index = nextIndex_.fetch_add(1, std::memory_order_relaxed) % POOL_SIZE;
+        auto& batch = pool_[index];
+        batch.clear();
+        return batch;
+    }
+    
+    /**
+     * @brief 释放批处理对象（实际上不需要做任何事）
+     * @param batch 批处理对象
+     */
+    void release(std::vector<RequestState>& batch) {
+        // 不需要做任何事，对象在池中复用
+        (void)batch;
+    }
+};
 
 /**
  * @brief 调度器类
@@ -216,6 +259,8 @@ private:
     bool ownsModelExecutor_;        ///< 是否拥有模型执行器所有权
     RequestTracker requestTracker_;    ///< 请求跟踪器
     
+    BatchPool batchPool_;  ///< 批处理池（优化：减少内存分配）
+    
     std::map<size_t, RequestState> runningRequests_;    ///< 运行中的请求
     std::map<size_t, RequestState> completedRequests_;  ///< 已完成的请求
     
@@ -228,9 +273,9 @@ private:
     SchedulerConfig config_;           ///< 调度器配置
     
     mutable std::mutex queueMutex_;     ///< 队列互斥锁
-    mutable std::mutex requestsMutex_;  ///< 请求互斥锁
+    mutable std::shared_mutex requestsMutex_;  ///< 请求读写锁（优化：读多写少场景）
     mutable std::mutex statsMutex_;     ///< 统计互斥锁
-    std::condition_variable resultCondition_;  ///< 结果条件变量
+    std::condition_variable_any resultCondition_;  ///< 结果条件变量（优化：支持shared_mutex）
     
     // 🔥 优化步骤1: 原子操作只读缓存（减少锁竞争）
     std::atomic<size_t> cachedQueueSize_{0};      ///< 队列大小缓存（原子操作，快速读取）
