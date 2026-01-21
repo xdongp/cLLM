@@ -103,9 +103,9 @@ backend:
   # llama.cpp 后端配置
   llama_cpp:
     n_batch: 512          # 优化：减少批处理大小以避免内存问题
-    n_threads: 8          # 优化：增加线程数以充分利用CPU
+    n_threads: 8          # 回调：保持与CPU核心数一致（8核）
     n_gpu_layers: 99       # GPU层数（99表示使用全部GPU层，启用Metal加速）
-    n_seq_max: 64         # 🔥 优化：进一步增加最大序列数以支持更大批处理（从32增加到64，提升并发性能）
+    n_seq_max: 64         # 回调：保持64以支持合理并发（从128回调到64）
     use_mmap: true        # 使用内存映射
     use_mlock: false      # 使用内存锁定
 

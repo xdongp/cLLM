@@ -41,9 +41,10 @@ void SchedulerBatchProcessor::processBatch(std::vector<RequestState>& batch) {
     cachedTokenCounts_.clear();
     cachedRequestIds_.clear();
     
-    // 🔥 优化1: 动态批处理重组阈值（当活跃请求数 < 50% 时考虑重组）
-    constexpr double BATCH_REGROUP_THRESHOLD = 0.5;
-    constexpr size_t MIN_EFFICIENT_BATCH_SIZE = 4;  // 最小高效批处理大小
+    // 🔥 优化1: 动态批处理重组阈值（当活跃请求数 < 30% 时考虑重组）
+    // 优化：降低重组阈值以减少频繁重组
+    constexpr double BATCH_REGROUP_THRESHOLD = 0.3;
+    constexpr size_t MIN_EFFICIENT_BATCH_SIZE = 8;  // 最小高效批处理大小（增加到8）
     
     while (!isBatchComplete(batch)) {
         auto activeRequests = getActiveRequests(batch);
