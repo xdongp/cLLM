@@ -4,18 +4,18 @@
 # 服务器配置
 server:
   host: "0.0.0.0"          # 服务器监听地址
-  port: 18085               # 服务器监听端口
+  port: 8080               # 服务器监听端口
   num_threads: 8           # Drogon 工作线程数（0 表示使用硬件并发数）- 优化：增加线程数提升并发处理能力
   min_threads: 4           # 最小线程数（避免 /generate 阻塞导致 /health 卡住）- 优化：增加最小线程数
   use_libtorch: false      # 是否使用 LibTorch 后端（否则使用 Kylin）
 
 # 模型配置
 model:
-  path: "/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/qwen3-0.6b-q4_k_m.gguf"   # 模型目录或模型文件路径
+  path: "/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/qwen3-0.6b-q4_k_m.gguf"   # 模型目录或模型文件路径 (q4_k_m 量化)
   vocab_size: 151936       # 词表大小（可被后端自动探测覆盖）
   max_context_length: 2048 # 最大上下文长度
-  default_max_tokens: 500  # 默认最大生成 token 数 - 优化：对标Ollama，增加max_tokens以提升吞吐量
-  quantization: "fp16"     # 量化类型: fp16, int8, int4
+  default_max_tokens: 100  # 默认最大生成 token 数 - 修复：与API默认值一致，避免覆盖用户请求的max_tokens
+  quantization: "q4_k_m"   # 量化类型: fp16, int8, int4, q4_k_m
 
 # HTTP 配置
 http:
@@ -65,7 +65,7 @@ api:
 scheduler:
   max_iterations: 2000      # 优化：增加最大迭代次数以处理更多请求
   batch_timeout_ms: 100     # 优化：减少批处理超时以更快响应
-  max_batch_size: 64       # 优化：增加最大批处理大小以提升吞吐量
+  max_batch_size: 32       # 优化：增加最大批处理大小以提升吞吐量
   context_usage_threshold: 0.75
   default_temperature: 0.7
   default_top_p: 0.9
@@ -78,7 +78,7 @@ scheduler:
 
 # 资源配置
 resources:
-  max_batch_size: 8        # 优化：减少最大批处理大小以避免内存问题
+  max_batch_size: 32        # 优化：减少最大批处理大小以避免内存问题
   max_context_length: 2048
   kv_cache_max_size: 100    # 优化：减少KV cache大小以避免内存问题
   kv_cache_max_memory_mb: 4096  # 优化：减少KV cache内存限制

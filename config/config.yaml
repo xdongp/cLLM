@@ -11,11 +11,11 @@ server:
 
 # 模型配置
 model:
-  path: "/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/qwen3-0.6b-q8_0.gguf"   # 模型目录或模型文件路径 (int8 量化)
+  path: "/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/qwen3-0.6b-q4_k_m.gguf"   # 模型目录或模型文件路径 (q4_k_m 量化)
   vocab_size: 151936       # 词表大小（可被后端自动探测覆盖）
   max_context_length: 2048 # 最大上下文长度
-  default_max_tokens: 500  # 默认最大生成 token 数 - 优化：对标Ollama，增加max_tokens以提升吞吐量
-  quantization: "int8"     # 量化类型: fp16, int8, int4
+  default_max_tokens: 100  # 默认最大生成 token 数 - 修复：与API默认值一致，避免覆盖用户请求的max_tokens
+  quantization: "q4_k_m"   # 量化类型: fp16, int8, int4, q4_k_m
 
 # HTTP 配置
 http:
@@ -111,5 +111,7 @@ backend:
 
 # 日志配置
 logging:
-  level: "info"
-  file: ""
+  level: "debug"         # 日志级别: trace, debug, info, warn, error, critical
+  file: "logs/cllm_server.log"  # 日志文件路径
+  max_size_mb: 100         # 日志文件最大大小(MB)
+  max_files: 5            # 保留的日志文件数量

@@ -45,6 +45,10 @@ GenerateEndpoint::GenerateRequest GenerateEndpoint::parseRequest(const HttpReque
     JsonRequestParser::getFieldWithDefault(jsonBody, "top_p", req.topP, cllm::Config::instance().apiDefaultTopP());
     JsonRequestParser::getFieldWithDefault(jsonBody, "stream", req.stream, false);
     
+    // 调试日志：记录解析到的参数
+    CLLM_DEBUG("Parsed request - prompt: '%s', max_tokens: %d, temperature: %f, top_p: %f", 
+              req.prompt.c_str(), req.maxTokens, req.temperature, req.topP);
+    
     return req;
 }
 
@@ -290,6 +294,7 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
     resp["text"] = generatedText;
     resp["response_time"] = responseTime;
     resp["tokens_per_second"] = tokensPerSecond;
+    resp["generated_tokens"] = generatedTokenCount;
 
     return ResponseBuilder::success(resp);
 }

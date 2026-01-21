@@ -323,7 +323,7 @@ void SchedulerBatchProcessor::updateRequestStates(
         }
         
         if (batch[i].generatedTokens.size() >= batch[i].maxTokens) {
-            CLLM_DEBUG("Request %zu reached max tokens limit (%zu >= %d), marking as completed", 
+            CLLM_DEBUG("Request %zu reached max tokens limit BEFORE generation (%zu >= %d), marking as completed", 
                       i, batch[i].generatedTokens.size(), batch[i].maxTokens);
             batch[i].isCompleted = true;
             
@@ -333,6 +333,9 @@ void SchedulerBatchProcessor::updateRequestStates(
             }
             continue;
         }
+        
+        CLLM_DEBUG("Request %zu - BEFORE generation: generatedTokens=%zu, maxTokens=%d", 
+                  i, batch[i].generatedTokens.size(), batch[i].maxTokens);
         
         CLLM_DEBUG("Request %zu - Getting logits from output (using output index %zu)", i, activeIdx);
         

@@ -68,7 +68,7 @@ void printUsage(const char* programName) {
     CLLM_INFO("  --model-path PATH        Path to model directory (required)");
     CLLM_INFO("  --port PORT              Server port (default: 8080)");
     CLLM_INFO("  --host HOST              Server host (default: 0.0.0.0)");
-    CLLM_INFO("  --quantization TYPE      Quantization type: fp16, int8, int4 (default: fp16)");
+    CLLM_INFO("  --quantization TYPE      Quantization type: fp16, int8, int4, q4_k_m, q5_k_m (default: fp16)");
     CLLM_INFO("  --max-batch-size SIZE    Maximum batch size (default: 8)");
     CLLM_INFO("  --max-context-length LEN Maximum context length (default: 2048)");
     CLLM_INFO("  --use-libtorch           Use LibTorch backend (default: false, use Kylin)");
