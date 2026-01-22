@@ -137,13 +137,11 @@ public:
     std::string toString() const;
     
 private:
-    long long totalSamples_;       ///< 总采样次数
-    long long greedySamples_;      ///< 贪心采样次数
-    long long topKSamples_;        ///< Top-K采样次数
-    long long topPSamples_;        ///< Top-P采样次数
-    long long temperatureSamples_; ///< 温度采样次数
-    
-    mutable std::mutex mutex_;     ///< 保护统计数据的互斥锁
+    long long totalSamples_{0};       ///< 总采样次数
+    long long greedySamples_{0};      ///< 贪心采样次数
+    long long topKSamples_{0};        ///< Top-K采样次数
+    long long topPSamples_{0};        ///< Top-P采样次数
+    long long temperatureSamples_{0}; ///< 温度采样次数
     
     /**
      * @brief 计算百分比

@@ -188,11 +188,8 @@ std::vector<int> TokenizerManager::encode(const std::string& text) {
     auto endTime = std::chrono::high_resolution_clock::now();
     float duration = std::chrono::duration<float>(endTime - startTime).count();
     
-    {
-        std::lock_guard<std::mutex> lock(statsMutex_);
-        stats_.incrementEncodeCount();
-        stats_.addEncodeTime(duration);
-    }
+    stats_.incrementEncodeCount();
+    stats_.addEncodeTime(duration);
     
     return tokenIds;
 }
@@ -205,11 +202,8 @@ std::string TokenizerManager::decode(const std::vector<int>& tokenIds) {
     auto endTime = std::chrono::high_resolution_clock::now();
     float duration = std::chrono::duration<float>(endTime - startTime).count();
     
-    {
-        std::lock_guard<std::mutex> lock(statsMutex_);
-        stats_.incrementDecodeCount();
-        stats_.addDecodeTime(duration);
-    }
+    stats_.incrementDecodeCount();
+    stats_.addDecodeTime(duration);
     
     return text;
 }

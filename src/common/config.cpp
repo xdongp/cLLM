@@ -339,6 +339,22 @@ bool Config::backendLlamaCppUseMlock() const {
     return config_["backend"]["llama_cpp"]["use_mlock"].as<bool>(false);
 }
 
+int Config::backendLlamaCppNCb() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // 默认值为1，范围：1-8
+    int nCb = config_["backend"]["llama_cpp"]["n_cb"].as<int>(1);
+    // 验证范围：1-8
+    if (nCb < 1) {
+        CLLM_WARN("backend.llama_cpp.n_cb (%d) is less than 1, using default value 1", nCb);
+        return 1;
+    }
+    if (nCb > 8) {
+        CLLM_WARN("backend.llama_cpp.n_cb (%d) exceeds maximum 8, using 8", nCb);
+        return 8;
+    }
+    return nCb;
+}
+
 // API端点配置
 std::string Config::apiEndpointHealthName() const {
     std::lock_guard<std::mutex> lock(mutex_);

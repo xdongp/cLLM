@@ -406,8 +406,6 @@ size_t BatchManager::calculateOptimalBatchSize(
 }
 
 size_t BatchManager::adaptiveBatchSize(size_t queueSize, size_t runningCount) {
-    std::lock_guard<std::mutex> lock(statsMutex_);
-    
     if (lastBatchProcessingTimeMs_ > 500) {
         adaptiveBatchSize_ = std::max(minAdaptiveBatchSize_, adaptiveBatchSize_ / 2);
         CLLM_DEBUG("[BatchManager::adaptiveBatchSize] Last batch processing time too long (%zu ms), reducing batch size to %zu",
@@ -422,7 +420,6 @@ size_t BatchManager::adaptiveBatchSize(size_t queueSize, size_t runningCount) {
 }
 
 void BatchManager::updateBatchProcessingTime(size_t processingTimeMs) {
-    std::lock_guard<std::mutex> lock(statsMutex_);
     lastBatchProcessingTimeMs_ = processingTimeMs;
     CLLM_DEBUG("[BatchManager::updateBatchProcessingTime] Updated batch processing time to %zu ms", processingTimeMs);
 }
@@ -444,12 +441,10 @@ bool BatchManager::canAddToBatch(
 }
 
 BatchStats BatchManager::getStats() const {
-    std::lock_guard<std::mutex> lock(statsMutex_);
     return stats_;
 }
 
 void BatchManager::resetStats() {
-    std::lock_guard<std::mutex> lock(statsMutex_);
     stats_.reset();
 }
 
@@ -508,7 +503,6 @@ void BatchManager::updateStats(const std::vector<RequestState>& batch) {
         batchLength += request.getTotalLength();
     }
     
-    std::lock_guard<std::mutex> lock(statsMutex_);
     stats_.update(batch.size(), batchLength);
 }
 

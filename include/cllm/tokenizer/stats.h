@@ -71,19 +71,19 @@ public:
     void reset();
     
 private:
-    mutable std::mutex mutex_;       ///< 互斥锁
+    long long encodeCount_{0};          ///< 编码次数
+    long long decodeCount_{0};          ///< 解码次数
+    long long generateCount_{0};        ///< 生成次数
+    long long streamGenerateCount_{0};  ///< 流式生成次数
     
-    long long encodeCount_;          ///< 编码次数
-    long long decodeCount_;          ///< 解码次数
-    long long generateCount_;        ///< 生成次数
-    long long streamGenerateCount_;  ///< 流式生成次数
+    float totalEncodeTime_{0.0f};          ///< 总编码时间
+    float totalDecodeTime_{0.0f};          ///< 总解码时间
+    float totalGenerateTime_{0.0f};        ///< 总生成时间
+    float totalStreamGenerateTime_{0.0f};  ///< 总流式生成时间
     
-    float totalEncodeTime_;          ///< 总编码时间
-    float totalDecodeTime_;          ///< 总解码时间
-    float totalGenerateTime_;        ///< 总生成时间
-    float totalStreamGenerateTime_;  ///< 总流式生成时间
+    long long totalGeneratedTokens_{0}; ///< 总生成tokens数
     
-    long long totalGeneratedTokens_; ///< 总生成tokens数
+    mutable std::mutex mutex_; ///< 保护统计信息的互斥锁
 };
 
 }

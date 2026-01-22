@@ -132,7 +132,7 @@ private:
     std::vector<int> stopTokens_;    ///< 停止tokens
     
     TokenizerStats stats_;           ///< 统计信息
-    mutable std::mutex statsMutex_;  ///< 统计信息互斥锁
+    mutable std::mutex statsMutex_;   ///< 保护统计信息的互斥锁
     
     void loadStopTokens(const std::string& configPath);  ///< 从配置文件加载停止tokens
 };

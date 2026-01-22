@@ -96,6 +96,7 @@ public:
     int backendLlamaCppNSeqMax() const;  // n_seq_max (1-256, default: 1)
     bool backendLlamaCppUseMmap() const;
     bool backendLlamaCppUseMlock() const;
+    int backendLlamaCppNCb() const;  // n_cb (Metal command buffer concurrency, 1-8, default: 1)
     
     // API端点配置
     std::string apiEndpointHealthName() const;

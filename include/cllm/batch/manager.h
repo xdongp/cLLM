@@ -186,7 +186,6 @@ private:
     Sampler sampler_;               ///< 采样器
     ModelExecutor* executor_;       ///< 模型执行器指针
     
-    mutable std::mutex statsMutex_; ///< 统计信息互斥锁
     BatchStats stats_;              ///< 统计信息
     
     size_t lastBatchProcessingTimeMs_;  ///< 上次批处理时间（毫秒）

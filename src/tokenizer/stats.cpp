@@ -3,49 +3,26 @@
 
 namespace cllm {
 
-TokenizerStats::TokenizerStats()
-    : encodeCount_(0),
-      decodeCount_(0),
-      generateCount_(0),
-      streamGenerateCount_(0),
-      totalEncodeTime_(0.0f),
-      totalDecodeTime_(0.0f),
-      totalGenerateTime_(0.0f),
-      totalStreamGenerateTime_(0.0f),
-      totalGeneratedTokens_(0) {
+TokenizerStats::TokenizerStats() {
 }
 
 TokenizerStats::~TokenizerStats() {
 }
 
 TokenizerStats::TokenizerStats(const TokenizerStats& other)
-    : encodeCount_(0),
-      decodeCount_(0),
-      generateCount_(0),
-      streamGenerateCount_(0),
-      totalEncodeTime_(0.0f),
-      totalDecodeTime_(0.0f),
-      totalGenerateTime_(0.0f),
-      totalStreamGenerateTime_(0.0f),
-      totalGeneratedTokens_(0) {
-    std::lock_guard<std::mutex> lockOther(other.mutex_);
-    encodeCount_ = other.encodeCount_;
-    decodeCount_ = other.decodeCount_;
-    generateCount_ = other.generateCount_;
-    streamGenerateCount_ = other.streamGenerateCount_;
-    totalEncodeTime_ = other.totalEncodeTime_;
-    totalDecodeTime_ = other.totalDecodeTime_;
-    totalGenerateTime_ = other.totalGenerateTime_;
-    totalStreamGenerateTime_ = other.totalStreamGenerateTime_;
-    totalGeneratedTokens_ = other.totalGeneratedTokens_;
+    : encodeCount_(other.encodeCount_)
+    , decodeCount_(other.decodeCount_)
+    , generateCount_(other.generateCount_)
+    , streamGenerateCount_(other.streamGenerateCount_)
+    , totalEncodeTime_(other.totalEncodeTime_)
+    , totalDecodeTime_(other.totalDecodeTime_)
+    , totalGenerateTime_(other.totalGenerateTime_)
+    , totalStreamGenerateTime_(other.totalStreamGenerateTime_)
+    , totalGeneratedTokens_(other.totalGeneratedTokens_) {
 }
 
 TokenizerStats& TokenizerStats::operator=(const TokenizerStats& other) {
     if (this != &other) {
-        std::lock(mutex_, other.mutex_);
-        std::lock_guard<std::mutex> lockThis(mutex_, std::adopt_lock);
-        std::lock_guard<std::mutex> lockOther(other.mutex_, std::adopt_lock);
-        
         encodeCount_ = other.encodeCount_;
         decodeCount_ = other.decodeCount_;
         generateCount_ = other.generateCount_;

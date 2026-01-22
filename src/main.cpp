@@ -456,6 +456,7 @@ int main(int argc, char* argv[]) {
         initialConfig.llamaGpuLayers = cllm::Config::instance().backendLlamaCppGpuLayers();
         initialConfig.llamaUseMmap = cllm::Config::instance().backendLlamaCppUseMmap();
         initialConfig.llamaUseMlock = cllm::Config::instance().backendLlamaCppUseMlock();
+        initialConfig.llamaNCb = cllm::Config::instance().backendLlamaCppNCb();
 
         g_modelExecutor = std::make_unique<cllm::ModelExecutor>(
             backendModelPath,
