@@ -98,6 +98,24 @@ public:
     bool backendLlamaCppUseMlock() const;
     int backendLlamaCppNCb() const;  // n_cb (Metal command buffer concurrency, 1-8, default: 1)
     
+    // 动态批处理调谐器配置
+    bool dynamicBatchTunerEnabled() const;
+    std::string dynamicBatchTunerStrategy() const;
+    std::string dynamicBatchTunerSearchAlgorithm() const;
+    int dynamicBatchTunerFixedBatchSize() const;
+    int dynamicBatchTunerMinBatchSize() const;
+    int dynamicBatchTunerMaxBatchSize() const;
+    int dynamicBatchTunerInitialBatchSize() const;
+    float dynamicBatchTunerTimeIncreaseThreshold() const;
+    float dynamicBatchTunerTimeDecreaseThreshold() const;
+    int dynamicBatchTunerValidationInterval() const;
+    int dynamicBatchTunerMaxConsecutiveTimeIncreases() const;
+    bool dynamicBatchTunerAutoAdjustEnabled() const;
+    int dynamicBatchTunerProbeBatchCount() const;
+    int dynamicBatchTunerValidationBatchCount() const;
+    float dynamicBatchTunerAdjustmentFactor() const;
+    int dynamicBatchTunerExplorationInterval() const;
+    
     // API端点配置
     std::string apiEndpointHealthName() const;
     std::string apiEndpointHealthPath() const;

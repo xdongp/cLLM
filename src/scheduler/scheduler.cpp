@@ -7,6 +7,7 @@
 #include "cllm/memory/monitor.h"
 #include "cllm/common/logger.h"
 #include "cllm/inference/llama_cpp_backend.h"
+#include "cllm/scheduler/hybrid_batch_strategy.h"
 #include <chrono>
 #include <stdexcept>
 #include <queue>
@@ -39,14 +40,78 @@ Scheduler::Scheduler(
     // 🔥 修复：增加最大并发请求数，支持32并发测试
     config_.maxConcurrentRequests = 64;  // 从默认8增加到64，支持高并发场景
     
-    kvCache_ = new KVCache(
-        static_cast<size_t>(Config::instance().serverKvCacheMaxSize()),
-        static_cast<size_t>(Config::instance().serverKvCacheMaxMemoryMb())
-    );
+    // 🔧 优化：根据后端类型决定是否创建 KVCache
+    // llama.cpp 后端内部管理 KV Cache，不需要外部 KVCache
+    std::string backendType = modelExecutor_->getBackendType();
+    if (needsExternalKVCache(backendType)) {
+        kvCache_ = new KVCache(
+            static_cast<size_t>(Config::instance().serverKvCacheMaxSize()),
+            static_cast<size_t>(Config::instance().serverKvCacheMaxMemoryMb())
+        );
+        CLLM_INFO("[Scheduler] Created KVCache for backend: %s", backendType.c_str());
+    } else {
+        kvCache_ = nullptr;
+        CLLM_INFO("[Scheduler] KVCache not needed for backend: %s (managed internally)", 
+                  backendType.c_str());
+    }
     
     // 验证模型已加载
     if (!modelExecutor_->isLoaded()) {
         throw std::runtime_error("Model executor must be pre-loaded before creating Scheduler");
+    }
+    
+    // 初始化批处理策略
+    if (Config::instance().dynamicBatchTunerEnabled()) {
+        std::string strategy = Config::instance().dynamicBatchTunerStrategy();
+        
+        if (strategy == "static") {
+            // 静态策略：使用固定 batch size
+            staticBatchSize_ = Config::instance().dynamicBatchTunerFixedBatchSize();
+            CLLM_INFO("[Scheduler] 静态批处理策略已启用，固定 batch_size=%zu", staticBatchSize_);
+        } else if (strategy == "adaptive") {
+            // 自适应策略：使用搜索算法动态调整
+            HybridConfig hybridConfig;
+            hybridConfig.enabled = true;
+            hybridConfig.tuning.enabled = true;
+            hybridConfig.tuning.durationRequests = 1000000;  // 永不切换到稳定阶段
+            hybridConfig.tuning.minBatchSize = Config::instance().dynamicBatchTunerMinBatchSize();
+            hybridConfig.tuning.maxBatchSize = Config::instance().dynamicBatchTunerMaxBatchSize();
+            hybridConfig.tuning.initialBatchSize = Config::instance().dynamicBatchTunerInitialBatchSize();
+            hybridConfig.stable.batchSize = Config::instance().dynamicBatchTunerInitialBatchSize();
+            hybridConfig.stable.accumulationEnabled = false;  // 自适应策略不使用批处理累积
+            hybridConfig.stable.minBatchSize = 0;
+            hybridConfig.stable.maxWaitMs = 0;
+            hybridConfig.monitoring.checkIntervalRequests = 1000;
+            hybridConfig.monitoring.driftThreshold = 0.10;
+            hybridConfig.monitoring.autoRetune = true;
+            
+            hybridStrategy_ = std::make_unique<HybridBatchStrategy>(hybridConfig);
+            
+            CLLM_INFO("[Scheduler] 自适应批处理策略已启用");
+        } else if (strategy == "hybrid") {
+            // 混合策略：调优阶段 + 稳定阶段
+            HybridConfig hybridConfig;
+            hybridConfig.enabled = true;
+            hybridConfig.tuning.enabled = true;
+            hybridConfig.tuning.durationRequests = 100;
+            hybridConfig.tuning.minBatchSize = Config::instance().dynamicBatchTunerMinBatchSize();
+            hybridConfig.tuning.maxBatchSize = Config::instance().dynamicBatchTunerMaxBatchSize();
+            hybridConfig.tuning.initialBatchSize = Config::instance().dynamicBatchTunerInitialBatchSize();
+            hybridConfig.stable.batchSize = Config::instance().dynamicBatchTunerInitialBatchSize();
+            hybridConfig.stable.accumulationEnabled = true;
+            hybridConfig.stable.minBatchSize = 8;
+            hybridConfig.stable.maxWaitMs = 50;
+            hybridConfig.monitoring.checkIntervalRequests = 1000;
+            hybridConfig.monitoring.driftThreshold = 0.10;
+            hybridConfig.monitoring.autoRetune = true;
+            
+            hybridStrategy_ = std::make_unique<HybridBatchStrategy>(hybridConfig);
+            
+            CLLM_INFO("[Scheduler] 混合批处理策略已启用");
+        } else {
+            CLLM_WARN("[Scheduler] 未知的策略: %s，使用静态策略", strategy.c_str());
+            staticBatchSize_ = Config::instance().dynamicBatchTunerFixedBatchSize();
+        }
     }
 }
 
@@ -77,19 +142,56 @@ Scheduler::Scheduler(
     config_.maxConcurrentRequests = 64;  // 从默认8增加到64，支持高并发场景
     
     modelExecutor_ = new ModelExecutor(modelPath, quantization);
-    kvCache_ = new KVCache(
-        static_cast<size_t>(Config::instance().serverKvCacheMaxSize()),
-        static_cast<size_t>(Config::instance().serverKvCacheMaxMemoryMb())
-    );
     
-    // 加载模型
+    // 加载模型（先加载才能获取 backendType）
     modelExecutor_->loadModel();
+    
+    // 🔧 优化：根据后端类型决定是否创建 KVCache
+    // llama.cpp 后端内部管理 KV Cache，不需要外部 KVCache
+    std::string backendType = modelExecutor_->getBackendType();
+    if (needsExternalKVCache(backendType)) {
+        kvCache_ = new KVCache(
+            static_cast<size_t>(Config::instance().serverKvCacheMaxSize()),
+            static_cast<size_t>(Config::instance().serverKvCacheMaxMemoryMb())
+        );
+        CLLM_INFO("[Scheduler] Created KVCache for backend: %s", backendType.c_str());
+    } else {
+        kvCache_ = nullptr;
+        CLLM_INFO("[Scheduler] KVCache not needed for backend: %s (managed internally)", 
+                  backendType.c_str());
+    }
+    
+    // 初始化混合批处理策略
+    if (Config::instance().dynamicBatchTunerEnabled()) {
+        HybridConfig hybridConfig;
+        hybridConfig.enabled = true;
+        hybridConfig.tuning.enabled = true;
+        hybridConfig.tuning.durationRequests = 100;
+        hybridConfig.tuning.minBatchSize = Config::instance().dynamicBatchTunerMinBatchSize();
+        hybridConfig.tuning.maxBatchSize = Config::instance().dynamicBatchTunerMaxBatchSize();
+        hybridConfig.tuning.initialBatchSize = Config::instance().dynamicBatchTunerInitialBatchSize();
+        hybridConfig.stable.batchSize = Config::instance().dynamicBatchTunerInitialBatchSize();
+        hybridConfig.stable.accumulationEnabled = true;
+        hybridConfig.stable.minBatchSize = 8;
+        hybridConfig.stable.maxWaitMs = 50;
+        hybridConfig.monitoring.checkIntervalRequests = 1000;
+        hybridConfig.monitoring.driftThreshold = 0.10;
+        hybridConfig.monitoring.autoRetune = true;
+        
+        hybridStrategy_ = std::make_unique<HybridBatchStrategy>(hybridConfig);
+        
+        CLLM_INFO("[Scheduler] 混合批处理策略已启用");
+    }
 }
 
 Scheduler::~Scheduler() {
     stop();
     
-    delete kvCache_;
+    // 🔧 安全删除：kvCache_ 可能为 nullptr（llama.cpp 后端不需要）
+    if (kvCache_ != nullptr) {
+        delete kvCache_;
+        kvCache_ = nullptr;
+    }
     
     // Only delete modelExecutor_ if we own it (used by tests)
     if (ownsModelExecutor_ && modelExecutor_) {
@@ -422,14 +524,25 @@ void Scheduler::processRequests() {
     }
     
     // 🔥 关键优化: 批处理累积策略
-    // 如果队列请求较少且没有运行中的请求，等待更多请求到达
-    // 这样可以形成更大的批处理，提高吞吐量
-    constexpr size_t MIN_BATCH_SIZE_FOR_ACCUMULATION = 8;
+    // 根据不同的策略决定是否使用批处理累积
+    size_t minBatchSize = 8;
+    bool useAccumulation = false;
+    
+    if (hybridStrategy_) {
+        minBatchSize = hybridStrategy_->getOptimalBatchSize();
+        // hybrid策略使用批处理累积，adaptive策略不使用
+        useAccumulation = hybridStrategy_->isStable();
+    } else if (staticBatchSize_ > 0) {
+        // static策略使用固定batch size，不使用批处理累积
+        minBatchSize = staticBatchSize_;
+        useAccumulation = false;
+    }
+    
     constexpr size_t MAX_WAIT_MS_FOR_BATCH = 50;  // 最多等待50ms
     
-    if (queueSize < MIN_BATCH_SIZE_FOR_ACCUMULATION && runningCount == 0) {
+    if (useAccumulation && queueSize < minBatchSize && runningCount == 0) {
         CLLM_DEBUG("[Scheduler::processRequests] Queue size (%zu) < %zu, waiting for more requests (max %dms)",
-                  queueSize, MIN_BATCH_SIZE_FOR_ACCUMULATION, MAX_WAIT_MS_FOR_BATCH);
+                  queueSize, minBatchSize, MAX_WAIT_MS_FOR_BATCH);
         
         // 等待更多请求到达
         std::unique_lock<std::mutex> lock(queueMutex_);
@@ -439,8 +552,8 @@ void Scheduler::processRequests() {
         queueCondition_.wait_for(
             lock,
             std::chrono::milliseconds(MAX_WAIT_MS_FOR_BATCH),
-            [this]() {
-                return requestQueue_.getQueueSize() >= MIN_BATCH_SIZE_FOR_ACCUMULATION || !running_;
+            [this, minBatchSize]() {
+                return requestQueue_.getQueueSize() >= minBatchSize || !running_;
             }
         );
         
@@ -632,8 +745,17 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
     CLLM_INFO("Starting batch processing for %zu requests (filtered from %zu total)",
               activeBatch.size(), batch.size());
     
+    auto batchStart = std::chrono::steady_clock::now();
+    
     SchedulerBatchProcessor processor(this, modelExecutor_, kvCache_, &batchManager_);
     processor.processBatch(activeBatch);
+    
+    auto batchEnd = std::chrono::steady_clock::now();
+    auto processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(batchEnd - batchStart).count();
+    
+    if (hybridStrategy_) {
+        hybridStrategy_->onBatchProcessed(activeBatch.size(), static_cast<double>(processingTime));
+    }
     
     // 🔥 优化: 检查是否有未完成的请求，将它们重新加入队列以便重组
     std::vector<RequestState> incompleteRequests;
@@ -659,17 +781,6 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
     // 🔥 优化: 立即释放已完成请求的序列ID，避免阻塞后续批处理
     for (auto& request : batch) {
         request.completionTime = getCurrentTime();
-        
-        // 🔥 关键优化: 如果请求已完成，立即释放序列ID和KV缓存
-        if (request.isCompleted || request.isFailed) {
-            if (modelExecutor_) {
-                // 立即清理KV缓存和释放序列ID，而不是等到异步清理
-                modelExecutor_->cleanupKVCache(request.requestId);
-                modelExecutor_->releaseSequenceId(request.requestId);
-                CLLM_DEBUG("[Scheduler] Immediately released seq_id and KV cache for completed request %llu", 
-                          request.requestId);
-            }
-        }
         
         CLLM_DEBUG("Request %llu generated tokens: %zu", request.requestId, request.generatedTokens.size());
         
@@ -905,6 +1016,16 @@ void Scheduler::cleanupLoop() {
         }
     }
     CLLM_INFO("[Scheduler::cleanupLoop] Cleanup thread exiting (total processed: %zu)", processedCount);
+}
+
+bool Scheduler::needsExternalKVCache(const std::string& backendType) const {
+    // llama.cpp 后端内部管理 KV Cache，不需要外部 KVCache
+    // 统计信息由 inference::KVCacheManager 管理
+    if (backendType == "llama_cpp" || backendType == "llama.cpp" || backendType == "LlamaCpp") {
+        return false;
+    }
+    // Kylin 和 LibTorch 后端可能需要外部 KVCache
+    return true;
 }
 
 }

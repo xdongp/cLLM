@@ -148,6 +148,14 @@ public:
     }
     
     /**
+     * @brief 获取后端类型
+     * @return 后端类型字符串（"llama_cpp", "kylin", "libtorch" 等）
+     */
+    const std::string& getBackendType() const {
+        return backendType_;
+    }
+    
+    /**
      * @brief 释放序列ID（Phase 2: 序列ID管理）
      * 
      * 当请求完成时，释放对应的序列ID，使其可以被新请求重用

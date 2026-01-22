@@ -221,14 +221,22 @@ bool LlamaCppBackend::initialize() {
         initializeSequenceIdPool();
         
         // 9. Phase 4: 初始化KV缓存管理器
-        // 从配置读取参数（如果配置中有），否则使用默认值
-        size_t maxItems = 4 * 1024 * 1024;  // 默认值：4M条目
-        size_t maxMemoryMb = 1024;  // 默认值：1024MB
+        // 🔧 修复：从配置文件读取 KV cache 参数
+        size_t maxItems = static_cast<size_t>(Config::instance().serverKvCacheMaxSize());
+        size_t maxMemoryMb = static_cast<size_t>(Config::instance().serverKvCacheMaxMemoryMb());
         
-        // TODO: 从配置读取 maxKVCachesItems 和 kvCacheMaxMemoryMb（如果配置中已添加）
-        // 当前先使用默认值，后续可以从 Config 读取
+        // 验证配置合理性
+        if (maxItems == 0) {
+            maxItems = 64;  // 默认值：等于 n_seq_max
+            CLLM_WARN("[LlamaCppBackend] kv_cache_max_size is 0, using default: %zu", maxItems);
+        }
+        if (maxMemoryMb == 0) {
+            maxMemoryMb = 2048;  // 默认值：2GB
+            CLLM_WARN("[LlamaCppBackend] kv_cache_max_memory_mb is 0, using default: %zu MB", maxMemoryMb);
+        }
+        
         kvCacheManager_ = std::make_unique<KVCacheManager>(maxItems, maxMemoryMb);
-        CLLM_INFO("[LlamaCppBackend] KV cache manager initialized: maxItems=%zu, maxMemoryMb=%zu", 
+        CLLM_INFO("[LlamaCppBackend] KV cache manager initialized from config: maxItems=%zu, maxMemoryMb=%zu", 
                   maxItems, maxMemoryMb);
         
         CLLM_INFO("[LlamaCppBackend] ========== Initialization Complete ==========");
@@ -513,6 +521,45 @@ Tensor LlamaCppBackend::forwardBatch(
         CLLM_DEBUG("[LlamaCppBackend::forwardBatch] Calling llama_decode with %d tokens (totalTokens=%zu)...", 
                   batch.n_tokens, totalTokens);
         
+        // Phase 4: 更新KV缓存统计信息（在推理之前更新，确保即使请求在推理前完成也能正确记录）
+        // requestPositions 对应每个请求的完整输入序列（prompt + 已生成 tokens）
+        if (kvCacheManager_) {
+            for (size_t batchIdx = 0; batchIdx < batchSize; ++batchIdx) {
+                size_t requestId = sequenceIds[batchIdx];
+                const auto& pos = requestPositions[batchIdx];
+                
+                // 计算正确的序列长度：
+                // - 新请求：使用 requestPositions 中的长度（完整序列）
+                // - 已存在请求（增量生成）：requestPositions 只包含新token，需要加上之前的长度
+                size_t sequenceLength;
+                if (isNewRequest[batchIdx]) {
+                    sequenceLength = pos.second - pos.first;
+                    CLLM_DEBUG("[LlamaCppBackend::forwardBatch] New request %zu: sequenceLength=%zu (from requestPositions)", 
+                              requestId, sequenceLength);
+                } else {
+                    // 增量生成：获取之前的序列位置
+                    int32_t seqId = cachedSeqIds[batchIdx];
+                    std::lock_guard<std::mutex> lock(sequenceIdMutex_);
+                    auto posIt = seqIdToPosition_.find(seqId);
+                    if (posIt != seqIdToPosition_.end()) {
+                        // seqIdToPosition_ 已经在 llama_decode 之前更新了
+                        // 所以 posIt->second 就是新的序列长度
+                        sequenceLength = posIt->second;
+                        CLLM_DEBUG("[LlamaCppBackend::forwardBatch] Existing request %zu: sequenceLength=%zu (from seqIdToPosition_, seqId=%d)", 
+                                  requestId, sequenceLength, seqId);
+                    } else {
+                        // 如果找不到，使用 requestPositions 中的长度（fallback）
+                        sequenceLength = pos.second - pos.first;
+                        CLLM_DEBUG("[LlamaCppBackend::forwardBatch] Existing request %zu: sequenceLength=%zu (fallback from requestPositions)", 
+                                  requestId, sequenceLength);
+                    }
+                }
+                
+                // 更新统计信息（序列长度 = token数量）
+                kvCacheManager_->updateKVCacheStats(requestId, sequenceLength);
+            }
+        }
+        
         // 推理
         int decodeResult = llama_decode(ctx_, batch);
         if (decodeResult != 0) {
@@ -533,19 +580,6 @@ Tensor LlamaCppBackend::forwardBatch(
         }
         
         CLLM_DEBUG("[LlamaCppBackend::forwardBatch] llama_decode completed successfully");
-        
-        // Phase 4: 更新KV缓存统计信息
-        // requestPositions 对应每个请求的完整输入序列（prompt + 已生成 tokens）
-        if (kvCacheManager_) {
-            for (size_t batchIdx = 0; batchIdx < batchSize; ++batchIdx) {
-                size_t requestId = sequenceIds[batchIdx];
-                const auto& pos = requestPositions[batchIdx];
-                size_t sequenceLength = pos.second - pos.first;  // 当前序列长度（tokens）
-                
-                // 更新统计信息（序列长度 = token数量）
-                kvCacheManager_->updateKVCacheStats(requestId, sequenceLength);
-            }
-        }
         
         // 提取 logits
         // llama.cpp 的 logits 按 logits[i] != 0 的顺序连续存储

@@ -236,6 +236,8 @@ add_library(cllm_core
     src/scheduler/stats.cpp
     src/scheduler/tracker.cpp
     src/scheduler/batch_processor.cpp
+    src/scheduler/dynamic_batch_tuner.cpp
+    src/scheduler/hybrid_batch_strategy.cpp
     src/tokenizer/token.cpp
     src/tokenizer/config.cpp
     src/tokenizer/request.cpp

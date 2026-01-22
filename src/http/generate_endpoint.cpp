@@ -247,12 +247,35 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
                     generatedText = "No tokens generated";
                 }
             } else {
-                CLLM_ERROR("Request timed out");
+                CLLM_ERROR("Request timed out or failed");
+                
                 nlohmann::json errorResp;
                 errorResp["success"] = false;
-                errorResp["error"] = "Request timeout";
-                errorResp["message"] = "Request timed out";
-                return ResponseBuilder::json(errorResp, 408);
+                
+                try {
+                    RequestState result = scheduler_->getRequestResult(reqId);
+                    if (result.isTimeout) {
+                        errorResp["error"] = "Request timeout";
+                        errorResp["message"] = "Request timed out";
+                        errorResp["generated_tokens"] = result.generatedTokens.size();
+                        return ResponseBuilder::json(errorResp, 408);
+                    } else if (result.isFailed) {
+                        errorResp["error"] = "Request failed";
+                        errorResp["message"] = result.errorMessage.empty() ? "Request processing failed" : result.errorMessage;
+                        errorResp["generated_tokens"] = result.generatedTokens.size();
+                        return ResponseBuilder::json(errorResp, 500);
+                    } else {
+                        errorResp["error"] = "Request timeout";
+                        errorResp["message"] = "Request timed out";
+                        errorResp["generated_tokens"] = result.generatedTokens.size();
+                        return ResponseBuilder::json(errorResp, 408);
+                    }
+                } catch (const SchedulerException& e) {
+                    CLLM_WARN("[GenerateEndpoint] Request %zu not found after waitForRequest timeout: %s", reqId, e.what());
+                    errorResp["error"] = std::string("Request not found: ") + e.what();
+                    errorResp["message"] = "Request not found in scheduler";
+                    return ResponseBuilder::json(errorResp, 408);
+                }
             }
         } catch (const SchedulerException& e) {
             if (e.getError() == SchedulerError::REQUEST_QUEUE_FULL) {

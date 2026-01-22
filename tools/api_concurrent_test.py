@@ -8,10 +8,10 @@ import json
 import time
 import sys
 
-API_URL = "http://0.0.0.0:18081"
-NUM_REQUESTS = 20
-CONCURRENCY = 5
-MAX_TOKENS = 30
+API_URL = "http://0.0.0.0:8080"
+NUM_REQUESTS = 72
+CONCURRENCY = 24
+MAX_TOKENS = 50
 
 PROMPTS = [
     "人工智能是计算机科学的一个分支，它企图了解智能的实质，并生产出一种新的能以人类智能相似的方式做出反应的智能机器。",

@@ -80,18 +80,22 @@ scheduler:
 resources:
   max_batch_size: 128      # 🔥 优化：大幅增加最大批处理大小以最大化GPU并行能力
   max_context_length: 2048
-  kv_cache_max_size: 100    # 优化：减少KV cache大小以避免内存问题
-  kv_cache_max_memory_mb: 4096  # 优化：减少KV cache内存限制
+  # 🔧 KV Cache 配置（用于 inference::KVCacheManager 统计管理）
+  # 注意：对于 llama.cpp 后端，实际 KV cache 数据由 llama.cpp 内部管理
+  # 这里的配置用于统计信息跟踪和淘汰决策
+  kv_cache_max_size: 64     # 🔧 优化：与 n_seq_max 保持一致（64个序列）
+  kv_cache_max_memory_mb: 2048  # 🔧 优化：2GB，足够支持高并发场景
   memory_limit_mb: 8192
 
-# 缓存配置
+# 缓存配置（用于非 llama.cpp 后端的 KVCache）
+# 对于 llama.cpp 后端，此配置不使用（Scheduler 不创建 KVCache）
 cache:
-  default_max_size: 200    # 优化：增加缓存大小以支持更多并发请求
-  default_max_memory_mb: 8192  # 优化：增加缓存内存限制
+  default_max_size: 64      # 🔧 优化：与 n_seq_max 保持一致
+  default_max_memory_mb: 2048  # 🔧 优化：与 kv_cache_max_memory_mb 一致
   enable_lru: true
   enable_memory_limit: true
   enable_stats: true
-  eviction_threshold: 0.9    # 优化：提高驱逐阈值以减少缓存抖动
+  eviction_threshold: 0.8    # 🔧 优化：80% 触发淘汰，避免内存溢出
   cleanup_interval: 500    # 优化：减少清理间隔以更快释放内存
 
 # LibTorch 后端配置
@@ -108,6 +112,43 @@ backend:
     n_seq_max: 64         # 基线配置：支持合理并发
     use_mmap: true        # 使用内存映射
     use_mlock: false      # 使用内存锁定
+
+# 动态批处理调谐器配置
+dynamic_batch_tuner:
+  enabled: true                     # 是否启用动态 batch size 调谐器
+  
+  # 策略选择
+  strategy: "hybrid"               # 策略: static, adaptive, hybrid
+  
+  # 搜索算法选择（adaptive 和 hybrid 策略使用）
+  search_algorithm: "adaptive_step"  # 算法: adaptive_step, exponential_binary
+  
+  # static 策略专用参数
+  fixed_batch_size: 24             # 静态算法使用的固定 batch size
+  
+  # adaptive/hybrid 策略参数
+  min_batch_size: 16               # 最小 batch size
+  max_batch_size: 48               # 最大 batch size
+  initial_batch_size: 24           # 初始 batch size
+  
+  # 时间阈值
+  time_increase_threshold: 0.30    # 处理时间增加阈值（30%，优化：放宽以允许更大的batch size）
+  time_decrease_threshold: 0.10    # 处理时间减少阈值（10%，优化：增加以更积极调整）
+  
+  # 验证和调整
+  validation_interval: 50          # 验证间隔（每 50 个 batch，优化：减少以更快验证）
+  max_consecutive_time_increases: 5  # 最大连续时间增加次数（优化：增加以允许更多探索）
+  auto_adjust_enabled: true        # 是否启用自动调整
+  
+  # 探测参数
+  probe_batch_count: 10            # 探测时运行的 batch 数量（优化：增加以提高准确性）
+  validation_batch_count: 10       # 验证时运行的 batch 数量（优化：增加以提高准确性）
+  
+  # 调整因子
+  adjustment_factor: 0.50          # 调整因子（50%，优化：增加以更快调整）
+  
+  # 探索参数
+  exploration_interval: 200        # 定期探索间隔（每 200 个 batch，优化：减少以更频繁探索）
 
 # 日志配置
 logging:

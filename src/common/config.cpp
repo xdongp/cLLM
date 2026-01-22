@@ -291,10 +291,138 @@ std::vector<int> Config::backendLibTorchSeqLenCandidates() const {
     }
     return out;
 }
-
 int Config::backendLibTorchFallbackSeqLen() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return config_["backend"]["libtorch"]["fallback_seq_len"].as<int>(8);
+}
+
+// 动态批处理调谐器配置
+bool Config::dynamicBatchTunerEnabled() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["enabled"].as<bool>(true);
+    }
+    return true;
+}
+
+std::string Config::dynamicBatchTunerStrategy() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["strategy"].as<std::string>("hybrid");
+    }
+    return "hybrid";
+}
+
+std::string Config::dynamicBatchTunerSearchAlgorithm() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["search_algorithm"].as<std::string>("adaptive_step");
+    }
+    return "adaptive_step";
+}
+
+int Config::dynamicBatchTunerFixedBatchSize() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["fixed_batch_size"].as<int>(16);
+    }
+    return 16;
+}
+
+int Config::dynamicBatchTunerMinBatchSize() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["min_batch_size"].as<int>(4);
+    }
+    return 4;
+}
+
+int Config::dynamicBatchTunerMaxBatchSize() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["max_batch_size"].as<int>(32);
+    }
+    return 32;
+}
+
+int Config::dynamicBatchTunerInitialBatchSize() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["initial_batch_size"].as<int>(8);
+    }
+    return 8;
+}
+
+float Config::dynamicBatchTunerTimeIncreaseThreshold() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["time_increase_threshold"].as<float>(0.2f);
+    }
+    return 0.2f;
+}
+
+float Config::dynamicBatchTunerTimeDecreaseThreshold() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["time_decrease_threshold"].as<float>(0.1f);
+    }
+    return 0.1f;
+}
+
+int Config::dynamicBatchTunerValidationInterval() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["validation_interval"].as<int>(10);
+    }
+    return 10;
+}
+
+int Config::dynamicBatchTunerMaxConsecutiveTimeIncreases() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["max_consecutive_time_increases"].as<int>(3);
+    }
+    return 3;
+}
+
+bool Config::dynamicBatchTunerAutoAdjustEnabled() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["auto_adjust_enabled"].as<bool>(true);
+    }
+    return true;
+}
+
+int Config::dynamicBatchTunerProbeBatchCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["probe_batch_count"].as<int>(3);
+    }
+    return 3;
+}
+
+int Config::dynamicBatchTunerValidationBatchCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["validation_batch_count"].as<int>(5);
+    }
+    return 5;
+}
+
+float Config::dynamicBatchTunerAdjustmentFactor() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["adjustment_factor"].as<float>(0.5f);
+    }
+    return 0.5f;
+}
+
+int Config::dynamicBatchTunerExplorationInterval() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_ && config_["dynamic_batch_tuner"]) {
+        return config_["dynamic_batch_tuner"]["exploration_interval"].as<int>(50);
+    }
+    return 50;
 }
 
 // llama.cpp 后端配置
