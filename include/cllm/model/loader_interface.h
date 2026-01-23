@@ -8,8 +8,8 @@
 #define CLLM_MODEL_LOADER_INTERFACE_H
 
 #include "cllm/model/config.h"
-#include "cllm/kylin/tensor.h"
-#include "cllm/kylin/model_loader.h"
+#include "cllm/kylin/core/tensor.h"
+#include "cllm/kylin/model/model_loader.h"
 #include "cllm/model/weight_data.h"
 #include <string>
 #include <vector>

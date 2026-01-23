@@ -12,8 +12,6 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
-#include <vector>
-#include <algorithm>
 
 namespace cllm {
 
@@ -151,14 +149,10 @@ private:
      */
     size_t calculateOptimalBatchSize(const std::vector<RequestState>& requests);
     
-    mutable std::vector<RequestState> queue_;  ///< 无锁队列（使用vector存储）
-    mutable std::mutex queueMutex_;            ///< 队列互斥锁（用于排序和批量操作）
-    std::condition_variable condition_;        ///< 条件变量
-    mutable std::atomic<bool> queueDirty_;     ///< 队列是否需要重新排序
-    std::atomic<size_t> cachedQueueSize_;     ///< 缓存的队列大小
-    
+    mutable std::priority_queue<RequestState, std::vector<RequestState>, RequestComparator> queue_;  ///< 优先级队列
     std::vector<RequestState> runningRequests_;     ///< 运行中的请求列表
-    mutable std::mutex runningMutex_;                ///< 运行请求互斥锁
+    mutable std::mutex queueMutex_;                 ///< 队列互斥锁
+    std::condition_variable condition_;             ///< 条件变量
     
     size_t maxQueueSize_;                           ///< 最大队列大小
     size_t maxContextLength_;                       ///< 最大上下文长度

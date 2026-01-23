@@ -17,7 +17,7 @@
 #include <cstring>
 #include <vector>
 #include <iomanip>
-#include "cllm/kylin/quantization.h"
+#include "cllm/kylin/core/quantization.h"
 
 using namespace cllm::kylin::quantization;
 

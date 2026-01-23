@@ -218,14 +218,31 @@ add_library(cllm_core
     src/model/weight_data.cpp
     src/model/gguf_loader_new.cpp
     src/model/gguf_dequantization.cpp
-    src/kylin/kernels.cpp
-    src/kylin/quantization.cpp
-    src/kylin/rope.cpp
-    src/kylin/attention.cpp
-    src/kylin/feed_forward.cpp
-    src/kylin/transformer_block.cpp
-    src/kylin/transformer_model.cpp
-    src/kylin/model_loader.cpp
+    # Kylin 模块 - 核心
+    src/kylin/core/kernels.cpp
+    src/kylin/core/quantization.cpp
+    src/kylin/core/tensor_stats.cpp
+    # Kylin 模块 - 算子
+    src/kylin/ops/rope.cpp
+    src/kylin/ops/attention.cpp
+    src/kylin/ops/attention_graph.cpp
+    src/kylin/ops/feed_forward.cpp
+    src/kylin/ops/kv_cache_ops.cpp
+    # Kylin 模块 - HuggingFace 后端 (主要)
+    src/kylin/hf/config.cpp
+    src/kylin/hf/safetensors_loader.cpp
+    src/kylin/hf/transformer.cpp
+    # Kylin 模块 - GGUF 后端 (保留)
+    src/kylin/gguf/loader.cpp
+    src/kylin/gguf/context.cpp
+    src/kylin/gguf/transformer.cpp
+    src/kylin/gguf/operator_interface.cpp
+    src/kylin/gguf/native_operator.cpp
+    src/kylin/gguf/ggml_operator.cpp
+    # Kylin 模块 - 模型抽象
+    src/kylin/model/transformer_block.cpp
+    src/kylin/model/transformer_model.cpp
+    src/kylin/model/model_loader.cpp
     src/inference/inference_engine.cpp
     src/inference/backend_factory.cpp
     src/inference/kylin_backend.cpp
@@ -236,8 +253,6 @@ add_library(cllm_core
     src/scheduler/stats.cpp
     src/scheduler/tracker.cpp
     src/scheduler/batch_processor.cpp
-    src/scheduler/dynamic_batch_tuner.cpp
-    src/scheduler/hybrid_batch_strategy.cpp
     src/tokenizer/token.cpp
     src/tokenizer/config.cpp
     src/tokenizer/request.cpp
@@ -577,4 +592,104 @@ if(LLAMA_CPP_FOUND)
     target_compile_definitions(incremental_benchmark PRIVATE CLLM_USE_LLAMA_CPP)
 endif()
 
+# 添加 Kylin 分阶段测试程序
+add_executable(kylin_stage_test ${CMAKE_SOURCE_DIR}/tools/kylin_stage_test.cpp)
+target_link_libraries(kylin_stage_test
+    cllm_core
+    Threads::Threads
+    spdlog::spdlog
+)
+if(LLAMA_CPP_FOUND)
+    target_compile_definitions(kylin_stage_test PRIVATE CLLM_USE_LLAMA_CPP)
+endif()
+
+# 添加批量vs增量调试程序
+add_executable(debug_batch_incr ${CMAKE_SOURCE_DIR}/tools/debug_batch_incr.cpp)
+target_link_libraries(debug_batch_incr
+    cllm_core
+    Threads::Threads
+    spdlog::spdlog
+)
+
+# 添加 tokenizer 调试程序
+add_executable(debug_tokenizer ${CMAKE_SOURCE_DIR}/tools/debug_tokenizer.cpp)
+target_link_libraries(debug_tokenizer
+    cllm_core
+    Threads::Threads
+    spdlog::spdlog
+)
+
+# 添加 embedding 调试程序
+add_executable(debug_embedding ${CMAKE_SOURCE_DIR}/tools/debug_embedding.cpp)
+target_link_libraries(debug_embedding
+    cllm_core
+    Threads::Threads
+    spdlog::spdlog
+)
+
+# 添加 llama.cpp 直接调试程序
+add_executable(debug_llamacpp ${CMAKE_SOURCE_DIR}/tools/debug_llamacpp.cpp)
+target_include_directories(debug_llamacpp PRIVATE ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/include)
+target_link_directories(debug_llamacpp PRIVATE ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/build/bin)
+target_link_libraries(debug_llamacpp
+    llama
+    ggml
+    ggml-cpu
+    Threads::Threads
+)
+
+# 添加 Kylin 逐层调试工具
+add_executable(debug_kylin_layers ${CMAKE_SOURCE_DIR}/tools/debug_kylin_layers.cpp)
+target_include_directories(debug_kylin_layers PRIVATE ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/include)
+target_link_directories(debug_kylin_layers PRIVATE ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/build/bin)
+target_link_libraries(debug_kylin_layers
+    cllm_core
+    llama
+    ggml
+    ggml-cpu
+    Threads::Threads
+    spdlog::spdlog
+)
+
+# 添加 Kylin vs llama.cpp 比较工具
+add_executable(debug_kylin_vs_llamacpp ${CMAKE_SOURCE_DIR}/tools/debug_kylin_vs_llamacpp.cpp)
+target_include_directories(debug_kylin_vs_llamacpp PRIVATE ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/include)
+target_link_directories(debug_kylin_vs_llamacpp PRIVATE ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/build/bin)
+target_link_libraries(debug_kylin_vs_llamacpp
+    cllm_core
+    llama
+    ggml
+    ggml-cpu
+    Threads::Threads
+    spdlog::spdlog
+)
+
+# 添加 embedding lookup 调试工具
+add_executable(debug_embedding_lookup ${CMAKE_SOURCE_DIR}/tools/debug_embedding_lookup.cpp)
+target_link_libraries(debug_embedding_lookup
+    cllm_core
+    Threads::Threads
+    spdlog::spdlog
+)
+
+# 添加 embedding 比较工具
+add_executable(compare_embedding ${CMAKE_SOURCE_DIR}/tools/compare_embedding.cpp)
+target_include_directories(compare_embedding PRIVATE ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/include)
+target_link_directories(compare_embedding PRIVATE ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/build/bin)
+target_link_libraries(compare_embedding
+    cllm_core
+    llama
+    ggml
+    ggml-cpu
+    Threads::Threads
+    spdlog::spdlog
+)
+
+# 添加 HuggingFace Transformer 测试工具
+add_executable(test_hf_transformer ${CMAKE_SOURCE_DIR}/tools/test_hf_transformer.cpp)
+target_link_libraries(test_hf_transformer
+    cllm_core
+    Threads::Threads
+    spdlog::spdlog
+)
 

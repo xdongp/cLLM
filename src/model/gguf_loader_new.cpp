@@ -1,6 +1,6 @@
 #include "cllm/model/gguf_loader_new.h"
 #include "cllm/model/gguf_dequantization.h"
-#include "cllm/kylin/quantization.h"
+#include "cllm/kylin/core/quantization.h"
 #include <fstream>
 #include <sstream>
 #include <cstring>

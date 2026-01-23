@@ -1,7 +1,7 @@
 #include "cllm/model/executor.h"
 #include "cllm/tokenizer/tokenizer.h"
 #include "cllm/sampler.h"
-#include "cllm/kylin/kernels.h"
+#include "cllm/kylin/core/kernels.h"
 #include "cllm/memory/float_array.h"
 #include <iostream>
 #include <chrono>

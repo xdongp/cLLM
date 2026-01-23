@@ -31,8 +31,8 @@
 
 namespace cllm {
 
-class DynamicBatchTuner;
-class HybridBatchStrategy;
+// class DynamicBatchTuner;  // TODO: implement this class
+// class HybridBatchStrategy;  // TODO: implement this class
 
 /**
  * @brief 调度器错误类型枚举
@@ -255,17 +255,10 @@ private:
     void checkKVCachEviction();  ///< Phase 5: 检查KV缓存淘汰
     size_t getCurrentTime();  ///< 获取当前时间（毫秒）
     
-    /**
-     * @brief 判断后端是否需要外部 KVCache
-     * @param backendType 后端类型
-     * @return true 如果需要外部 KVCache，false 否则（如 llama.cpp 后端内部管理）
-     */
-    bool needsExternalKVCache(const std::string& backendType) const;
-    
     RequestQueue requestQueue_;        ///< 请求队列
     BatchManager batchManager_;        ///< 批处理管理器
     ModelExecutor* modelExecutor_;  ///< 模型执行器
-    KVCache* kvCache_ = nullptr;    ///< KV缓存（llama.cpp 后端为 nullptr）
+    KVCache* kvCache_;              ///< KV缓存
     bool ownsModelExecutor_;        ///< 是否拥有模型执行器所有权
     RequestTracker requestTracker_;    ///< 请求跟踪器
     
@@ -305,8 +298,7 @@ private:
     void cleanupLoop();                 ///< 清理线程循环
     void cleanupRequestAsync(size_t requestId);  ///< 异步清理请求资源
     
-    std::unique_ptr<HybridBatchStrategy> hybridStrategy_;  ///< 混合批处理策略
-    size_t staticBatchSize_;  ///< 静态批处理策略的固定 batch size
+    // std::unique_ptr<DynamicBatchTuner> batchTuner_;  ///< 动态批处理调谐器 (TODO: implement this class)
 };
 
 }

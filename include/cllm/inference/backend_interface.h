@@ -6,7 +6,7 @@
  */
 #pragma once
 
-#include "cllm/kylin/tensor.h"
+#include "cllm/kylin/core/tensor.h"
 #include "cllm/model/config.h"
 
 #include <string>

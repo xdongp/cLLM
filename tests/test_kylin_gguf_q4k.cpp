@@ -12,7 +12,7 @@
 #include <gtest/gtest.h>
 #include "cllm/inference/kylin_backend.h"
 #include "cllm/model/config.h"
-#include "cllm/kylin/tensor.h"
+#include "cllm/kylin/core/tensor.h"
 #include "cllm/common/logger.h"
 
 #include <filesystem>

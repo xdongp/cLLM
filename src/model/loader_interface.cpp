@@ -7,7 +7,7 @@
 #include "cllm/model/loader_interface.h"
 #include "cllm/common/logger.h"
 #include "cllm/model/gguf_loader_new.h"
-#include "cllm/kylin/model_loader.h"
+#include "cllm/kylin/model/model_loader.h"
 #include <filesystem>
 #include <stdexcept>
 #include <algorithm>

@@ -136,14 +136,17 @@ TokenizerManager::TokenizerManager(
             
         case TokenizerImpl::AUTO:
         default:
-            // ✅ 自动检测: 优先检测 GGUF 格式（关键修复）
-            if (isGgufFile(modelPath)) {
-                CLLM_INFO("✅ Detected GGUF format, using GGUFTokenizer");
-                tokenizer_ = new GGUFTokenizer();
-                
-            } else if (hasTokenizerJson(modelPath)) {
+            // ✅ 自动检测: 优先检测 HuggingFace tokenizer.json
+            // 重要：对于 HuggingFace 模型目录（包含 tokenizer.json），应该优先使用 HFTokenizer
+            // 即使目录中存在 .gguf 文件，也应该使用 tokenizer.json
+            if (hasTokenizerJson(modelPath)) {
                 CLLM_INFO("✅ Detected HuggingFace format (tokenizer.json), using HFTokenizer");
                 tokenizer_ = new HFTokenizer(modelType);
+                
+            } else if (isGgufFile(modelPath)) {
+                // 只有在没有 tokenizer.json 的情况下才使用 GGUFTokenizer
+                CLLM_INFO("✅ Detected GGUF format, using GGUFTokenizer");
+                tokenizer_ = new GGUFTokenizer();
                 
             } else if (hasTokenizerModel(modelPath)) {
                 CLLM_INFO("✅ Detected SentencePiece format (tokenizer.model), using NativeTokenizer");
@@ -188,8 +191,11 @@ std::vector<int> TokenizerManager::encode(const std::string& text) {
     auto endTime = std::chrono::high_resolution_clock::now();
     float duration = std::chrono::duration<float>(endTime - startTime).count();
     
-    stats_.incrementEncodeCount();
-    stats_.addEncodeTime(duration);
+    {
+        std::lock_guard<std::mutex> lock(statsMutex_);
+        stats_.incrementEncodeCount();
+        stats_.addEncodeTime(duration);
+    }
     
     return tokenIds;
 }
@@ -202,8 +208,11 @@ std::string TokenizerManager::decode(const std::vector<int>& tokenIds) {
     auto endTime = std::chrono::high_resolution_clock::now();
     float duration = std::chrono::duration<float>(endTime - startTime).count();
     
-    stats_.incrementDecodeCount();
-    stats_.addDecodeTime(duration);
+    {
+        std::lock_guard<std::mutex> lock(statsMutex_);
+        stats_.incrementDecodeCount();
+        stats_.addDecodeTime(duration);
+    }
     
     return text;
 }

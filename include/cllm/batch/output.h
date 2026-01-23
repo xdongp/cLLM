@@ -10,7 +10,7 @@
 
 #include "cllm/memory/float_array.h"
 #include "cllm/common/logger.h"
-#include "cllm/kylin/tensor.h"
+#include "cllm/kylin/core/tensor.h"
 #include <vector>
 #include <utility>
 #include <cstddef>

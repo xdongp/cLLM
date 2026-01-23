@@ -11,11 +11,11 @@ server:
 
 # 模型配置
 model:
-  path: "/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/qwen3-0.6b-q4_k_m.gguf"   # 模型目录或模型文件路径 (q4_k_m 量化)
+  path: "/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/Qwen3-0.6B"   # HuggingFace 模型目录（safetensors 格式）
   vocab_size: 151936       # 词表大小（可被后端自动探测覆盖）
   max_context_length: 2048 # 最大上下文长度
   default_max_tokens: 100  # 默认最大生成 token 数 - 修复：与API默认值一致，避免覆盖用户请求的max_tokens
-  quantization: "q4_k_m"   # 量化类型: fp16, int8, int4, q4_k_m
+  quantization: "bf16"     # 量化类型: fp16, int8, int4, q4_k_m, bf16
 
 # HTTP 配置
 http:
@@ -98,11 +98,31 @@ cache:
   eviction_threshold: 0.8    # 🔧 优化：80% 触发淘汰，避免内存溢出
   cleanup_interval: 500    # 优化：减少清理间隔以更快释放内存
 
-# LibTorch 后端配置
+# 后端配置
 backend:
+  type: "kylin"  # 使用 Kylin 后端（支持 HuggingFace safetensors）
+                 # - "" (空): 自动选择（根据模型文件类型）
+                 # - "kylin": 使用 Kylin 后端（支持 .bin、.gguf 和 HF 目录）
+                 # - "llama_cpp": 使用 llama.cpp 后端（需要 .gguf 模型文件）
+                 # - "libtorch": 使用 LibTorch 后端（需要 .pt 模型文件）
+  
   libtorch:
     seq_len_candidates: [8, 16, 32, 64, 128, 256]
     fallback_seq_len: 8
+  
+  # Kylin 后端配置
+  kylin:
+    operator_backend: "ggml"  # 算子后端: auto, native, ggml
+                              # - auto: 自动选择（优先GGML，不可用时回退Native）
+                              # - native: 使用自研C++算子（学习/调试）
+                              # - ggml: 使用GGML高性能算子（生产环境）
+                              # 已设置为 ggml 以提高性能
+    
+    device_backend: "cpu"   # 设备后端: cpu, metal, cuda, auto
+                              # - cpu: 使用 CPU 计算
+                              # - metal: 使用 Apple GPU（Metal）加速
+                              # - cuda: 使用 NVIDIA GPU（CUDA）加速
+                              # - auto: 自动检测并选择最优设备
   
   # llama.cpp 后端配置
   llama_cpp:

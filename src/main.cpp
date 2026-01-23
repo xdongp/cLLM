@@ -356,7 +356,20 @@ int main(int argc, char* argv[]) {
             if (isDir) {
                 fs::path dir(modelPath);
 
-                if (!useLibTorch) {
+                // 检测是否为 HuggingFace 模型目录（优先级最高）
+                // HuggingFace 目录包含 config.json 和 model.safetensors
+                bool isHFModelDir = false;
+                if (backendType == "kylin" || backendType == "Kylin") {
+                    fs::path configJson = dir / "config.json";
+                    fs::path safetensors = dir / "model.safetensors";
+                    if (fs::exists(configJson) && fs::exists(safetensors)) {
+                        isHFModelDir = true;
+                        backendModelPath = dir.string();  // 使用目录路径
+                        CLLM_INFO("Detected HuggingFace model directory: %s", backendModelPath.c_str());
+                    }
+                }
+
+                if (!useLibTorch && !isHFModelDir) {
                     auto ggufs = listFilesWithExt(dir, ".gguf");
                     if (ggufs.size() == 1) {
                         backendModelPath = ggufs.front().string();
@@ -389,9 +402,9 @@ int main(int argc, char* argv[]) {
                         throw std::runtime_error(msg);
                     }
                 } else if (!backendModelPath.empty()) {
-                    // 已选择 .gguf
-                } else {
-                    // Kylin 需要 .bin
+                    // 已选择 .gguf 或 HuggingFace 目录
+                } else if (!isHFModelDir) {
+                    // Kylin 需要 .bin（仅在非 HF 模型目录时检测）
                     auto bins = listFilesWithExt(dir, ".bin");
                     if (bins.empty()) {
                         throw std::runtime_error("Kylin backend requires .bin model file. No .bin found in: " + dir.string());
@@ -456,7 +469,6 @@ int main(int argc, char* argv[]) {
         initialConfig.llamaGpuLayers = cllm::Config::instance().backendLlamaCppGpuLayers();
         initialConfig.llamaUseMmap = cllm::Config::instance().backendLlamaCppUseMmap();
         initialConfig.llamaUseMlock = cllm::Config::instance().backendLlamaCppUseMlock();
-        initialConfig.llamaNCb = cllm::Config::instance().backendLlamaCppNCb();
 
         g_modelExecutor = std::make_unique<cllm::ModelExecutor>(
             backendModelPath,

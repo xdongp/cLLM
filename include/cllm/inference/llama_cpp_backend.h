@@ -8,7 +8,7 @@
 
 #include "cllm/inference/backend_interface.h"
 #include "cllm/inference/kv_cache_manager.h"
-#include "cllm/kylin/tensor.h"
+#include "cllm/kylin/core/tensor.h"
 #include "cllm/model/config.h"
 #include "cllm/tokenizer/gguf_tokenizer.h"
 

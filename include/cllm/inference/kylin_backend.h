@@ -13,9 +13,12 @@
 #pragma once
 
 #include "cllm/inference/backend_interface.h"
-#include "cllm/kylin/transformer_model.h"
+#include "cllm/kylin/model/transformer_model.h"
+#include "cllm/kylin/gguf/transformer.h"  // GGML 原生实现
+#include "cllm/kylin/hf/transformer.h"    // HuggingFace safetensors 支持
+#include "cllm/kylin/gguf/operator_interface.h"
 #include "cllm/model/loader_interface.h"
-#include "cllm/kylin/tensor.h"
+#include "cllm/kylin/core/tensor.h"
 #include "cllm/model/config.h"
 
 #include <memory>
@@ -40,11 +43,17 @@ public:
      * @brief 构造函数
      * 
      * @param config 模型配置
-     * @param modelPath 模型权重路径（扁平 .bin 格式）
+     * @param modelPath 模型权重路径
+     *                  - .gguf: 使用 GGMLTransformerModel（直接 GGML 推理）
+     *                  - .bin: 使用 TransformerModel（Native/GGML 算子）
      *                  - 如果为空：使用占位权重（测试模式）
-     *                  - 如果非空：使用 ModelLoader 加载真实权重
+     * @param operatorBackend 算子后端类型（默认 Auto，自动选择最优后端）
      */
-    explicit KylinBackend(const ModelConfig &config, const std::string &modelPath = std::string());
+    explicit KylinBackend(
+        const ModelConfig &config, 
+        const std::string &modelPath = std::string(),
+        kylin::OperatorBackend operatorBackend = kylin::OperatorBackend::Auto
+    );
 
     /**
      * @brief 析构函数
@@ -117,6 +126,24 @@ public:
      * @return true 成功，false 失败
      */
     bool loadFromModelWeights(const model::ModelWeights &weights);
+    
+    /**
+     * @brief 获取当前使用的算子后端类型
+     * @return 算子后端类型
+     */
+    kylin::OperatorBackend getOperatorBackend() const;
+    
+    /**
+     * @brief 获取算子后端名称
+     * @return 算子后端名称（"Native" 或 "GGML"）
+     */
+    std::string getOperatorBackendName() const;
+    
+    /**
+     * @brief 获取算子接口（供高级用户使用）
+     * @return 算子接口指针
+     */
+    kylin::IOperator* getOperator() { return op_.get(); }
 
 private:
     // ========== 配置和状态 ==========
@@ -140,6 +167,15 @@ private:
     
     /// 模型加载器（仅在有真实权重时创建）
     std::unique_ptr<IModelLoader> loader_;
+    
+    /// 算子接口（Native 或 GGML）
+    std::unique_ptr<kylin::IOperator> op_;
+    
+    /// 算子后端类型（用于日志和调试）
+    kylin::OperatorBackend operatorBackendType_;
+    
+    /// 设备后端类型（CPU/Metal/CUDA）
+    kylin::BackendType deviceBackendType_;
 
     // ========== 权重存储 ==========
     
@@ -171,6 +207,27 @@ private:
     std::vector<kylin::Tensor> attnQNorm_; // [headDim] 或 [hiddenSize]，取决于模型
     std::vector<kylin::Tensor> attnKNorm_; // [headDim] 或 [hiddenSize]，取决于模型
 
+    // ========== GGML 直接推理支持（GGUF 模型）==========
+    
+    /// 是否使用 GGML 直接推理（.gguf 文件）
+    bool useGGMLDirect_;
+    
+    /// GGML Transformer 模型（用于 GGUF 文件）
+    std::unique_ptr<kylin::GGMLTransformerModel> ggmlModel_;
+    
+    /// 当前活跃的序列ID（用于 KV cache 管理）
+    /// 由于 GGMLTransformerModel 只有一个全局 KV cache，不支持多序列并发
+    /// 当 sequenceId 变化时需要清除 KV cache
+    size_t currentSequenceId_ = SIZE_MAX;
+    
+    // ========== HuggingFace safetensors 支持 ==========
+    
+    /// 是否使用 HuggingFace 模型（safetensors 格式）
+    bool useHFModel_;
+    
+    /// HuggingFace Transformer 模型（用于 safetensors 文件）
+    std::unique_ptr<kylin::HFTransformerModel> hfModel_;
+    
     // ========== 内部方法 ==========
     
     /**
@@ -204,6 +261,18 @@ private:
      * @brief 绑定权重到 TransformerModel
      */
     void bindWeightsToModel();
+    
+    /**
+     * @brief 初始化 GGML 直接推理模式（用于 GGUF 文件）
+     * @return true 成功，false 失败
+     */
+    bool initializeGGMLDirect();
+    
+    /**
+     * @brief 初始化 HuggingFace 模型（用于 safetensors 目录）
+     * @return true 成功，false 失败
+     */
+    bool initializeHFModel();
 };
 
 } // namespace inference

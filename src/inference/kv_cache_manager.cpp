@@ -93,17 +93,8 @@ bool KVCacheManager::removeKVCache(llama_context* ctx, size_t requestId, int32_t
     
     auto it = statsMap_.find(requestId);
     if (it == statsMap_.end()) {
-        CLLM_DEBUG("[KVCacheManager] Request %zu not found in stats map (may have failed before stats update)", requestId);
-        
-        if (ctx && seqId >= 0) {
-            llama_memory_t mem = llama_get_memory(ctx);
-            if (mem) {
-                llama_memory_seq_rm(mem, static_cast<llama_seq_id>(seqId), -1, -1);
-                CLLM_DEBUG("[KVCacheManager] Cleaned llama.cpp KV cache for requestId=%zu (no stats), seqId=%d", requestId, seqId);
-            }
-        }
-        
-        return true;
+        CLLM_WARN("[KVCacheManager] Request %zu not found in stats map", requestId);
+        return false;
     }
     
     const KVCacheStats& stats = it->second;

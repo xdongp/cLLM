@@ -98,10 +98,8 @@ class UnifiedBenchmarkTester:
                     generated_text = data.get("text", "")
                     tokens_per_second = data.get("tokens_per_second", 0)
                     
-                    # 优先使用服务器返回的 generated_tokens 字段
-                    if "generated_tokens" in data:
-                        generated_tokens = data["generated_tokens"]
-                    elif tokens_per_second > 0:
+                    # 估算生成的tokens
+                    if tokens_per_second > 0:
                         generated_tokens = int(tokens_per_second * response_time)
                     elif any(ord(c) > 127 for c in generated_text):
                         generated_tokens = len(generated_text)

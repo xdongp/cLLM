@@ -7,7 +7,7 @@
 #pragma once
 
 #include "cllm/inference/backend_interface.h"
-#include "cllm/kylin/tensor.h"
+#include "cllm/kylin/core/tensor.h"
 #include "cllm/model/config.h"
 #include "cllm/model/weight_data.h"
 

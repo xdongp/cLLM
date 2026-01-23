@@ -48,7 +48,6 @@ struct ModelConfig {
     int llamaGpuLayers;          ///< llama.cpp n_gpu_layers
     bool llamaUseMmap;           ///< llama.cpp use_mmap
     bool llamaUseMlock;          ///< llama.cpp use_mlock
-    int llamaNCb;                ///< llama.cpp n_cb (Metal command buffer concurrency)
     
     /**
      * @brief 默认构造函数
@@ -77,8 +76,7 @@ struct ModelConfig {
         , llamaNumThreads(0)
         , llamaGpuLayers(0)
         , llamaUseMmap(true)
-        , llamaUseMlock(false)
-        , llamaNCb(1) {}
+        , llamaUseMlock(false) {}
     
     /**
      * @brief 从配置文件加载

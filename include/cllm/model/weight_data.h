@@ -11,7 +11,7 @@
 #ifndef CLLM_MODEL_WEIGHT_DATA_H
 #define CLLM_MODEL_WEIGHT_DATA_H
 
-#include "cllm/kylin/model_loader.h"  // 用于 WeightDType
+#include "cllm/kylin/model/model_loader.h"  // 用于 WeightDType
 #include <string>
 #include <vector>
 #include <map>

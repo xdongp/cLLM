@@ -1,7 +1,6 @@
 #include "cllm/common/logger.h"
 #include <memory>
 #include <vector>
-#include <filesystem>
 
 namespace cllm {
 
@@ -44,13 +43,6 @@ void Logger::setLevel(spdlog::level::level_enum level) {
 }
 
 void Logger::addFileSink(const std::string& filename) {
-    // 创建日志目录（如果不存在）
-    size_t lastSlash = filename.find_last_of('/');
-    if (lastSlash != std::string::npos) {
-        std::string directory = filename.substr(0, lastSlash);
-        std::filesystem::create_directories(directory);
-    }
-    
     auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(filename);
     file_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
     logger_->sinks().push_back(file_sink);

@@ -45,8 +45,8 @@ GenerateEndpoint::GenerateRequest GenerateEndpoint::parseRequest(const HttpReque
     JsonRequestParser::getFieldWithDefault(jsonBody, "top_p", req.topP, cllm::Config::instance().apiDefaultTopP());
     JsonRequestParser::getFieldWithDefault(jsonBody, "stream", req.stream, false);
     
-    // 调试日志：记录解析到的参数
-    CLLM_DEBUG("Parsed request - prompt: '%s', max_tokens: %d, temperature: %f, top_p: %f", 
+    // 调试：打印解析后的参数
+    CLLM_INFO("[GenerateEndpoint] Parsed request: prompt='%s', max_tokens=%d, temperature=%.4f, top_p=%.4f",
               req.prompt.c_str(), req.maxTokens, req.temperature, req.topP);
     
     return req;
@@ -247,35 +247,12 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
                     generatedText = "No tokens generated";
                 }
             } else {
-                CLLM_ERROR("Request timed out or failed");
-                
+                CLLM_ERROR("Request timed out");
                 nlohmann::json errorResp;
                 errorResp["success"] = false;
-                
-                try {
-                    RequestState result = scheduler_->getRequestResult(reqId);
-                    if (result.isTimeout) {
-                        errorResp["error"] = "Request timeout";
-                        errorResp["message"] = "Request timed out";
-                        errorResp["generated_tokens"] = result.generatedTokens.size();
-                        return ResponseBuilder::json(errorResp, 408);
-                    } else if (result.isFailed) {
-                        errorResp["error"] = "Request failed";
-                        errorResp["message"] = result.errorMessage.empty() ? "Request processing failed" : result.errorMessage;
-                        errorResp["generated_tokens"] = result.generatedTokens.size();
-                        return ResponseBuilder::json(errorResp, 500);
-                    } else {
-                        errorResp["error"] = "Request timeout";
-                        errorResp["message"] = "Request timed out";
-                        errorResp["generated_tokens"] = result.generatedTokens.size();
-                        return ResponseBuilder::json(errorResp, 408);
-                    }
-                } catch (const SchedulerException& e) {
-                    CLLM_WARN("[GenerateEndpoint] Request %zu not found after waitForRequest timeout: %s", reqId, e.what());
-                    errorResp["error"] = std::string("Request not found: ") + e.what();
-                    errorResp["message"] = "Request not found in scheduler";
-                    return ResponseBuilder::json(errorResp, 408);
-                }
+                errorResp["error"] = "Request timeout";
+                errorResp["message"] = "Request timed out";
+                return ResponseBuilder::json(errorResp, 408);
             }
         } catch (const SchedulerException& e) {
             if (e.getError() == SchedulerError::REQUEST_QUEUE_FULL) {
@@ -317,7 +294,6 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
     resp["text"] = generatedText;
     resp["response_time"] = responseTime;
     resp["tokens_per_second"] = tokensPerSecond;
-    resp["generated_tokens"] = generatedTokenCount;
 
     return ResponseBuilder::success(resp);
 }

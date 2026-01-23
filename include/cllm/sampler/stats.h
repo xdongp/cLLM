@@ -143,6 +143,8 @@ private:
     long long topPSamples_{0};        ///< Top-P采样次数
     long long temperatureSamples_{0}; ///< 温度采样次数
     
+    mutable std::mutex mutex_;        ///< 互斥锁，用于线程安全
+    
     /**
      * @brief 计算百分比
      * @param count 特定类型的计数

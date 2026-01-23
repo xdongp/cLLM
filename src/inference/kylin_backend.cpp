@@ -6,9 +6,11 @@
 #include "cllm/inference/kylin_backend.h"
 #include "cllm/model/loader_interface.h"
 #include "cllm/common/logger.h"
+#include "cllm/common/config.h"
 
 #include <stdexcept>
 #include <cmath>
+#include <filesystem>
 
 namespace cllm {
 namespace inference {
@@ -55,25 +57,96 @@ inline void small_value_init(kylin::Tensor &tensor, float scale = 0.1f) {
 
 } // namespace
 
-KylinBackend::KylinBackend(const ModelConfig &config, const std::string &modelPath)
+KylinBackend::KylinBackend(
+    const ModelConfig &config, 
+    const std::string &modelPath,
+    kylin::OperatorBackend operatorBackend
+)
     : externalConfig_(config)
     , internalConfig_(config)
     , initialized_(false)
     , modelPath_(modelPath)
-    , model_(config) {
+    , model_(config)
+    , operatorBackendType_(operatorBackend)
+    , deviceBackendType_(kylin::BackendType::CPU)
+    , useGGMLDirect_(false)
+    , ggmlModel_(nullptr)
+    , useHFModel_(false)
+    , hfModel_(nullptr) {
     
     CLLM_INFO("[KylinBackend] Initializing Kylin (麒麟) inference backend");
     
+    // 检测模型格式
     if (!modelPath_.empty()) {
-        // 真实权重模式 - 使用 ModelLoaderFactory 自动检测格式
-        CLLM_INFO("[KylinBackend] Will load real weights from: %s", modelPath_.c_str());
-        try {
-            loader_ = ModelLoaderFactory::createLoader(modelPath_, externalConfig_);
-            CLLM_INFO("[KylinBackend] Created loader for format: %s", 
-                     ModelLoaderFactory::formatToString(ModelLoaderFactory::detectFormat(modelPath_)).c_str());
-        } catch (const std::exception& e) {
-            CLLM_ERROR("[KylinBackend] Failed to create model loader: %s", e.what());
-            throw;
+        std::filesystem::path path(modelPath_);
+        
+        // 检测是否为 HuggingFace 模型目录（包含 config.json 和 *.safetensors）
+        if (std::filesystem::is_directory(path)) {
+            std::filesystem::path configJson = path / "config.json";
+            std::filesystem::path safetensors = path / "model.safetensors";
+            
+            if (std::filesystem::exists(configJson) && std::filesystem::exists(safetensors)) {
+                useHFModel_ = true;
+                CLLM_INFO("[KylinBackend] Detected HuggingFace model directory, will use HFTransformerModel");
+            } else {
+                CLLM_INFO("[KylinBackend] Directory does not contain HuggingFace model files");
+            }
+        }
+        // 检测是否为 GGUF 格式
+        else if (path.extension() == ".gguf") {
+            useGGMLDirect_ = true;
+            CLLM_INFO("[KylinBackend] Detected GGUF format, will use GGMLTransformerModel (direct GGML inference)");
+        } else {
+            CLLM_INFO("[KylinBackend] Will use TransformerModel with operator backend");
+        }
+    }
+    
+    // 读取设备后端配置
+    std::string deviceBackendStr = Config::instance().backendKylinDeviceBackend();
+    deviceBackendType_ = kylin::BackendType::CPU;
+    
+    if (deviceBackendStr == "metal" || deviceBackendStr == "Metal") {
+        deviceBackendType_ = kylin::BackendType::Metal;
+        CLLM_INFO("[KylinBackend] Using Metal (Apple GPU) device backend");
+    } else if (deviceBackendStr == "cuda" || deviceBackendStr == "CUDA") {
+        deviceBackendType_ = kylin::BackendType::CUDA;
+        CLLM_INFO("[KylinBackend] Using CUDA (NVIDIA GPU) device backend");
+    } else if (deviceBackendStr == "auto" || deviceBackendStr == "Auto") {
+        deviceBackendType_ = kylin::BackendType::Auto;
+        CLLM_INFO("[KylinBackend] Auto-detecting best device backend");
+    } else {
+        CLLM_INFO("[KylinBackend] Using CPU device backend");
+    }
+    
+    // 如果使用 GGML 直接推理，不需要算子
+    if (!useGGMLDirect_) {
+        // 创建算子实例（传递设备后端）
+        op_ = kylin::OperatorFactory::create(operatorBackend, deviceBackendType_);
+        CLLM_INFO("[KylinBackend] Using operator backend: %s", op_->getName().c_str());
+    }
+    
+    if (!modelPath_.empty()) {
+        if (useHFModel_) {
+            // HuggingFace 模型：HFTransformerModel 在 initialize() 中创建
+            CLLM_INFO("[KylinBackend] Will use HFTransformerModel for HuggingFace model: %s", modelPath_.c_str());
+        } else if (useGGMLDirect_) {
+            // GGUF 文件：使用 GGMLTransformerModel（传递设备后端）
+            CLLM_INFO("[KylinBackend] Will use GGMLTransformerModel for GGUF file: %s", modelPath_.c_str());
+            CLLM_INFO("[KylinBackend] GGMLTransformerModel will use device backend: %s",
+                     deviceBackendType_ == kylin::BackendType::Metal ? "Metal" :
+                     deviceBackendType_ == kylin::BackendType::CUDA ? "CUDA" : "CPU");
+            ggmlModel_ = std::make_unique<kylin::GGMLTransformerModel>(deviceBackendType_);
+        } else {
+            // 其他格式：使用 ModelLoader + TransformerModel
+            CLLM_INFO("[KylinBackend] Will load real weights from: %s", modelPath_.c_str());
+            try {
+                loader_ = ModelLoaderFactory::createLoader(modelPath_, externalConfig_);
+                CLLM_INFO("[KylinBackend] Created loader for format: %s", 
+                         ModelLoaderFactory::formatToString(ModelLoaderFactory::detectFormat(modelPath_)).c_str());
+            } catch (const std::exception& e) {
+                CLLM_ERROR("[KylinBackend] Failed to create model loader: %s", e.what());
+                throw;
+            }
         }
     } else {
         // 占位权重模式
@@ -81,17 +154,19 @@ KylinBackend::KylinBackend(const ModelConfig &config, const std::string &modelPa
         prepareInternalConfig();
     }
 
-    // 预分配权重容器
-    const size_t numLayers = internalConfig_.numLayers;
-    wq_.resize(numLayers);
-    wk_.resize(numLayers);
-    wv_.resize(numLayers);
-    wo_.resize(numLayers);
-    wGate_.resize(numLayers);
-    wUp_.resize(numLayers);
-    wDown_.resize(numLayers);
-    norm1_.resize(numLayers);
-    norm2_.resize(numLayers);
+    // 预分配权重容器（仅在非 HuggingFace 模式下需要）
+    if (!useHFModel_) {
+        const size_t numLayers = internalConfig_.numLayers;
+        wq_.resize(numLayers);
+        wk_.resize(numLayers);
+        wv_.resize(numLayers);
+        wo_.resize(numLayers);
+        wGate_.resize(numLayers);
+        wUp_.resize(numLayers);
+        wDown_.resize(numLayers);
+        norm1_.resize(numLayers);
+        norm2_.resize(numLayers);
+    }
 }
 
 void KylinBackend::prepareInternalConfig() {
@@ -116,6 +191,18 @@ bool KylinBackend::initialize() {
     }
 
     CLLM_INFO("[KylinBackend] Starting initialization...");
+
+    // ========== HuggingFace 模型（safetensors 目录）==========
+    if (useHFModel_) {
+        return initializeHFModel();
+    }
+
+    // ========== GGML 直接推理模式（GGUF 文件）==========
+    if (useGGMLDirect_) {
+        return initializeGGMLDirect();
+    }
+    
+    // ========== TransformerModel 模式（.bin 文件或占位权重）==========
 
     // 1. 验证配置
     const size_t vocab = externalConfig_.vocabSize;
@@ -172,6 +259,80 @@ bool KylinBackend::initialize() {
 
     initialized_ = true;
     CLLM_INFO("[KylinBackend] Initialization completed successfully");
+    return true;
+}
+
+bool KylinBackend::initializeHFModel() {
+    CLLM_INFO("[KylinBackend] Initializing HuggingFace model (safetensors)...");
+    
+    try {
+        // 创建并加载 HuggingFace 模型
+        hfModel_ = std::make_unique<kylin::HFTransformerModel>(modelPath_);
+        
+        if (!hfModel_->isLoaded()) {
+            CLLM_ERROR("[KylinBackend] Failed to load HuggingFace model: %s", modelPath_.c_str());
+            return false;
+        }
+        
+        // 更新配置
+        const auto& hfConfig = hfModel_->config();
+        externalConfig_.vocabSize = hfConfig.vocabSize;
+        externalConfig_.hiddenSize = hfConfig.hiddenSize;
+        externalConfig_.numLayers = hfConfig.numHiddenLayers;
+        externalConfig_.numAttentionHeads = hfConfig.numAttentionHeads;
+        externalConfig_.numKeyValueHeads = hfConfig.getNumKVHeads();
+        externalConfig_.intermediateSize = hfConfig.intermediateSize;
+        
+        CLLM_INFO("[KylinBackend] HuggingFace model loaded successfully:");
+        CLLM_INFO("  Model: %s", hfConfig.modelType.c_str());
+        CLLM_INFO("  Vocab: %u", externalConfig_.vocabSize);
+        CLLM_INFO("  Hidden: %u", externalConfig_.hiddenSize);
+        CLLM_INFO("  Layers: %u", externalConfig_.numLayers);
+        CLLM_INFO("  Heads: %u (KV: %u)", externalConfig_.numAttentionHeads, externalConfig_.numKeyValueHeads);
+        CLLM_INFO("  Dtype: %s", hfConfig.torchDtype.c_str());
+        
+        initialized_ = true;
+        CLLM_INFO("[KylinBackend] HuggingFace model initialized successfully");
+        return true;
+        
+    } catch (const std::exception& e) {
+        CLLM_ERROR("[KylinBackend] Exception loading HuggingFace model: %s", e.what());
+        return false;
+    }
+}
+
+bool KylinBackend::initializeGGMLDirect() {
+    CLLM_INFO("[KylinBackend] Initializing GGML direct inference mode...");
+    
+    if (!ggmlModel_) {
+        CLLM_ERROR("[KylinBackend] GGMLTransformerModel not created");
+        return false;
+    }
+    
+    // 加载 GGUF 模型
+    if (!ggmlModel_->loadFromGGUF(modelPath_)) {
+        CLLM_ERROR("[KylinBackend] Failed to load GGUF model: %s", modelPath_.c_str());
+        return false;
+    }
+    
+    // 更新配置
+    const auto& ggmlConfig = ggmlModel_->getConfig();
+    externalConfig_.vocabSize = ggmlConfig.vocabSize;
+    externalConfig_.hiddenSize = ggmlConfig.embeddingLength;
+    externalConfig_.numLayers = ggmlConfig.blockCount;
+    externalConfig_.numAttentionHeads = ggmlConfig.headCount;
+    externalConfig_.numKeyValueHeads = ggmlConfig.headCountKV;
+    externalConfig_.intermediateSize = ggmlConfig.feedForwardLength;
+    externalConfig_.maxSequenceLength = ggmlConfig.contextLength;
+    
+    CLLM_INFO("[KylinBackend] GGML model loaded successfully:");
+    CLLM_INFO("  Vocab: %u", externalConfig_.vocabSize);
+    CLLM_INFO("  Hidden: %u", externalConfig_.hiddenSize);
+    CLLM_INFO("  Layers: %u", externalConfig_.numLayers);
+    CLLM_INFO("  Heads: %u (KV: %u)", externalConfig_.numAttentionHeads, externalConfig_.numKeyValueHeads);
+    
+    initialized_ = true;
+    CLLM_INFO("[KylinBackend] GGML direct inference initialized successfully");
     return true;
 }
 
@@ -674,6 +835,76 @@ kylin::Tensor KylinBackend::forward(const std::vector<int> &inputIds) {
         throw std::runtime_error("KylinBackend::forward: backend not initialized");
     }
 
+    // ========== HuggingFace 模型 ==========
+    if (useHFModel_ && hfModel_) {
+        const size_t seqLen = inputIds.size();
+        const size_t vocabSize = externalConfig_.vocabSize;
+        
+        CLLM_DEBUG("[KylinBackend::forward] HF mode: seqLen=%zu, vocabSize=%zu", seqLen, vocabSize);
+        
+        // HFTransformerModel 只返回最后一个 token 的 logits (vocab_size 个元素)
+        // 对于自回归生成，这是正确的行为
+        // 对于 prefill（seq_len > 1），需要逐 token 处理以正确构建 KV cache
+        
+        if (seqLen == 1) {
+            // 单 token 推理（增量生成）：直接调用 forward，KV cache 会自动累积
+            std::vector<int32_t> inputIds32(inputIds.begin(), inputIds.end());
+            std::vector<float> logitsFlat = hfModel_->forward(inputIds32);
+            
+            kylin::Tensor result({1, vocabSize});
+            std::copy(logitsFlat.begin(), logitsFlat.end(), result.data());
+            return result;
+        } else {
+            // 多 token 推理（prefill）：清除 KV cache 并逐 token 处理
+            hfModel_->resetKVCache();
+            CLLM_DEBUG("[KylinBackend::forward] Prefill: seqLen=%zu, reset KV cache", seqLen);
+            
+            // 逐 token 处理以正确构建 KV cache
+            kylin::Tensor result({seqLen, vocabSize});
+            std::fill(result.data(), result.data() + seqLen * vocabSize, 0.0f);
+            
+            for (size_t i = 0; i < seqLen; ++i) {
+                std::vector<int32_t> singleToken = {static_cast<int32_t>(inputIds[i])};
+                std::vector<float> logits = hfModel_->forward(singleToken);
+                
+                // 复制当前 token 的 logits 到结果中
+                std::copy(logits.begin(), logits.end(), 
+                         result.data() + i * vocabSize);
+            }
+            
+            return result;
+        }
+    }
+
+    // ========== GGML 直接推理模式 ==========
+    if (useGGMLDirect_ && ggmlModel_) {
+        // 注意：独立的 forward() 调用（非通过 forwardBatch）
+        // 根据输入长度判断是否需要清除 KV cache：
+        // - 如果 inputIds.size() > 1，说明是新请求的 prompt，清除 KV cache
+        // - 如果 inputIds.size() == 1，可能是增量生成，保留 KV cache
+        // 这个启发式方法不完美，但在没有 sequenceId 信息时是合理的默认行为
+        if (inputIds.size() > 1) {
+            ggmlModel_->clearKVCache();
+            currentSequenceId_ = SIZE_MAX;  // 重置序列 ID
+            CLLM_DEBUG("[KylinBackend] Cleared KV cache for new prompt (len=%zu)", inputIds.size());
+        }
+        
+        // 转换 int 到 int32_t
+        std::vector<int32_t> inputIds32(inputIds.begin(), inputIds.end());
+        
+        // 使用 GGMLTransformerModel 推理
+        std::vector<float> logitsFlat = ggmlModel_->forward(inputIds32);
+        
+        // 转换为 kylin::Tensor
+        const size_t seqLen = inputIds.size();
+        const size_t vocabSize = externalConfig_.vocabSize;
+        kylin::Tensor result({seqLen, vocabSize});
+        std::copy(logitsFlat.begin(), logitsFlat.end(), result.data());
+        
+        return result;
+    }
+    
+    // ========== TransformerModel 模式 ==========
     return model_.forward(inputIds);
 }
 
@@ -705,7 +936,102 @@ kylin::Tensor KylinBackend::forwardBatch(
 
     // 分配输出张量
     kylin::Tensor logits({totalTokens, vocab});
+    
+    // ========== HuggingFace 模型 ==========
+    if (useHFModel_ && hfModel_) {
+        CLLM_DEBUG("[KylinBackend] HuggingFace mode: processing %zu requests sequentially", batchSize);
+        
+        for (size_t i = 0; i < batchSize; ++i) {
+            const auto &pos = requestPositions[i];
+            const size_t start = pos.first;
+            const size_t end = pos.second;
 
+            if (start > end || end > totalTokens) {
+                throw std::out_of_range("KylinBackend::forwardBatch: invalid requestPositions range");
+            }
+            
+            const size_t reqLen = end - start;
+            
+            // 对于新请求（多 token），清除 KV cache 并逐 token 处理
+            if (reqLen > 1) {
+                hfModel_->resetKVCache();
+                CLLM_DEBUG("[KylinBackend] Reset KV cache for new prompt (len=%zu)", reqLen);
+                
+                // 逐 token 处理以正确构建 KV cache
+                for (size_t t = 0; t < reqLen; ++t) {
+                    std::vector<int32_t> singleToken = {flatInputIds[start + t]};
+                    std::vector<float> tokenLogits = hfModel_->forward(singleToken);
+                    
+                    // 复制到输出
+                    std::copy(tokenLogits.begin(), tokenLogits.end(),
+                             logits.data() + (start + t) * vocab);
+                }
+            } else {
+                // 单 token 推理：增量生成
+                std::vector<int32_t> requestIds32(flatInputIds.begin() + start, flatInputIds.begin() + end);
+                std::vector<float> requestLogits = hfModel_->forward(requestIds32);
+                
+                // 复制到输出
+                std::copy(requestLogits.begin(), requestLogits.end(), 
+                         logits.data() + start * vocab);
+            }
+        }
+        
+        return logits;
+    }
+    
+    // ========== GGML 直接推理模式 ==========
+    if (useGGMLDirect_ && ggmlModel_) {
+        // GGML 模式：逐请求推理（暂不支持真正的批处理）
+        // 由于 GGMLTransformerModel 只有一个全局 KV cache，不支持多序列并发
+        // 我们使用 sequenceId 来管理 KV cache：
+        // - 如果 sequenceId 与当前序列不同，说明是新请求，清除 KV cache
+        // - 如果 sequenceId 相同，说明是同一序列的增量生成，保留 KV cache
+        CLLM_DEBUG("[KylinBackend] GGML direct mode: processing %zu requests sequentially", batchSize);
+        
+        for (size_t i = 0; i < batchSize; ++i) {
+            const auto &pos = requestPositions[i];
+            const size_t start = pos.first;
+            const size_t end = pos.second;
+
+            if (start > end || end > totalTokens) {
+                throw std::out_of_range("KylinBackend::forwardBatch: invalid requestPositions range");
+            }
+            
+            // 获取当前请求的序列ID
+            size_t seqId = (i < sequenceIds.size()) ? sequenceIds[i] : SIZE_MAX;
+            const size_t reqLen = end - start;
+            
+            // KV cache 管理：
+            // 1. 如果序列ID变化，清除 KV cache（新请求）
+            // 2. 如果输入长度 > 1，也清除 KV cache（新 prompt）
+            bool needClearCache = (seqId != currentSequenceId_) || (reqLen > 1);
+            
+            if (needClearCache) {
+                ggmlModel_->clearKVCache();
+                currentSequenceId_ = seqId;
+                CLLM_DEBUG("[KylinBackend] Cleared KV cache for sequence %zu (prev=%zu, reqLen=%zu)", 
+                          seqId, currentSequenceId_, reqLen);
+            } else {
+                CLLM_DEBUG("[KylinBackend] Reusing KV cache for sequence %zu (reqLen=%zu)", 
+                          seqId, reqLen);
+            }
+            
+            // 提取当前请求的 token IDs
+            std::vector<int32_t> requestIds32(flatInputIds.begin() + start, flatInputIds.begin() + end);
+            
+            // 推理
+            std::vector<float> requestLogits = ggmlModel_->forward(requestIds32);
+            
+            // 复制到输出
+            std::copy(requestLogits.begin(), requestLogits.end(), 
+                     logits.data() + start * vocab);
+        }
+        
+        return logits;
+    }
+
+    // ========== TransformerModel 模式 ==========
     // 逐请求调用 forward，并拼接结果
     for (size_t i = 0; i < batchSize; ++i) {
         const auto &pos = requestPositions[i];
@@ -854,6 +1180,20 @@ bool KylinBackend::loadFromModelWeights(const model::ModelWeights &weights) {
         CLLM_ERROR("[KylinBackend] Failed to load weights from ModelWeights: %s", e.what());
         return false;
     }
+}
+
+kylin::OperatorBackend KylinBackend::getOperatorBackend() const {
+    if (op_) {
+        return op_->getBackend();
+    }
+    return kylin::OperatorBackend::Native;
+}
+
+std::string KylinBackend::getOperatorBackendName() const {
+    if (op_) {
+        return op_->getName();
+    }
+    return "None";
 }
 
 } // namespace inference
