@@ -45,9 +45,11 @@ GenerateEndpoint::GenerateRequest GenerateEndpoint::parseRequest(const HttpReque
     JsonRequestParser::getFieldWithDefault(jsonBody, "top_p", req.topP, cllm::Config::instance().apiDefaultTopP());
     JsonRequestParser::getFieldWithDefault(jsonBody, "stream", req.stream, false);
     
-    // 调试：打印解析后的参数
-    CLLM_INFO("[GenerateEndpoint] Parsed request: prompt='%s', max_tokens=%d, temperature=%.4f, top_p=%.4f",
+    // 调试：打印解析后的参数（仅在 DEBUG 模式下）
+    #ifdef CLLM_DEBUG_MODE
+    CLLM_DEBUG("[GenerateEndpoint] Parsed request: prompt='%s', max_tokens=%d, temperature=%.4f, top_p=%.4f",
               req.prompt.c_str(), req.maxTokens, req.temperature, req.topP);
+    #endif
     
     return req;
 }

@@ -470,15 +470,14 @@ void Scheduler::processRequests() {
     }
     
     // 🔥 关键优化: 批处理累积策略
-    // 如果队列请求较少且没有运行中的请求，等待更多请求到达
-    // 这样可以形成更大的批处理，提高吞吐量
-    size_t minBatchSize = 8;
+    // 减少等待时间以提高响应速度
+    size_t minBatchSize = 4;  // 减少最小批处理大小
     // TODO: HybridBatchStrategy not implemented yet
     // if (hybridStrategy_ && hybridStrategy_->isStable()) {
     //     minBatchSize = hybridStrategy_->getOptimalBatchSize();
     // }
     
-    constexpr size_t MAX_WAIT_MS_FOR_BATCH = 50;  // 最多等待50ms
+    constexpr size_t MAX_WAIT_MS_FOR_BATCH = 5;  // 减少等待时间到5ms
     
     if (queueSize < minBatchSize && runningCount == 0) {
         CLLM_DEBUG("[Scheduler::processRequests] Queue size (%zu) < %zu, waiting for more requests (max %dms)",
@@ -682,7 +681,7 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
         return;
     }
     
-    CLLM_INFO("Starting batch processing for %zu requests (filtered from %zu total)",
+    CLLM_DEBUG("Starting batch processing for %zu requests (filtered from %zu total)",
               activeBatch.size(), batch.size());
     
     auto batchStart = std::chrono::steady_clock::now();

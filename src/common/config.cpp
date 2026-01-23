@@ -399,19 +399,13 @@ bool Config::backendLlamaCppUseMlock() const {
 std::string Config::backendKylinDeviceBackend() const {
     std::lock_guard<std::mutex> lock(mutex_);
     
-    if (config_ && config_["backend"] && config_["backend"]["kylin"]) {
-        return config_["backend"]["kylin"]["device_backend"].as<std::string>("cpu");
-    }
-    return "cpu";
+    return config_["backend"]["kylin"]["device_backend"].as<std::string>("cpu");
 }
 
 std::string Config::backendKylinOperatorBackend() const {
     std::lock_guard<std::mutex> lock(mutex_);
     
-    if (config_ && config_["backend"] && config_["backend"]["kylin"]) {
-        return config_["backend"]["kylin"]["operator_backend"].as<std::string>("ggml");
-    }
-    return "ggml";
+    return config_["backend"]["kylin"]["operator_backend"].as<std::string>("ggml");
 }
 
 // API端点配置

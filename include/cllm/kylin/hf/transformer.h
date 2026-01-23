@@ -20,7 +20,10 @@ namespace kylin {
 /**
  * @brief HuggingFace Transformer 模型
  * 
- * 使用 F32 精度进行计算，权重从 BF16 实时转换
+ * 使用 F32 精度进行计算
+ * 支持两种模式：
+ * - 预转换模式（推荐）：加载时将 BF16 权重转为 F32，运行时无转换开销
+ * - 实时转换模式：运行时从 BF16 转换（节省内存但较慢）
  */
 class HFTransformerModel {
 public:
@@ -79,9 +82,16 @@ private:
     // RoPE
     void applyRoPE(float* q, float* k, int headDim, int nHeads, int nKVHeads, int seqLen, int startPos);
     
-    // 矩阵乘法（BF16 权重 @ F32 输入）
+    // 矩阵乘法（BF16 权重 @ F32 输入）- 回退模式
     void matmulBF16(const uint16_t* weight, const float* input, float* output,
                     int outFeatures, int inFeatures, int batchSize = 1);
+    
+    // 矩阵乘法（F32 权重 @ F32 输入）- 预转换模式
+    void matmulF32(const float* weight, const float* input, float* output,
+                   int outFeatures, int inFeatures);
+    
+    // 预转换权重到 F32
+    void preconvertWeights();
     
     // 模型状态
     bool loaded_ = false;
@@ -93,7 +103,8 @@ private:
     const uint16_t* lmHeadWeight_ = nullptr;
     const uint16_t* finalNormWeight_ = nullptr;
     
-    struct LayerWeights {
+    // BF16 权重指针（指向 mmap 数据）
+    struct LayerWeightsBF16 {
         const uint16_t* inputLayernorm = nullptr;
         const uint16_t* qProj = nullptr;
         const uint16_t* kProj = nullptr;
@@ -106,7 +117,31 @@ private:
         const uint16_t* upProj = nullptr;
         const uint16_t* downProj = nullptr;
     };
-    std::vector<LayerWeights> layers_;
+    std::vector<LayerWeightsBF16> layers_;
+    
+    // F32 预转换权重（预转换模式）
+    struct LayerWeightsF32 {
+        std::vector<float> inputLayernorm;
+        std::vector<float> qProj;
+        std::vector<float> kProj;
+        std::vector<float> vProj;
+        std::vector<float> oProj;
+        std::vector<float> qNorm;
+        std::vector<float> kNorm;
+        std::vector<float> postAttentionLayernorm;
+        std::vector<float> gateProj;
+        std::vector<float> upProj;
+        std::vector<float> downProj;
+    };
+    std::vector<LayerWeightsF32> layersF32_;
+    
+    // 全局 F32 权重
+    std::vector<float> embedTokensF32_;
+    std::vector<float> lmHeadWeightF32_;
+    std::vector<float> finalNormWeightF32_;
+    
+    // 是否使用预转换模式
+    bool usePreconvertedWeights_ = true;
     
     // KV Cache [layer, 2, maxSeqLen, numKVHeads, headDim]
     std::vector<float> kCache_;
@@ -140,6 +175,9 @@ private:
     // Norm 权重缓冲区
     std::vector<float> normWeightBuffer_;
     std::vector<float> qkNormBuffer_;
+    
+    // Logits 缓冲区（避免每次分配）
+    mutable std::vector<float> logitsBuffer_;
 };
 
 } // namespace kylin

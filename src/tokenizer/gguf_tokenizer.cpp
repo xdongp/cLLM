@@ -133,18 +133,25 @@ GGUFTokenizer::~GGUFTokenizer() {
 
 bool GGUFTokenizer::load(const std::string& modelPath) {
     try {
+        CLLM_INFO("GGUFTokenizer::load: Starting load from: %s", modelPath.c_str());
         modelPath_ = modelPath;
         
         // 创建GGUFLoader实例
-        GGUFLoader loader(modelPath, true);
+        // 禁用内存映射以避免与 llama.cpp 的 mmap 冲突
+        CLLM_INFO("GGUFTokenizer::load: Creating GGUFLoader (mmap disabled)...");
+        GGUFLoader loader(modelPath, false);
+        CLLM_INFO("GGUFTokenizer::load: GGUFLoader created");
         
         // 加载GGUF文件
+        CLLM_INFO("GGUFTokenizer::load: Calling loader.load()...");
         if (!loader.load()) {
             CLLM_ERROR("GGUFTokenizer::load: Failed to load GGUF file: %s", modelPath.c_str());
             return false;
         }
+        CLLM_INFO("GGUFTokenizer::load: loader.load() succeeded");
         
         // 从loader中加载tokenizer数据
+        CLLM_INFO("GGUFTokenizer::load: Calling loadFromGGUFLoader...");
         return loadFromGGUFLoader(loader);
         
     } catch (const std::exception& e) {

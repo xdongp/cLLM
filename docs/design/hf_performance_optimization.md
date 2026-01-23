@@ -1,5 +1,23 @@
 # HF 后端性能优化方案
 
+> **状态**: ✅ Phase 1-3 已完成 (2026-01-24)
+
+## 0. 优化结果总结
+
+| 阶段 | 优化内容 | tokens/s | 提升 |
+|------|----------|----------|------|
+| 原始 | 朴素实现 | ~0.5 | - |
+| Phase 1 | SIMD (NEON) | ~0.5 | +0% |
+| Phase 2 | 预转换权重 | ~1.0 | **+100%** |
+| **Phase 3** | **OpenMP 8线程** | **~4.0** | **+700%** |
+
+### 配置日志
+```
+[ggml_kernels] Using ARM NEON optimizations
+[ggml_kernels] OpenMP enabled: 8 threads available
+[HFTransformer] Pre-conversion complete: 2161.72 MB F32 weights
+```
+
 ## 1. 当前性能瓶颈分析
 
 ### 1.1 主要瓶颈

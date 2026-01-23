@@ -31,9 +31,6 @@
 
 namespace cllm {
 
-// class DynamicBatchTuner;  // TODO: implement this class
-// class HybridBatchStrategy;  // TODO: implement this class
-
 /**
  * @brief 调度器错误类型枚举
  */
@@ -297,8 +294,6 @@ private:
     std::condition_variable cleanupCondition_;  ///< 清理条件变量
     void cleanupLoop();                 ///< 清理线程循环
     void cleanupRequestAsync(size_t requestId);  ///< 异步清理请求资源
-    
-    // std::unique_ptr<DynamicBatchTuner> batchTuner_;  ///< 动态批处理调谐器 (TODO: implement this class)
 };
 
 }

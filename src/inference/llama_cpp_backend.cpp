@@ -109,13 +109,11 @@ void LlamaCppBackend::createContextParams() {
 }
 
 bool LlamaCppBackend::validateVocabSize() {
-    if (!model_ || !tokenizer_) {
+    if (!model_) {
         return false;
     }
     
     // 获取模型的 vocab size
-    // 注意：llama.cpp 使用 llama_vocab_n_tokens 获取 vocab size
-    // 但需要先获取 vocab 对象
     const struct llama_vocab* vocab = llama_model_get_vocab(model_);
     if (!vocab) {
         CLLM_ERROR("[LlamaCppBackend] Failed to get vocab from model");
@@ -123,16 +121,7 @@ bool LlamaCppBackend::validateVocabSize() {
     }
     
     int32_t modelVocabSize = llama_vocab_n_tokens(vocab);
-    int tokenizerVocabSize = tokenizer_->getVocabSize();
-    
-    CLLM_INFO("[LlamaCppBackend] Model vocab_size: %d, Tokenizer vocab_size: %d",
-              modelVocabSize, tokenizerVocabSize);
-    
-    if (static_cast<int>(modelVocabSize) != tokenizerVocabSize) {
-        CLLM_ERROR("[LlamaCppBackend] ❌ Vocab size mismatch: model=%d, tokenizer=%d",
-                   modelVocabSize, tokenizerVocabSize);
-        return false;
-    }
+    CLLM_INFO("[LlamaCppBackend] Model vocab_size: %d", modelVocabSize);
     
     // 更新 config 中的 vocab_size
     if (config_.vocabSize != static_cast<size_t>(modelVocabSize)) {
@@ -185,22 +174,17 @@ bool LlamaCppBackend::initialize() {
         }
         CLLM_INFO("[LlamaCppBackend] Context created successfully");
         
-        // 5. 加载 GGUFTokenizer
-        tokenizer_ = std::make_unique<GGUFTokenizer>();
-        if (!tokenizer_->load(modelPath_)) {
-            CLLM_ERROR("[LlamaCppBackend] Failed to load GGUFTokenizer from: %s", modelPath_.c_str());
-            llama_free(ctx_);
-            ctx_ = nullptr;
-            llama_model_free(model_);
-            model_ = nullptr;
-            return false;
-        }
-        CLLM_INFO("[LlamaCppBackend] GGUFTokenizer loaded successfully");
+        // 5. 跳过 GGUFTokenizer 加载 - 直接使用 llama.cpp 内置 tokenizer
+        CLLM_INFO("[LlamaCppBackend] Skipping GGUFTokenizer, using llama.cpp native tokenizer");
         
-        // 6. 校验 vocab_size
-        if (!validateVocabSize()) {
-            CLLM_ERROR("[LlamaCppBackend] Vocab size validation failed");
-            tokenizer_.reset();
+        // 从 llama.cpp 获取 vocab size 并更新配置
+        const struct llama_vocab* vocab = llama_model_get_vocab(model_);
+        if (vocab) {
+            int32_t modelVocabSize = llama_vocab_n_tokens(vocab);
+            CLLM_INFO("[LlamaCppBackend] llama.cpp vocab_size: %d", modelVocabSize);
+            config_.vocabSize = static_cast<size_t>(modelVocabSize);
+        } else {
+            CLLM_ERROR("[LlamaCppBackend] Failed to get vocab from model");
             llama_free(ctx_);
             ctx_ = nullptr;
             llama_model_free(model_);
@@ -289,10 +273,7 @@ Tensor LlamaCppBackend::forward(const std::vector<int> &inputIds) {
         batch.n_tokens = static_cast<int32_t>(tokens.size());
         
         // 3. 推理
-        CLLM_INFO("[LlamaCppBackend] Calling llama_decode with %d tokens, starting at position %zu...", 
-                  batch.n_tokens, currentPosition_);
         int decodeResult = llama_decode(ctx_, batch);
-        CLLM_INFO("[LlamaCppBackend] llama_decode returned: %d", decodeResult);
         
         if (decodeResult != 0) {
             for (int32_t i = 0; i < batch.n_tokens; ++i) {
