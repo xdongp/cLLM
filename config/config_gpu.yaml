@@ -76,6 +76,24 @@ scheduler:
   idle_loop_interval: 50     # 优化：减少空闲循环间隔
   wait_poll_interval_ms: 5   # 优化：减少等待轮询间隔
 
+# 动态 Batch Size 调谐器配置
+dynamic_batch_tuner:
+  enabled: false
+  strategy: "static"          # static | dynamic | hybird
+  fixed_batch_size: 0
+  min_batch_size: 1
+  max_batch_size: 64
+  initial_batch_size: 8
+  probing_growth_factor: 2.0
+  max_probing_attempts: 10
+  time_increase_threshold: 0.30
+  adjustment_factor: 0.30
+  validation_interval: 50
+  exploration_interval: 200
+  probe_batch_count: 10
+  validation_batch_count: 10
+  max_consecutive_time_increases: 5
+
 # 资源配置
 resources:
   max_batch_size: 8        # 优化：减少最大批处理大小以避免内存问题

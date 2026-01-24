@@ -7,11 +7,28 @@
 #include "cllm/memory/monitor.h"
 #include "cllm/common/logger.h"
 #include "cllm/inference/llama_cpp_backend.h"
+#include "cllm/scheduler/dynamic_batch_tuner.h"
 #include <chrono>
 #include <stdexcept>
 #include <queue>
+#include <algorithm>
 
 namespace cllm {
+
+namespace {
+size_t resolveMaxBatchSize(size_t overrideMax) {
+    const size_t schedulerMax = static_cast<size_t>(Config::instance().schedulerMaxBatchSize());
+    const size_t resourceMax = static_cast<size_t>(Config::instance().serverMaxBatchSize());
+    size_t desired = overrideMax != 0 ? overrideMax : schedulerMax;
+    if (desired == 0) {
+        desired = resourceMax;
+    }
+    if (resourceMax > 0) {
+        desired = std::min(desired, resourceMax);
+    }
+    return desired > 0 ? desired : 1;
+}
+}
 
 Scheduler::Scheduler(
     ModelExecutor* modelExecutor,
@@ -19,9 +36,9 @@ Scheduler::Scheduler(
     size_t maxContextLength
 ) : batchManager_(
         (maxContextLength != 0) ? maxContextLength : Config::instance().serverMaxContextLength(),
-        (maxBatchSize != 0) ? maxBatchSize : Config::instance().serverMaxBatchSize()
+        resolveMaxBatchSize(maxBatchSize)
     ),
-    maxBatchSize_((maxBatchSize != 0) ? maxBatchSize : Config::instance().serverMaxBatchSize()),
+    maxBatchSize_(resolveMaxBatchSize(maxBatchSize)),
     maxContextLength_((maxContextLength != 0) ? maxContextLength : Config::instance().serverMaxContextLength()),
     modelExecutor_(modelExecutor),
     ownsModelExecutor_(false) {
@@ -57,9 +74,9 @@ Scheduler::Scheduler(
     size_t maxContextLength
 ) : batchManager_(
         (maxContextLength != 0) ? maxContextLength : Config::instance().serverMaxContextLength(),
-        (maxBatchSize != 0) ? maxBatchSize : Config::instance().serverMaxBatchSize()
+        resolveMaxBatchSize(maxBatchSize)
     ),
-    maxBatchSize_((maxBatchSize != 0) ? maxBatchSize : Config::instance().serverMaxBatchSize()),
+    maxBatchSize_(resolveMaxBatchSize(maxBatchSize)),
     maxContextLength_((maxContextLength != 0) ? maxContextLength : Config::instance().serverMaxContextLength()),
     ownsModelExecutor_(true) {
     
@@ -103,6 +120,47 @@ void Scheduler::start() {
     }
     
     running_ = true;
+
+    const auto tunerConfig = Config::instance().dynamicBatchTunerConfig();
+    if (tunerConfig.enabled && tunerConfig.strategy == "static") {
+        if (tunerConfig.fixedBatchSize > 0) {
+            applyTunedBatchSize(static_cast<size_t>(tunerConfig.fixedBatchSize));
+            CLLM_INFO("[Scheduler] 使用静态 batch_size=%d", tunerConfig.fixedBatchSize);
+        }
+    } else if (tunerConfig.enabled && tunerConfig.strategy != "static") {
+        DynamicBatchTuner::TunerConfig config;
+        config.minBatchSize = std::max<size_t>(1, static_cast<size_t>(tunerConfig.minBatchSize));
+        config.maxBatchSize = std::min<size_t>(maxBatchSize_, static_cast<size_t>(tunerConfig.maxBatchSize));
+        config.initialBatchSize = static_cast<size_t>(tunerConfig.initialBatchSize);
+        config.probingGrowthFactor = tunerConfig.probingGrowthFactor;
+        config.maxProbingAttempts = static_cast<size_t>(tunerConfig.maxProbingAttempts);
+        config.timeIncreaseThreshold = tunerConfig.timeIncreaseThreshold;
+        config.adjustmentFactor = tunerConfig.adjustmentFactor;
+        config.validationInterval = static_cast<size_t>(tunerConfig.validationInterval);
+        config.explorationInterval = static_cast<size_t>(tunerConfig.explorationInterval);
+        config.probeBatchCount = static_cast<size_t>(tunerConfig.probeBatchCount);
+        config.validationBatchCount = static_cast<size_t>(tunerConfig.validationBatchCount);
+        config.autoAdjustEnabled = (tunerConfig.strategy == "dynamic");
+        config.maxConsecutiveTimeIncreases = static_cast<size_t>(tunerConfig.maxConsecutiveTimeIncreases);
+
+        if (config.maxBatchSize == 0) {
+            config.maxBatchSize = maxBatchSize_;
+        }
+        if (config.minBatchSize > config.maxBatchSize) {
+            config.minBatchSize = config.maxBatchSize;
+        }
+        if (config.initialBatchSize == 0) {
+            config.initialBatchSize = config.minBatchSize;
+        }
+        config.initialBatchSize = std::max(config.minBatchSize, std::min(config.initialBatchSize, config.maxBatchSize));
+
+        batchTuner_ = std::make_unique<DynamicBatchTuner>(config);
+        batchTuner_->startPassive();
+        applyTunedBatchSize(batchTuner_->getCurrentBatchSize());
+        CLLM_INFO("[Scheduler] 动态批处理调谐器已启用: strategy=%s, batch_size=%zu",
+                  tunerConfig.strategy.c_str(), batchTuner_->getCurrentBatchSize());
+    }
+
     schedulerThread_ = std::thread(&Scheduler::schedulerLoop, this);
     cleanupThread_ = std::thread(&Scheduler::cleanupLoop, this);
 }
@@ -113,6 +171,10 @@ void Scheduler::stop() {
     }
     
     running_ = false;
+
+    if (batchTuner_) {
+        batchTuner_->stop();
+    }
     
     // 通知清理线程退出
     cleanupCondition_.notify_all();
@@ -332,6 +394,33 @@ void Scheduler::triggerResponseCallback(size_t requestId, const RequestState& st
     }
 }
 
+void Scheduler::onBatchProcessed(size_t batchSize, double processingTimeMs) {
+    if (!batchTuner_) {
+        return;
+    }
+
+    batchTuner_->onBatchProcessed(batchSize, processingTimeMs);
+    applyTunedBatchSize(batchTuner_->getCurrentBatchSize());
+}
+
+void Scheduler::applyTunedBatchSize(size_t tunedBatchSize) {
+    if (tunedBatchSize == 0) {
+        return;
+    }
+
+    size_t hardMax = resolveMaxBatchSize(0);
+    size_t clamped = std::max<size_t>(1, std::min(tunedBatchSize, hardMax));
+    size_t current = tunedMaxBatchSize_.load(std::memory_order_relaxed);
+    if (current == clamped) {
+        return;
+    }
+
+    tunedMaxBatchSize_.store(clamped, std::memory_order_relaxed);
+    maxBatchSize_ = clamped;
+    config_.maxBatchSize = clamped;
+    batchManager_.setMaxBatchSize(clamped);
+}
+
 void Scheduler::schedulerLoop() {
     while (running_) {
         try {
@@ -424,12 +513,12 @@ void Scheduler::processRequests() {
     // 🔥 关键优化: 批处理累积策略
     // 如果队列请求较少且没有运行中的请求，等待更多请求到达
     // 这样可以形成更大的批处理，提高吞吐量
-    constexpr size_t MIN_BATCH_SIZE_FOR_ACCUMULATION = 8;
+    const size_t minBatchSize = std::min<size_t>(8, std::max<size_t>(1, maxBatchSize_));
     constexpr size_t MAX_WAIT_MS_FOR_BATCH = 50;  // 最多等待50ms
     
-    if (queueSize < MIN_BATCH_SIZE_FOR_ACCUMULATION && runningCount == 0) {
+    if (queueSize < minBatchSize && runningCount == 0) {
         CLLM_DEBUG("[Scheduler::processRequests] Queue size (%zu) < %zu, waiting for more requests (max %dms)",
-                  queueSize, MIN_BATCH_SIZE_FOR_ACCUMULATION, MAX_WAIT_MS_FOR_BATCH);
+                  queueSize, minBatchSize, MAX_WAIT_MS_FOR_BATCH);
         
         // 等待更多请求到达
         std::unique_lock<std::mutex> lock(queueMutex_);
@@ -439,8 +528,8 @@ void Scheduler::processRequests() {
         queueCondition_.wait_for(
             lock,
             std::chrono::milliseconds(MAX_WAIT_MS_FOR_BATCH),
-            [this]() {
-                return requestQueue_.getQueueSize() >= MIN_BATCH_SIZE_FOR_ACCUMULATION || !running_;
+            [this, minBatchSize]() {
+                return requestQueue_.getQueueSize() >= minBatchSize || !running_;
             }
         );
         

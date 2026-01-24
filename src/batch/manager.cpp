@@ -396,7 +396,8 @@ size_t BatchManager::calculateOptimalBatchSize(
         CLLM_DEBUG("[BatchManager] avgLength <= 200: dynamicBatchSize = %zu", dynamicBatchSize);
     }
     
-    // 确保不超过请求数量
+    // 确保不超过调度器最大批大小与请求数量
+    dynamicBatchSize = std::min(dynamicBatchSize, maxBatchSize_);
     dynamicBatchSize = std::min(dynamicBatchSize, requests.size());
     
     CLLM_DEBUG("[BatchManager] calculateOptimalBatchSize: avgLength=%zu, dynamicBatchSize=%zu, maxBatchSize_=%zu, requests.size()=%zu",
@@ -425,6 +426,17 @@ void BatchManager::updateBatchProcessingTime(size_t processingTimeMs) {
     std::lock_guard<std::mutex> lock(statsMutex_);
     lastBatchProcessingTimeMs_ = processingTimeMs;
     CLLM_DEBUG("[BatchManager::updateBatchProcessingTime] Updated batch processing time to %zu ms", processingTimeMs);
+}
+
+void BatchManager::setMaxBatchSize(size_t maxBatchSize) {
+    if (maxBatchSize == 0) {
+        return;
+    }
+    maxBatchSize_ = maxBatchSize;
+}
+
+size_t BatchManager::getMaxBatchSize() const {
+    return maxBatchSize_;
 }
 
 bool BatchManager::canAddToBatch(

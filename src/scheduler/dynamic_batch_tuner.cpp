@@ -31,6 +31,11 @@ void DynamicBatchTuner::start(std::function<double(size_t)> batchRunner) {
     batchRunner_ = std::move(batchRunner);
     running_ = true;
     phase_ = TuningPhase::INITIAL_PROBING;
+    probingAttempts_ = 0;
+    lowerBound_ = 0;
+    upperBound_ = 0;
+    lastProbeBatchSize_ = 0;
+    lastProbeProcessingTime_ = 0.0;
     
     CLLM_INFO("[DynamicBatchTuner] 开始调谐，阶段: %s", getPhaseName(phase_));
     
@@ -47,6 +52,26 @@ void DynamicBatchTuner::start(std::function<double(size_t)> batchRunner) {
             }
         }
     }).detach();
+}
+
+void DynamicBatchTuner::startPassive() {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (running_) {
+        CLLM_WARN("[DynamicBatchTuner] 已在运行中");
+        return;
+    }
+
+    batchRunner_ = nullptr;
+    running_ = true;
+    phase_ = TuningPhase::INITIAL_PROBING;
+    probingAttempts_ = 0;
+    lowerBound_ = 0;
+    upperBound_ = 0;
+    lastProbeBatchSize_ = 0;
+    lastProbeProcessingTime_ = 0.0;
+
+    CLLM_INFO("[DynamicBatchTuner] 启动被动调谐，阶段: %s", getPhaseName(phase_));
 }
 
 void DynamicBatchTuner::stop() {
@@ -100,6 +125,21 @@ void DynamicBatchTuner::onBatchProcessed(size_t batchSize, double processingTime
     }
     
     batchCount_++;
+
+    if (!batchRunner_) {
+        if (phase_ == TuningPhase::INITIAL_PROBING) {
+            handlePassiveProbing(batchSize, processingTime);
+            return;
+        }
+        if (phase_ == TuningPhase::PRECISION_SEARCH) {
+            handlePassivePrecisionSearch(batchSize, processingTime);
+            return;
+        }
+    }
+
+    if (phase_ == TuningPhase::STABLE_RUNNING && !config_.autoAdjustEnabled) {
+        return;
+    }
     
     if (optimalProcessingTime_ > 0) {
         double timeIncrease = (processingTime - optimalProcessingTime_) / optimalProcessingTime_;
@@ -190,6 +230,8 @@ void DynamicBatchTuner::performInitialProbing() {
     
     probeResults_.clear();
     currentProbeBatchSize_ = config_.minBatchSize;
+    size_t attempts = 0;
+    const double growthFactor = std::max(1.1, config_.probingGrowthFactor);
     
     while (currentProbeBatchSize_ <= config_.maxBatchSize && running_) {
         double avgTime = runAndMeasure(currentProbeBatchSize_, config_.probeBatchCount);
@@ -214,7 +256,16 @@ void DynamicBatchTuner::performInitialProbing() {
             }
         }
         
-        currentProbeBatchSize_ *= 2;
+        attempts++;
+        if (attempts >= config_.maxProbingAttempts) {
+            break;
+        }
+
+        size_t nextSize = static_cast<size_t>(std::ceil(currentProbeBatchSize_ * growthFactor));
+        if (nextSize <= currentProbeBatchSize_) {
+            nextSize = currentProbeBatchSize_ + 1;
+        }
+        currentProbeBatchSize_ = nextSize;
     }
     
     if (upperBound_ == 0 && running_) {
@@ -359,6 +410,95 @@ void DynamicBatchTuner::adjustBatchSize() {
             }
         }
     }).detach();
+}
+
+void DynamicBatchTuner::handlePassiveProbing(size_t batchSize, double processingTime) {
+    if (batchSize < config_.minBatchSize) {
+        return;
+    }
+
+    probingAttempts_++;
+
+    if (optimalProcessingTime_ <= 0.0 || processingTime < optimalProcessingTime_) {
+        optimalProcessingTime_.store(processingTime);
+        optimalBatchSize_.store(batchSize);
+    }
+
+    if (lastProbeBatchSize_ > 0 && lastProbeProcessingTime_ > 0.0) {
+        double timeIncrease = (processingTime - lastProbeProcessingTime_) / lastProbeProcessingTime_;
+        if (timeIncrease > config_.timeIncreaseThreshold) {
+            lowerBound_ = std::max(config_.minBatchSize, optimalBatchSize_.load());
+            upperBound_ = std::min(config_.maxBatchSize, std::max(batchSize, lowerBound_ + 1));
+
+            if (lowerBound_ >= upperBound_) {
+                phase_ = TuningPhase::STABLE_RUNNING;
+                currentBatchSize_.store(optimalBatchSize_.load());
+                CLLM_INFO("[DynamicBatchTuner] 被动探测完成，最优 batch_size=%zu", optimalBatchSize_.load());
+                return;
+            }
+
+            phase_ = TuningPhase::PRECISION_SEARCH;
+            currentProbeBatchSize_ = (lowerBound_ + upperBound_) / 2;
+            currentBatchSize_.store(currentProbeBatchSize_);
+            CLLM_INFO("[DynamicBatchTuner] 被动探测进入精确搜索，范围: [%zu, %zu]",
+                      lowerBound_, upperBound_);
+            return;
+        }
+    }
+
+    lastProbeBatchSize_ = batchSize;
+    lastProbeProcessingTime_ = processingTime;
+
+    if (probingAttempts_ >= config_.maxProbingAttempts || batchSize >= config_.maxBatchSize) {
+        phase_ = TuningPhase::STABLE_RUNNING;
+        currentBatchSize_.store(optimalBatchSize_.load());
+        CLLM_INFO("[DynamicBatchTuner] 被动探测结束，最优 batch_size=%zu", optimalBatchSize_.load());
+        return;
+    }
+
+    const double growthFactor = std::max(1.1, config_.probingGrowthFactor);
+    size_t nextSize = static_cast<size_t>(std::ceil(batchSize * growthFactor));
+    if (nextSize <= batchSize) {
+        nextSize = batchSize + 1;
+    }
+    nextSize = std::min(nextSize, config_.maxBatchSize);
+    currentBatchSize_.store(nextSize);
+}
+
+void DynamicBatchTuner::handlePassivePrecisionSearch(size_t batchSize, double processingTime) {
+    if (lowerBound_ == 0 || upperBound_ == 0 || lowerBound_ >= upperBound_) {
+        phase_ = TuningPhase::STABLE_RUNNING;
+        currentBatchSize_.store(optimalBatchSize_.load());
+        CLLM_INFO("[DynamicBatchTuner] 精确搜索结束，最优 batch_size=%zu", optimalBatchSize_.load());
+        return;
+    }
+
+    double bestTime = optimalProcessingTime_.load();
+    if (bestTime <= 0.0) {
+        bestTime = processingTime;
+        optimalProcessingTime_.store(processingTime);
+        optimalBatchSize_.store(batchSize);
+    }
+
+    if (processingTime < bestTime) {
+        optimalProcessingTime_.store(processingTime);
+        optimalBatchSize_.store(batchSize);
+        lowerBound_ = std::min(config_.maxBatchSize, batchSize + 1);
+    } else if (processingTime > bestTime * (1 + config_.timeIncreaseThreshold)) {
+        upperBound_ = batchSize;
+    } else {
+        lowerBound_ = std::min(config_.maxBatchSize, batchSize + 1);
+    }
+
+    if (lowerBound_ >= upperBound_) {
+        phase_ = TuningPhase::STABLE_RUNNING;
+        currentBatchSize_.store(optimalBatchSize_.load());
+        CLLM_INFO("[DynamicBatchTuner] 精确搜索收敛，最优 batch_size=%zu", optimalBatchSize_.load());
+        return;
+    }
+
+    currentProbeBatchSize_ = (lowerBound_ + upperBound_) / 2;
+    currentBatchSize_.store(currentProbeBatchSize_);
 }
 
 const char* DynamicBatchTuner::getPhaseName(TuningPhase phase) {

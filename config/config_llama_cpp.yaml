@@ -3,7 +3,7 @@
 # 服务器配置
 server:
   host: "0.0.0.0"
-  port: 8080
+  port: 8085
   num_threads: 8
   min_threads: 4
   use_libtorch: false
@@ -109,20 +109,20 @@ backend:
 # 动态批处理调谐器配置
 dynamic_batch_tuner:
   enabled: true
-  strategy: "hybrid"
+  strategy: "static"
   search_algorithm: "adaptive_step"
-  fixed_batch_size: 24
-  min_batch_size: 16
-  max_batch_size: 48
-  initial_batch_size: 24
-  time_increase_threshold: 0.30
+  fixed_batch_size: 16
+  min_batch_size: 32
+  max_batch_size: 96
+  initial_batch_size: 16
+  time_increase_threshold: 0.20
   time_decrease_threshold: 0.10
-  validation_interval: 50
-  max_consecutive_time_increases: 5
-  auto_adjust_enabled: true
-  probe_batch_count: 10
-  validation_batch_count: 10
-  adjustment_factor: 0.50
+  validation_interval: 60
+  max_consecutive_time_increases: 4
+  auto_adjust_enabled: false
+  probe_batch_count: 8
+  validation_batch_count: 8
+  adjustment_factor: 0.25
   exploration_interval: 200
 
 # 日志配置

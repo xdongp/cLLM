@@ -17,6 +17,7 @@
 #include <condition_variable>
 #include <atomic>
 #include <functional>
+#include <memory>
 
 #include "cllm/scheduler/config.h"
 #include "cllm/scheduler/stats.h"
@@ -30,6 +31,8 @@
 #include "cllm/common/config.h"
 
 namespace cllm {
+
+class DynamicBatchTuner;
 
 /**
  * @brief 调度器错误类型枚举
@@ -243,6 +246,9 @@ public:
     
     // Phase 7: 触发响应回调（供内部使用）
     void triggerResponseCallback(size_t requestId, const RequestState& state);
+
+    // 动态批处理调谐器回调（内部使用）
+    void onBatchProcessed(size_t batchSize, double processingTimeMs);
     
 private:
     void schedulerLoop();  ///< 调度器主循环
@@ -251,6 +257,7 @@ private:
     void checkRequestTimeout();  ///< Phase 3: 检查请求超时
     void checkKVCachEviction();  ///< Phase 5: 检查KV缓存淘汰
     size_t getCurrentTime();  ///< 获取当前时间（毫秒）
+    void applyTunedBatchSize(size_t tunedBatchSize);
     
     RequestQueue requestQueue_;        ///< 请求队列
     BatchManager batchManager_;        ///< 批处理管理器
@@ -258,6 +265,8 @@ private:
     KVCache* kvCache_;              ///< KV缓存
     bool ownsModelExecutor_;        ///< 是否拥有模型执行器所有权
     RequestTracker requestTracker_;    ///< 请求跟踪器
+    std::unique_ptr<DynamicBatchTuner> batchTuner_;  ///< 动态批处理调谐器
+    std::atomic<size_t> tunedMaxBatchSize_{0};       ///< 调谐后的最大批大小
     
     BatchPool batchPool_;  ///< 批处理池（优化：减少内存分配）
     

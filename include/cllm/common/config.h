@@ -69,6 +69,26 @@ public:
     int schedulerLoopInterval() const;
     int schedulerIdleLoopInterval() const;
     int schedulerWaitPollIntervalMs() const;
+
+    struct DynamicBatchTunerConfig {
+        bool enabled;
+        std::string strategy;
+        int fixedBatchSize;
+        int minBatchSize;
+        int maxBatchSize;
+        int initialBatchSize;
+        double probingGrowthFactor;
+        int maxProbingAttempts;
+        double timeIncreaseThreshold;
+        double adjustmentFactor;
+        int validationInterval;
+        int explorationInterval;
+        int probeBatchCount;
+        int validationBatchCount;
+        int maxConsecutiveTimeIncreases;
+    };
+
+    DynamicBatchTunerConfig dynamicBatchTunerConfig() const;
     
     // 缓存配置
     int cacheDefaultMaxSize() const;

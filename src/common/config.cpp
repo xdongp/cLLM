@@ -264,6 +264,34 @@ int Config::schedulerWaitPollIntervalMs() const {
     return config_["scheduler"]["wait_poll_interval_ms"].as<int>(10);
 }
 
+Config::DynamicBatchTunerConfig Config::dynamicBatchTunerConfig() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    DynamicBatchTunerConfig cfg{};
+    const auto node = config_["dynamic_batch_tuner"];
+
+    cfg.enabled = node["enabled"].as<bool>(false);
+    cfg.strategy = node["strategy"].as<std::string>("static");
+    cfg.fixedBatchSize = node["fixed_batch_size"].as<int>(0);
+
+    cfg.minBatchSize = node["min_batch_size"].as<int>(1);
+    cfg.maxBatchSize = node["max_batch_size"].as<int>(64);
+    cfg.initialBatchSize = node["initial_batch_size"].as<int>(8);
+
+    cfg.probingGrowthFactor = node["probing_growth_factor"].as<double>(2.0);
+    cfg.maxProbingAttempts = node["max_probing_attempts"].as<int>(10);
+    cfg.timeIncreaseThreshold = node["time_increase_threshold"].as<double>(0.30);
+    cfg.adjustmentFactor = node["adjustment_factor"].as<double>(0.30);
+
+    cfg.validationInterval = node["validation_interval"].as<int>(50);
+    cfg.explorationInterval = node["exploration_interval"].as<int>(200);
+    cfg.probeBatchCount = node["probe_batch_count"].as<int>(10);
+    cfg.validationBatchCount = node["validation_batch_count"].as<int>(10);
+    cfg.maxConsecutiveTimeIncreases = node["max_consecutive_time_increases"].as<int>(5);
+
+    return cfg;
+}
+
 // 缓存配置
 int Config::cacheDefaultMaxSize() const {
     std::lock_guard<std::mutex> lock(mutex_);

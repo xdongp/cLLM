@@ -58,6 +58,7 @@ void SchedulerBatchProcessor::processBatch(std::vector<RequestState>& batch) {
             #endif
             break;
         }
+
         
         // 🔥 优化3: 动态批处理重组 - 如果活跃请求数 < 批处理大小的30%，提前结束
         // 修复：更积极的重组策略，当批处理效率下降时及时重组，避免慢速请求阻塞整个批处理
@@ -132,6 +133,10 @@ void SchedulerBatchProcessor::processBatch(std::vector<RequestState>& batch) {
         batchManager_->updateBatchProcessingTime(processingTimeMs);
         CLLM_DEBUG("processBatch: Batch processing time: %zu ms, batch size: %zu", 
                   processingTimeMs, batch.size());
+    }
+
+    if (scheduler_) {
+        scheduler_->onBatchProcessed(batch.size(), static_cast<double>(processingTimeMs));
     }
 }
 

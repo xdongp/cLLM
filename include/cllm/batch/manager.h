@@ -125,6 +125,18 @@ public:
         const std::vector<RequestState>& requests,
         size_t avgRequestLength
     );
+
+    /**
+     * @brief 更新最大批处理大小
+     * @param maxBatchSize 最大批处理大小
+     */
+    void setMaxBatchSize(size_t maxBatchSize);
+
+    /**
+     * @brief 获取当前最大批处理大小
+     * @return 最大批处理大小
+     */
+    size_t getMaxBatchSize() const;
     
     /**
      * @brief 根据系统负载动态调整批处理大小
