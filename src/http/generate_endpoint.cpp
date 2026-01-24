@@ -296,6 +296,8 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
     resp["text"] = generatedText;
     resp["response_time"] = responseTime;
     resp["tokens_per_second"] = tokensPerSecond;
+    resp["generated_tokens"] = generatedTokenCount;
+    resp["max_tokens"] = req.maxTokens;
 
     return ResponseBuilder::success(resp);
 }

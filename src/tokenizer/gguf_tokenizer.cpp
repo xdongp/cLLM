@@ -133,14 +133,23 @@ GGUFTokenizer::~GGUFTokenizer() {
 
 bool GGUFTokenizer::load(const std::string& modelPath) {
     try {
+        fprintf(stderr, "[DEBUG GGUFTokenizer] load() entry\n");
+        fflush(stderr);
         CLLM_INFO("GGUFTokenizer::load: Starting load from: %s", modelPath.c_str());
+        fflush(stdout); fflush(stderr);
         modelPath_ = modelPath;
         
         // 创建GGUFLoader实例
         // 禁用内存映射以避免与 llama.cpp 的 mmap 冲突
+        fprintf(stderr, "[DEBUG GGUFTokenizer] about to create GGUFLoader\n");
+        fflush(stderr);
         CLLM_INFO("GGUFTokenizer::load: Creating GGUFLoader (mmap disabled)...");
+        fflush(stdout); fflush(stderr);
         GGUFLoader loader(modelPath, false);
+        fprintf(stderr, "[DEBUG GGUFTokenizer] GGUFLoader created\n");
+        fflush(stderr);
         CLLM_INFO("GGUFTokenizer::load: GGUFLoader created");
+        fflush(stdout); fflush(stderr);
         
         // 加载GGUF文件
         CLLM_INFO("GGUFTokenizer::load: Calling loader.load()...");

@@ -7,7 +7,6 @@
 #include "cllm/memory/monitor.h"
 #include "cllm/common/logger.h"
 #include "cllm/inference/llama_cpp_backend.h"
-// #include "cllm/scheduler/hybrid_batch_strategy.h"  // TODO: implement this class
 #include <chrono>
 #include <stdexcept>
 #include <queue>
@@ -49,28 +48,6 @@ Scheduler::Scheduler(
     if (!modelExecutor_->isLoaded()) {
         throw std::runtime_error("Model executor must be pre-loaded before creating Scheduler");
     }
-    
-    // TODO: 初始化混合批处理策略 (HybridBatchStrategy class not implemented yet)
-    // if (Config::instance().dynamicBatchTunerEnabled()) {
-    //     HybridConfig hybridConfig;
-    //     hybridConfig.enabled = true;
-    //     hybridConfig.tuning.enabled = true;
-    //     hybridConfig.tuning.durationRequests = 100;
-    //     hybridConfig.tuning.minBatchSize = Config::instance().dynamicBatchTunerMinBatchSize();
-    //     hybridConfig.tuning.maxBatchSize = Config::instance().dynamicBatchTunerMaxBatchSize();
-    //     hybridConfig.tuning.initialBatchSize = Config::instance().dynamicBatchTunerInitialBatchSize();
-    //     hybridConfig.stable.batchSize = Config::instance().dynamicBatchTunerInitialBatchSize();
-    //     hybridConfig.stable.accumulationEnabled = true;
-    //     hybridConfig.stable.minBatchSize = 8;
-    //     hybridConfig.stable.maxWaitMs = 50;
-    //     hybridConfig.monitoring.checkIntervalRequests = 1000;
-    //     hybridConfig.monitoring.driftThreshold = 0.10;
-    //     hybridConfig.monitoring.autoRetune = true;
-    //     
-    //     hybridStrategy_ = std::make_unique<HybridBatchStrategy>(hybridConfig);
-    //     
-    //     CLLM_INFO("[Scheduler] 混合批处理策略已启用");
-    // }
 }
 
 Scheduler::Scheduler(
@@ -107,28 +84,6 @@ Scheduler::Scheduler(
     
     // 加载模型
     modelExecutor_->loadModel();
-    
-    // TODO: 初始化混合批处理策略 (HybridBatchStrategy class not implemented yet)
-    // if (Config::instance().dynamicBatchTunerEnabled()) {
-    //     HybridConfig hybridConfig;
-    //     hybridConfig.enabled = true;
-    //     hybridConfig.tuning.enabled = true;
-    //     hybridConfig.tuning.durationRequests = 100;
-    //     hybridConfig.tuning.minBatchSize = Config::instance().dynamicBatchTunerMinBatchSize();
-    //     hybridConfig.tuning.maxBatchSize = Config::instance().dynamicBatchTunerMaxBatchSize();
-    //     hybridConfig.tuning.initialBatchSize = Config::instance().dynamicBatchTunerInitialBatchSize();
-    //     hybridConfig.stable.batchSize = Config::instance().dynamicBatchTunerInitialBatchSize();
-    //     hybridConfig.stable.accumulationEnabled = true;
-    //     hybridConfig.stable.minBatchSize = 8;
-    //     hybridConfig.stable.maxWaitMs = 50;
-    //     hybridConfig.monitoring.checkIntervalRequests = 1000;
-    //     hybridConfig.monitoring.driftThreshold = 0.10;
-    //     hybridConfig.monitoring.autoRetune = true;
-    //     
-    //     hybridStrategy_ = std::make_unique<HybridBatchStrategy>(hybridConfig);
-    //     
-    //     CLLM_INFO("[Scheduler] 混合批处理策略已启用");
-    // }
 }
 
 Scheduler::~Scheduler() {
@@ -187,19 +142,16 @@ size_t Scheduler::addRequest(const RequestState& request) {
     
     req.arrivalTime = getCurrentTime();
     
-    // 注意：temperature=0.0 是合法的（表示贪婪采样），不要覆盖！
-    // 使用 < 0 作为 sentinel 值表示"未设置"
-    if (req.temperature < 0.0f) {
+    if (req.temperature == 0.0f) {
         req.temperature = config_.defaultTemperature;
     }
-    // topP=0.0 表示禁用 top-p 采样，也是合法的
-    if (req.topP < 0.0f) {
+    if (req.topP == 0.0f) {
         req.topP = config_.defaultTopP;
     }
-    if (req.topK < 0) {
+    if (req.topK == 0) {
         req.topK = config_.defaultTopK;
     }
-    if (req.maxTokens <= 0) {
+    if (req.maxTokens == 0) {
         req.maxTokens = config_.defaultMaxTokens;
     }
     
@@ -470,18 +422,14 @@ void Scheduler::processRequests() {
     }
     
     // 🔥 关键优化: 批处理累积策略
-    // 减少等待时间以提高响应速度
-    size_t minBatchSize = 4;  // 减少最小批处理大小
-    // TODO: HybridBatchStrategy not implemented yet
-    // if (hybridStrategy_ && hybridStrategy_->isStable()) {
-    //     minBatchSize = hybridStrategy_->getOptimalBatchSize();
-    // }
+    // 如果队列请求较少且没有运行中的请求，等待更多请求到达
+    // 这样可以形成更大的批处理，提高吞吐量
+    constexpr size_t MIN_BATCH_SIZE_FOR_ACCUMULATION = 8;
+    constexpr size_t MAX_WAIT_MS_FOR_BATCH = 50;  // 最多等待50ms
     
-    constexpr size_t MAX_WAIT_MS_FOR_BATCH = 5;  // 减少等待时间到5ms
-    
-    if (queueSize < minBatchSize && runningCount == 0) {
+    if (queueSize < MIN_BATCH_SIZE_FOR_ACCUMULATION && runningCount == 0) {
         CLLM_DEBUG("[Scheduler::processRequests] Queue size (%zu) < %zu, waiting for more requests (max %dms)",
-                  queueSize, minBatchSize, MAX_WAIT_MS_FOR_BATCH);
+                  queueSize, MIN_BATCH_SIZE_FOR_ACCUMULATION, MAX_WAIT_MS_FOR_BATCH);
         
         // 等待更多请求到达
         std::unique_lock<std::mutex> lock(queueMutex_);
@@ -491,8 +439,8 @@ void Scheduler::processRequests() {
         queueCondition_.wait_for(
             lock,
             std::chrono::milliseconds(MAX_WAIT_MS_FOR_BATCH),
-            [this, minBatchSize]() {
-                return requestQueue_.getQueueSize() >= minBatchSize || !running_;
+            [this]() {
+                return requestQueue_.getQueueSize() >= MIN_BATCH_SIZE_FOR_ACCUMULATION || !running_;
             }
         );
         
@@ -631,7 +579,7 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
             request.generatedTokens = std::move(info.existingTokens);
             request.isCompleted = info.isCompleted;
             request.isFailed = info.isFailed;
-            
+
             // Phase 1: 状态转换 PENDING → PROCESSING
             if (info.isPending) {
                 CLLM_DEBUG("Request %llu: PENDING → PROCESSING", request.requestId);
@@ -647,6 +595,15 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
             CLLM_DEBUG("Request %llu: NEW REQUEST (PENDING), will transition to PROCESSING", request.requestId);
             request.startTime = getCurrentTime();
             request.isRunning = false;
+        }
+        
+        // 🔥 关键修复：检查请求是否已经达到maxTokens限制
+        // 如果已经达到，标记为完成，避免继续生成
+        if (!request.isCompleted && !request.isFailed && request.maxTokens > 0 &&
+            request.generatedTokens.size() >= static_cast<size_t>(request.maxTokens)) {
+            CLLM_DEBUG("Request %llu reached max tokens limit (%zu >= %d) before batch processing, marking as completed",
+                      request.requestId, request.generatedTokens.size(), request.maxTokens);
+            request.isCompleted = true;
         }
         
         // Phase 1: 状态转换 PENDING → PROCESSING
@@ -681,21 +638,11 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
         return;
     }
     
-    CLLM_DEBUG("Starting batch processing for %zu requests (filtered from %zu total)",
+    CLLM_INFO("Starting batch processing for %zu requests (filtered from %zu total)",
               activeBatch.size(), batch.size());
-    
-    auto batchStart = std::chrono::steady_clock::now();
     
     SchedulerBatchProcessor processor(this, modelExecutor_, kvCache_, &batchManager_);
     processor.processBatch(activeBatch);
-    
-    auto batchEnd = std::chrono::steady_clock::now();
-    auto processingTime = std::chrono::duration_cast<std::chrono::milliseconds>(batchEnd - batchStart).count();
-    
-    // TODO: HybridBatchStrategy not implemented yet
-    // if (hybridStrategy_) {
-    //     hybridStrategy_->onBatchProcessed(activeBatch.size(), static_cast<double>(processingTime));
-    // }
     
     // 🔥 优化: 检查是否有未完成的请求，将它们重新加入队列以便重组
     std::vector<RequestState> incompleteRequests;
@@ -721,6 +668,17 @@ void Scheduler::processBatch(std::vector<RequestState>& batch) {
     // 🔥 优化: 立即释放已完成请求的序列ID，避免阻塞后续批处理
     for (auto& request : batch) {
         request.completionTime = getCurrentTime();
+        
+        // 🔥 关键优化: 如果请求已完成，立即释放序列ID和KV缓存
+        if (request.isCompleted || request.isFailed) {
+            if (modelExecutor_) {
+                // 立即清理KV缓存和释放序列ID，而不是等到异步清理
+                modelExecutor_->cleanupKVCache(request.requestId);
+                modelExecutor_->releaseSequenceId(request.requestId);
+                CLLM_DEBUG("[Scheduler] Immediately released seq_id and KV cache for completed request %llu", 
+                          request.requestId);
+            }
+        }
         
         CLLM_DEBUG("Request %llu generated tokens: %zu", request.requestId, request.generatedTokens.size());
         

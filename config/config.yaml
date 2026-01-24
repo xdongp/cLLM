@@ -5,17 +5,17 @@
 server:
   host: "0.0.0.0"          # 服务器监听地址
   port: 8080               # 服务器监听端口
-  num_threads: 8          # Drogon 工作线程数（0 表示使用硬件并发数）- 基线配置
-  min_threads: 4           # 最小线程数（避免 /generate 阻塞导致 /health 卡住）- 基线配置
+  num_threads: 8           # Drogon 工作线程数（0 表示使用硬件并发数）- 优化：增加线程数提升并发处理能力
+  min_threads: 4           # 最小线程数（避免 /generate 阻塞导致 /health 卡住）- 优化：增加最小线程数
   use_libtorch: false      # 是否使用 LibTorch 后端（否则使用 Kylin）
 
 # 模型配置
 model:
-  path: "/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/Qwen3-0.6B"   # HuggingFace 模型目录（safetensors 格式）
+  path: "/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/qwen3-0.6b-q4_k_m.gguf"   # 模型目录或模型文件路径
   vocab_size: 151936       # 词表大小（可被后端自动探测覆盖）
   max_context_length: 2048 # 最大上下文长度
-  default_max_tokens: 100  # 默认最大生成 token 数 - 修复：与API默认值一致，避免覆盖用户请求的max_tokens
-  quantization: "bf16"     # 量化类型: fp16, int8, int4, q4_k_m, bf16
+  default_max_tokens: 500  # 默认最大生成 token 数 - 优化：对标Ollama，增加max_tokens以提升吞吐量
+  quantization: "fp16"     # 量化类型: fp16, int8, int4
 
 # HTTP 配置
 http:
@@ -65,114 +65,51 @@ api:
 scheduler:
   max_iterations: 2000      # 优化：增加最大迭代次数以处理更多请求
   batch_timeout_ms: 100     # 优化：减少批处理超时以更快响应
-  max_batch_size: 128      # 🔥 优化：大幅增加最大批处理大小以最大化吞吐量
+  max_batch_size: 64       # 优化：增加最大批处理大小以提升吞吐量
   context_usage_threshold: 0.75
   default_temperature: 0.7
   default_top_p: 0.9
   default_top_k: 50
   default_max_tokens: 100
   request_timeout: 120.0    # 优化：增加请求超时时间以适应并发场景
-  loop_interval: 1          # 优化：极短循环间隔以最大化吞吐量
-  idle_loop_interval: 10     # 优化：极短空闲循环间隔
-  wait_poll_interval_ms: 1   # 优化：极短等待轮询间隔（已使用条件变量，此参数不再使用）
+  loop_interval: 5          # 优化：减少循环间隔以更快处理请求
+  idle_loop_interval: 50     # 优化：减少空闲循环间隔
+  wait_poll_interval_ms: 5   # 优化：减少等待轮询间隔
 
 # 资源配置
 resources:
-  max_batch_size: 128      # 🔥 优化：大幅增加最大批处理大小以最大化GPU并行能力
+  max_batch_size: 8        # 优化：减少最大批处理大小以避免内存问题
   max_context_length: 2048
-  # 🔧 KV Cache 配置（用于 inference::KVCacheManager 统计管理）
-  # 注意：对于 llama.cpp 后端，实际 KV cache 数据由 llama.cpp 内部管理
-  # 这里的配置用于统计信息跟踪和淘汰决策
-  kv_cache_max_size: 64     # 🔧 优化：与 n_seq_max 保持一致（64个序列）
-  kv_cache_max_memory_mb: 2048  # 🔧 优化：2GB，足够支持高并发场景
+  kv_cache_max_size: 100    # 优化：减少KV cache大小以避免内存问题
+  kv_cache_max_memory_mb: 4096  # 优化：减少KV cache内存限制
   memory_limit_mb: 8192
 
-# 缓存配置（用于非 llama.cpp 后端的 KVCache）
-# 对于 llama.cpp 后端，此配置不使用（Scheduler 不创建 KVCache）
+# 缓存配置
 cache:
-  default_max_size: 64      # 🔧 优化：与 n_seq_max 保持一致
-  default_max_memory_mb: 2048  # 🔧 优化：与 kv_cache_max_memory_mb 一致
+  default_max_size: 200    # 优化：增加缓存大小以支持更多并发请求
+  default_max_memory_mb: 8192  # 优化：增加缓存内存限制
   enable_lru: true
   enable_memory_limit: true
   enable_stats: true
-  eviction_threshold: 0.8    # 🔧 优化：80% 触发淘汰，避免内存溢出
+  eviction_threshold: 0.9    # 优化：提高驱逐阈值以减少缓存抖动
   cleanup_interval: 500    # 优化：减少清理间隔以更快释放内存
 
-# 后端配置
+# LibTorch 后端配置
 backend:
-  type: "kylin"  # 使用 Kylin 后端（支持 HuggingFace safetensors）
-                 # - "" (空): 自动选择（根据模型文件类型）
-                 # - "kylin": 使用 Kylin 后端（支持 .bin、.gguf 和 HF 目录）
-                 # - "llama_cpp": 使用 llama.cpp 后端（需要 .gguf 模型文件）
-                 # - "libtorch": 使用 LibTorch 后端（需要 .pt 模型文件）
-  
   libtorch:
     seq_len_candidates: [8, 16, 32, 64, 128, 256]
     fallback_seq_len: 8
   
-  # Kylin 后端配置
-  kylin:
-    operator_backend: "ggml"  # 算子后端: auto, native, ggml
-                              # - auto: 自动选择（优先GGML，不可用时回退Native）
-                              # - native: 使用自研C++算子（学习/调试）
-                              # - ggml: 使用GGML高性能算子（生产环境）
-                              # 已设置为 ggml 以提高性能
-    
-    device_backend: "cpu"   # 设备后端: cpu, metal, cuda, auto
-                              # - cpu: 使用 CPU 计算
-                              # - metal: 使用 Apple GPU（Metal）加速
-                              # - cuda: 使用 NVIDIA GPU（CUDA）加速
-                              # - auto: 自动检测并选择最优设备
-  
   # llama.cpp 后端配置
   llama_cpp:
-    n_batch: 512          # 批处理大小（512是当前最优配置）
-    n_threads: 8          # 基线配置：与CPU核心数一致（8核）
-    n_gpu_layers: 99       # GPU层数（99表示使用全部GPU层，启用Metal加速）
-    n_seq_max: 64         # 基线配置：支持合理并发
+    n_batch: 512          # 优化：减少批处理大小以避免内存问题
+    n_threads: 8          # 优化：增加线程数以充分利用CPU
+    n_gpu_layers: 99       # GPU层数（99表示使用全部GPU层）
+    n_seq_max: 32          # 优化：减少最大序列数以避免内存问题
     use_mmap: true        # 使用内存映射
     use_mlock: false      # 使用内存锁定
 
-# 动态批处理调谐器配置
-dynamic_batch_tuner:
-  enabled: true                     # 是否启用动态 batch size 调谐器
-  
-  # 策略选择
-  strategy: "hybrid"               # 策略: static, adaptive, hybrid
-  
-  # 搜索算法选择（adaptive 和 hybrid 策略使用）
-  search_algorithm: "adaptive_step"  # 算法: adaptive_step, exponential_binary
-  
-  # static 策略专用参数
-  fixed_batch_size: 24             # 静态算法使用的固定 batch size
-  
-  # adaptive/hybrid 策略参数
-  min_batch_size: 16               # 最小 batch size
-  max_batch_size: 48               # 最大 batch size
-  initial_batch_size: 24           # 初始 batch size
-  
-  # 时间阈值
-  time_increase_threshold: 0.30    # 处理时间增加阈值（30%，优化：放宽以允许更大的batch size）
-  time_decrease_threshold: 0.10    # 处理时间减少阈值（10%，优化：增加以更积极调整）
-  
-  # 验证和调整
-  validation_interval: 50          # 验证间隔（每 50 个 batch，优化：减少以更快验证）
-  max_consecutive_time_increases: 5  # 最大连续时间增加次数（优化：增加以允许更多探索）
-  auto_adjust_enabled: true        # 是否启用自动调整
-  
-  # 探测参数
-  probe_batch_count: 10            # 探测时运行的 batch 数量（优化：增加以提高准确性）
-  validation_batch_count: 10       # 验证时运行的 batch 数量（优化：增加以提高准确性）
-  
-  # 调整因子
-  adjustment_factor: 0.50          # 调整因子（50%，优化：增加以更快调整）
-  
-  # 探索参数
-  exploration_interval: 200        # 定期探索间隔（每 200 个 batch，优化：减少以更频繁探索）
-
 # 日志配置
 logging:
-  level: "debug"         # 日志级别: trace, debug, info, warn, error, critical
-  file: "logs/cllm_server.log"  # 日志文件路径
-  max_size_mb: 100         # 日志文件最大大小(MB)
-  max_files: 5            # 保留的日志文件数量
+  level: "info"
+  file: ""

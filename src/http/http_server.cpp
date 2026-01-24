@@ -144,28 +144,30 @@ static bool parseHeaders(int fd, std::string& buffer, HttpRequest& request) {
 
 static bool readBody(int fd, std::string& buffer, HttpRequest& request, size_t contentLength) {
     std::string body;
+    size_t remaining = contentLength;
     
     // 先使用buffer中已有的数据
-    if (buffer.length() > 0) {
-        size_t toRead = std::min(buffer.length(), contentLength);
-        body = buffer.substr(0, toRead);
+    if (!buffer.empty()) {
+        size_t toRead = std::min(buffer.length(), remaining);
+        body.append(buffer, 0, toRead);
         buffer.erase(0, toRead);
-        contentLength -= toRead;
+        remaining -= toRead;
     }
     
     // 读取剩余数据
-    while (contentLength > 0 && body.length() < contentLength) {
+    while (remaining > 0) {
         char buf[4096];
-        size_t toRead = std::min(sizeof(buf) - 1, contentLength - body.length());
+        size_t toRead = std::min(sizeof(buf), remaining);
         ssize_t n = recv(fd, buf, toRead, 0);
         if (n <= 0) {
             break;
         }
         body.append(buf, n);
+        remaining -= static_cast<size_t>(n);
     }
     
     request.setBody(body);
-    return body.length() == contentLength;
+    return remaining == 0;
 }
 
 static bool parseHttpRequest(int fd, HttpRequest& request) {

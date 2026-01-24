@@ -98,13 +98,29 @@ class UnifiedBenchmarkTester:
                     generated_text = data.get("text", "")
                     tokens_per_second = data.get("tokens_per_second", 0)
                     
-                    # 估算生成的tokens
-                    if tokens_per_second > 0:
+                    # 使用服务端返回的真实生成token数（优先），否则回退估算
+                    max_tokens_resp = data.get("max_tokens")
+                    if "generated_tokens" in data:
+                        generated_tokens = int(data.get("generated_tokens", 0))
+                    elif tokens_per_second > 0:
                         generated_tokens = int(tokens_per_second * response_time)
                     elif any(ord(c) > 127 for c in generated_text):
                         generated_tokens = len(generated_text)
                     else:
                         generated_tokens = len(generated_text.split())
+                    
+                    if max_tokens_resp is not None and max_tokens_resp != max_tokens:
+                        logger.warning(
+                            "Server returned max_tokens=%s (requested %s)",
+                            max_tokens_resp,
+                            max_tokens
+                        )
+                    if max_tokens_resp is not None and generated_tokens > max_tokens_resp:
+                        logger.warning(
+                            "Server returned generated_tokens=%s > max_tokens=%s",
+                            generated_tokens,
+                            max_tokens_resp
+                        )
                     
                     prompt_tokens = len(prompt)
                 else:  # ollama

@@ -113,7 +113,7 @@ bool LlamaCppBackend::validateVocabSize() {
         return false;
     }
     
-    // 获取模型的 vocab size
+    // 获取模型的 vocab size (直接从 llama.cpp 获取)
     const struct llama_vocab* vocab = llama_model_get_vocab(model_);
     if (!vocab) {
         CLLM_ERROR("[LlamaCppBackend] Failed to get vocab from model");
@@ -154,12 +154,17 @@ bool LlamaCppBackend::initialize() {
         createModelParams();
         
         // 2. 加载模型
+        fprintf(stderr, "[DEBUG] About to call llama_model_load_from_file\n");
+        fflush(stderr);
         model_ = llama_model_load_from_file(modelPath_.c_str(), *modelParams_);
+        fprintf(stderr, "[DEBUG] llama_model_load_from_file returned\n");
+        fflush(stderr);
         if (!model_) {
             CLLM_ERROR("[LlamaCppBackend] Failed to load model from: %s", modelPath_.c_str());
             return false;
         }
         CLLM_INFO("[LlamaCppBackend] Model loaded successfully");
+        fflush(stdout); fflush(stderr);
         
         // 3. 创建上下文参数
         createContextParams();
@@ -175,6 +180,7 @@ bool LlamaCppBackend::initialize() {
         CLLM_INFO("[LlamaCppBackend] Context created successfully");
         
         // 5. 跳过 GGUFTokenizer 加载 - 直接使用 llama.cpp 内置 tokenizer
+        // 原因：GGUFTokenizer 在 llama.cpp 模型加载后创建会导致内存损坏
         CLLM_INFO("[LlamaCppBackend] Skipping GGUFTokenizer, using llama.cpp native tokenizer");
         
         // 从 llama.cpp 获取 vocab size 并更新配置
@@ -273,7 +279,10 @@ Tensor LlamaCppBackend::forward(const std::vector<int> &inputIds) {
         batch.n_tokens = static_cast<int32_t>(tokens.size());
         
         // 3. 推理
+        CLLM_INFO("[LlamaCppBackend] Calling llama_decode with %d tokens, starting at position %zu...", 
+                  batch.n_tokens, currentPosition_);
         int decodeResult = llama_decode(ctx_, batch);
+        CLLM_INFO("[LlamaCppBackend] llama_decode returned: %d", decodeResult);
         
         if (decodeResult != 0) {
             for (int32_t i = 0; i < batch.n_tokens; ++i) {

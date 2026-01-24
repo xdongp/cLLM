@@ -101,7 +101,7 @@ backend:
   llama_cpp:
     n_batch: 512
     n_threads: 8
-    n_gpu_layers: 99      # 启用 Metal GPU 加速 (99=全部层到GPU)
+    n_gpu_layers: 99      # 启用 Metal GPU 加速
     n_seq_max: 64         # 增加序列数量支持更高并发
     use_mmap: true
     use_mlock: false
@@ -127,7 +127,7 @@ dynamic_batch_tuner:
 
 # 日志配置
 logging:
-  level: "warn"   # 减少日志输出以提高性能
+  level: "info"   # 调试时使用info级别
   file: "logs/cllm_server.log"
   max_size_mb: 100
   max_files: 5

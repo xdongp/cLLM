@@ -71,6 +71,23 @@ void SchedulerBatchProcessor::processBatch(std::vector<RequestState>& batch) {
             if (activeRequests.size() <= 3) {
                 CLLM_INFO("processBatch: Batch efficiency too low (%zu/%zu), breaking to allow regrouping with new requests", 
                          activeRequests.size(), batch.size());
+                
+                // 🔥 关键修复：在提前结束前，确保所有请求的状态都被正确更新
+                // 检查所有请求是否已经达到maxTokens限制，如果是则标记为完成
+                for (auto& req : batch) {
+                    if (!req.isCompleted && !req.isFailed && 
+                        req.generatedTokens.size() >= static_cast<size_t>(req.maxTokens)) {
+                        CLLM_DEBUG("processBatch: Request %llu reached max tokens limit (%zu >= %d) before batch end, marking as completed",
+                                  req.requestId, req.generatedTokens.size(), req.maxTokens);
+                        req.isCompleted = true;
+                        
+                        // Phase 7: 触发完成回调
+                        if (scheduler_) {
+                            scheduler_->triggerResponseCallback(req.requestId, req);
+                        }
+                    }
+                }
+                
                 // 提前结束，剩余的活跃请求会在下次调度时与新请求重组
                 break;
             }
@@ -470,8 +487,30 @@ void SchedulerBatchProcessor::updateRequestStates(
             continue;
         }
         
+        // 🔥 关键修复：在生成token之前再次检查max_tokens，确保不会超出限制
+        // 这是为了防止在高并发下，批处理提前结束时，未完成的请求已经生成了超过maxTokens的tokens
+        if (batch[i].generatedTokens.size() >= batch[i].maxTokens) {
+            CLLM_DEBUG("Request %zu reached max tokens limit BEFORE adding token (%zu >= %d), marking as completed", 
+                      i, batch[i].generatedTokens.size(), batch[i].maxTokens);
+            batch[i].isCompleted = true;
+            
+            // Phase 7: 触发完成回调
+            if (scheduler_) {
+                scheduler_->triggerResponseCallback(batch[i].requestId, batch[i]);
+            }
+            continue;
+        }
+        
         batch[i].generatedTokens.push_back(nextToken);
         CLLM_DEBUG("Request %zu - Generated tokens now: %zu", i, batch[i].generatedTokens.size());
+        
+        // 🔒 安全兜底：防止生成数量超过 maxTokens
+        if (batch[i].maxTokens > 0 &&
+            batch[i].generatedTokens.size() > static_cast<size_t>(batch[i].maxTokens)) {
+            CLLM_WARN("Request %zu - Generated tokens exceeded maxTokens (%zu > %d), truncating",
+                      i, batch[i].generatedTokens.size(), batch[i].maxTokens);
+            batch[i].generatedTokens.resize(static_cast<size_t>(batch[i].maxTokens));
+        }
         
         // Check if we should complete the request
         const bool eosReached = (batch[i].eosTokenId >= 0 && nextToken == batch[i].eosTokenId);
