@@ -3,12 +3,15 @@
  * @brief HuggingFace 格式 Transformer 模型
  * 
  * 支持直接加载 safetensors 格式的 HF 模型进行推理
+ * 支持 CPU 和 Metal GPU 加速
  */
 
 #pragma once
 
 #include "cllm/kylin/hf/config.h"
 #include "cllm/kylin/hf/safetensors_loader.h"
+#include "cllm/kylin/hf/ggml_backend.h"
+#include "cllm/kylin/core/ggml_kernels.h"
 
 #include <memory>
 #include <vector>
@@ -24,6 +27,10 @@ namespace kylin {
  * 支持两种模式：
  * - 预转换模式（推荐）：加载时将 BF16 权重转为 F32，运行时无转换开销
  * - 实时转换模式：运行时从 BF16 转换（节省内存但较慢）
+ * 
+ * 设备支持：
+ * - CPU：使用 BLAS/SIMD 优化
+ * - Metal GPU：使用 Apple Metal 加速（macOS）
  */
 class HFTransformerModel {
 public:
@@ -31,8 +38,9 @@ public:
      * @brief 从模型目录加载
      * 
      * @param modelDir 包含 config.json 和 model.safetensors 的目录
+     * @param device 计算设备类型（默认 CPU）
      */
-    explicit HFTransformerModel(const std::string& modelDir);
+    explicit HFTransformerModel(const std::string& modelDir, DeviceType device = DeviceType::CPU);
     ~HFTransformerModel();
     
     /**
@@ -97,6 +105,11 @@ private:
     bool loaded_ = false;
     HFModelConfig config_;
     std::unique_ptr<SafetensorsLoader> loader_;
+    DeviceType deviceType_ = DeviceType::CPU;
+    
+    // GPU 后端（Metal）
+    std::unique_ptr<GGMLGPUBackend> gpuBackend_;
+    bool useGPU_ = false;
     
     // 权重指针（指向 mmap 的 BF16 数据）
     const uint16_t* embedTokens_ = nullptr;

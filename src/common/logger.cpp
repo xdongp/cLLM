@@ -52,4 +52,8 @@ void Logger::flush() {
     logger_->flush();
 }
 
+bool Logger::shouldLog(spdlog::level::level_enum level) const {
+    return logger_ && logger_->should_log(level);
+}
+
 } // namespace cllm

@@ -266,8 +266,18 @@ bool KylinBackend::initializeHFModel() {
     CLLM_INFO("[KylinBackend] Initializing HuggingFace model (safetensors)...");
     
     try {
+        // 转换设备类型
+        kylin::DeviceType deviceType = kylin::DeviceType::CPU;
+        if (deviceBackendType_ == kylin::BackendType::Metal) {
+            deviceType = kylin::DeviceType::Metal;
+            CLLM_INFO("[KylinBackend] Requesting Metal GPU acceleration for HF model");
+        } else if (deviceBackendType_ == kylin::BackendType::CUDA) {
+            deviceType = kylin::DeviceType::CUDA;
+            CLLM_INFO("[KylinBackend] Requesting CUDA GPU acceleration for HF model");
+        }
+        
         // 创建并加载 HuggingFace 模型
-        hfModel_ = std::make_unique<kylin::HFTransformerModel>(modelPath_);
+        hfModel_ = std::make_unique<kylin::HFTransformerModel>(modelPath_, deviceType);
         
         if (!hfModel_->isLoaded()) {
             CLLM_ERROR("[KylinBackend] Failed to load HuggingFace model: %s", modelPath_.c_str());

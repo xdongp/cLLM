@@ -427,13 +427,52 @@ bool Config::backendLlamaCppUseMlock() const {
 std::string Config::backendKylinDeviceBackend() const {
     std::lock_guard<std::mutex> lock(mutex_);
     
-    return config_["backend"]["kylin"]["device_backend"].as<std::string>("cpu");
+    if (!config_ || !config_.IsMap()) {
+        return "cpu";
+    }
+    const auto backend = config_["backend"];
+    if (!backend || !backend.IsMap()) {
+        return "cpu";
+    }
+    const auto kylin = backend["kylin"];
+    if (!kylin || !kylin.IsMap()) {
+        return "cpu";
+    }
+    return kylin["device_backend"].as<std::string>("cpu");
 }
 
 std::string Config::backendKylinOperatorBackend() const {
     std::lock_guard<std::mutex> lock(mutex_);
     
-    return config_["backend"]["kylin"]["operator_backend"].as<std::string>("ggml");
+    if (!config_ || !config_.IsMap()) {
+        return "ggml";
+    }
+    const auto backend = config_["backend"];
+    if (!backend || !backend.IsMap()) {
+        return "ggml";
+    }
+    const auto kylin = backend["kylin"];
+    if (!kylin || !kylin.IsMap()) {
+        return "ggml";
+    }
+    return kylin["operator_backend"].as<std::string>("ggml");
+}
+
+int Config::backendKylinNumThreads() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!config_ || !config_.IsMap()) {
+        return 0;
+    }
+    const auto backend = config_["backend"];
+    if (!backend || !backend.IsMap()) {
+        return 0;
+    }
+    const auto kylin = backend["kylin"];
+    if (!kylin || !kylin.IsMap()) {
+        return 0;
+    }
+    return kylin["n_threads"].as<int>(0);
 }
 
 // API端点配置

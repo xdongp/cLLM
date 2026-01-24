@@ -3,6 +3,7 @@
 #include "cllm/http/response_builder.h"
 #include "cllm/scheduler/scheduler.h"
 #include "cllm/tokenizer/i_tokenizer.h"
+#include "cllm/tokenizer/unicode_utils.h"
 #include "cllm/common/logger.h"
 #include "cllm/common/config.h"
 #include <nlohmann/json.hpp>
@@ -12,6 +13,61 @@
 #include <algorithm>
 
 namespace cllm {
+
+namespace {
+
+std::string sanitizeUtf8(const std::string& input) {
+    std::string output;
+    output.reserve(input.size());
+
+    auto isContinuation = [](unsigned char c) {
+        return (c & 0xC0) == 0x80;
+    };
+
+    for (size_t i = 0; i < input.size();) {
+        unsigned char c = static_cast<unsigned char>(input[i]);
+        size_t len = 0;
+
+        if ((c & 0x80) == 0x00) {
+            len = 1;
+        } else if ((c & 0xE0) == 0xC0) {
+            len = 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            len = 3;
+        } else if ((c & 0xF8) == 0xF0) {
+            len = 4;
+        } else {
+            output.push_back('?');
+            i += 1;
+            continue;
+        }
+
+        if (i + len > input.size()) {
+            output.push_back('?');
+            break;
+        }
+
+        bool valid = true;
+        for (size_t j = 1; j < len; ++j) {
+            if (!isContinuation(static_cast<unsigned char>(input[i + j]))) {
+                valid = false;
+                break;
+            }
+        }
+
+        if (valid) {
+            output.append(input, i, len);
+            i += len;
+        } else {
+            output.push_back('?');
+            i += 1;
+        }
+    }
+
+    return output;
+}
+
+} // namespace
 
 GenerateEndpoint::GenerateEndpoint(Scheduler* scheduler, ITokenizer* tokenizer)
     : ApiEndpoint(cllm::Config::instance().apiEndpointGenerateName(), cllm::Config::instance().apiEndpointGeneratePath(), cllm::Config::instance().apiEndpointGenerateMethod()),
@@ -234,6 +290,10 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
 
                     try {
                         generatedText = tokenizer_->decode(toDecode, true);
+                        if (!UnicodeUtils::isValidUtf8(generatedText)) {
+                            CLLM_WARN("Decoded text contains invalid UTF-8, sanitizing");
+                            generatedText = sanitizeUtf8(generatedText);
+                        }
                         #ifdef CLLM_DEBUG_MODE
                         CLLM_DEBUG("Decoded text: [%s]", generatedText.c_str());
                         CLLM_DEBUG("Decoded text length: %zu", generatedText.length());

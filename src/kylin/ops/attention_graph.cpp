@@ -113,8 +113,8 @@ void AttentionGraphBuilder::applyQKNorm(
             
             // 调试：打印 RMS Norm 后、乘法前的 Q 形状
             if (layerIdx == 0) {
-                CLLM_INFO("[Attention L%zu] Q before mul: shape=[%lld, %lld, %lld], norm_weight shape=[%lld]",
-                          layerIdx, q->ne[0], q->ne[1], q->ne[2], weights.attnQNorm->ne[0]);
+                CLLM_DEBUG("[Attention L%zu] Q before mul: shape=[%lld, %lld, %lld], norm_weight shape=[%lld]",
+                           layerIdx, q->ne[0], q->ne[1], q->ne[2], weights.attnQNorm->ne[0]);
             }
             
             q = ggml_mul(ctx, q, weights.attnQNorm);
@@ -132,8 +132,8 @@ void AttentionGraphBuilder::applyQKNorm(
             // 调试：保存 RMS Norm 前的 K
             if (layerIdx == 0) {
                 debugNodes_.kBeforeNorm = kNew;  // 保存用于调试
-                CLLM_INFO("[Attention L%zu] K before rms_norm: shape=[%lld, %lld, %lld]",
-                          layerIdx, kNew->ne[0], kNew->ne[1], kNew->ne[2]);
+                CLLM_DEBUG("[Attention L%zu] K before rms_norm: shape=[%lld, %lld, %lld]",
+                           layerIdx, kNew->ne[0], kNew->ne[1], kNew->ne[2]);
             }
             
             kNew = ggml_rms_norm(ctx, kNew, config_.rmsNormEps);
@@ -141,8 +141,8 @@ void AttentionGraphBuilder::applyQKNorm(
             // 保存 RMS Norm 后、乘法前的 K
             if (layerIdx == 0) {
                 debugNodes_.kAfterRmsNorm = kNew;  // 保存用于调试
-                CLLM_INFO("[Attention L%zu] K after rms_norm: shape=[%lld, %lld, %lld]",
-                          layerIdx, kNew->ne[0], kNew->ne[1], kNew->ne[2]);
+                CLLM_DEBUG("[Attention L%zu] K after rms_norm: shape=[%lld, %lld, %lld]",
+                           layerIdx, kNew->ne[0], kNew->ne[1], kNew->ne[2]);
             }
             
             kNew = ggml_mul(ctx, kNew, weights.attnKNorm);
@@ -185,7 +185,7 @@ void AttentionGraphBuilder::applyRoPE(
     const int nRot = static_cast<int>(actualHeadDim);
     
     if (layerIdx == 0) {
-        CLLM_INFO("[Attention L%zu] RoPE: type=%d, freq_base=%.0f, n_rot=%d, head_dim=%zu",
+        CLLM_DEBUG("[Attention L%zu] RoPE: type=%d, freq_base=%.0f, n_rot=%d, head_dim=%zu",
                    layerIdx, ropeMode, freqBase, nRot, actualHeadDim);
     }
     
@@ -317,8 +317,8 @@ ggml_tensor* AttentionGraphBuilder::computeAttention(
     
     // 因果 mask
     if (layerIdx == 0) {
-        CLLM_INFO("[Stage8 Debug L%zu] Causal mask: n_past=%zu, scores shape: [%lld, %lld, %lld]",
-                  layerIdx, startPos, scores->ne[0], scores->ne[1], scores->ne[2]);
+        CLLM_DEBUG("[Stage8 Debug L%zu] Causal mask: n_past=%zu, scores shape: [%lld, %lld, %lld]",
+                   layerIdx, startPos, scores->ne[0], scores->ne[1], scores->ne[2]);
     }
     scores = ggml_diag_mask_inf(ctx, scores, static_cast<int>(startPos));
     

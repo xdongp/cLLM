@@ -60,6 +60,7 @@ public:
     void setLevel(spdlog::level::level_enum level);
     void addFileSink(const std::string& filename);
     void flush();
+    bool shouldLog(spdlog::level::level_enum level) const;
 
 private:
     Logger();

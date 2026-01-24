@@ -11,7 +11,7 @@ server:
 
 # 模型配置
 model:
-  path: "/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/qwen3-0.6b-q4_k_m.gguf"   # 模型目录或模型文件路径
+  path: "/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/Qwen3-0.6B"   # 模型目录或模型文件路径 (HuggingFace格式)
   vocab_size: 151936       # 词表大小（可被后端自动探测覆盖）
   max_context_length: 2048 # 最大上下文长度
   default_max_tokens: 500  # 默认最大生成 token 数 - 优化：对标Ollama，增加max_tokens以提升吞吐量
@@ -96,10 +96,16 @@ cache:
 
 # LibTorch 后端配置
 backend:
+  type: "kylin"
   libtorch:
     seq_len_candidates: [8, 16, 32, 64, 128, 256]
     fallback_seq_len: 8
-  
+ 
+  kylin:
+    device_backend: "cpu"
+    operator_backend: "ggml"
+    n_threads: 0
+ 
   # llama.cpp 后端配置
   llama_cpp:
     n_batch: 512          # 优化：减少批处理大小以避免内存问题
@@ -109,7 +115,25 @@ backend:
     use_mmap: true        # 使用内存映射
     use_mlock: false      # 使用内存锁定
 
+# 动态 Batch Size 调谐器配置
+dynamic_batch_tuner:
+  enabled: false
+  strategy: "static"          # static | dynamic | hybird
+  fixed_batch_size: 0
+  min_batch_size: 1
+  max_batch_size: 64
+  initial_batch_size: 8
+  probing_growth_factor: 2.0
+  max_probing_attempts: 10
+  time_increase_threshold: 0.30
+  adjustment_factor: 0.30
+  validation_interval: 50
+  exploration_interval: 200
+  probe_batch_count: 10
+  validation_batch_count: 10
+  max_consecutive_time_increases: 5
+
 # 日志配置
 logging:
-  level: "info"
+  level: "debug"
   file: ""

@@ -202,17 +202,7 @@ ggml_cgraph* GGMLContext::buildGraph(ggml_tensor* output) {
 }
 
 void GGMLContext::compute(ggml_cgraph* graph) {
-    if (!ctx_ || !graph) {
-        throw std::runtime_error("Invalid context or graph");
-    }
-    
-    // 优先使用后端计算（支持 Metal/CUDA 加速）
-    if (backend_) {
-        ggml_backend_graph_compute(backend_, graph);
-    } else {
-        // 回退到默认 CPU 计算
-        ggml_graph_compute_with_ctx(ctx_, graph, /* n_threads */ 4);
-    }
+    computeWithBackend(graph, 0);
 }
 
 void GGMLContext::computeWithBackend(ggml_cgraph* graph, int nThreads) {
@@ -220,14 +210,22 @@ void GGMLContext::computeWithBackend(ggml_cgraph* graph, int nThreads) {
         throw std::runtime_error("Invalid graph");
     }
     
-    if (backend_) {
-        // 使用后端计算
-        ggml_backend_graph_compute(backend_, graph);
-    } else {
-        // 回退到默认计算
-        int threads = (nThreads > 0) ? nThreads : 4;
+    const int threads = (nThreads > 0) ? nThreads : 4;
+    
+    if (backendType_ == BackendType::CPU || backendType_ == BackendType::Auto) {
+        // CPU 后端：直接使用线程控制的 CPU 计算
         ggml_graph_compute_with_ctx(ctx_, graph, threads);
+        return;
     }
+    
+    if (backend_) {
+        // GPU/专用后端：使用后端计算
+        ggml_backend_graph_compute(backend_, graph);
+        return;
+    }
+    
+    // 回退到默认 CPU 计算
+    ggml_graph_compute_with_ctx(ctx_, graph, threads);
 }
 
 void GGMLContext::setBackend(BackendType type) {

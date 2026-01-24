@@ -120,6 +120,7 @@ public:
     // Kylin 后端配置
     std::string backendKylinDeviceBackend() const;
     std::string backendKylinOperatorBackend() const;
+    int backendKylinNumThreads() const;
     
     // API端点配置
     std::string apiEndpointHealthName() const;

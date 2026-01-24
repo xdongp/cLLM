@@ -25,6 +25,14 @@ option(BUILD_EXAMPLES "Build examples" ON)
 
 find_package(Threads REQUIRED)
 
+# Find OpenMP for parallel processing
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    message(STATUS "✅ Found OpenMP: ${OpenMP_CXX_VERSION}")
+else()
+    message(STATUS "ℹ️  OpenMP not found, using single-threaded kernels")
+endif()
+
 # Find nlohmann/json
 find_package(nlohmann_json 3.2.0 REQUIRED)
 if(nlohmann_json_FOUND)
@@ -233,6 +241,7 @@ add_library(cllm_core
     src/kylin/hf/transformer.cpp
     src/kylin/hf/config.cpp
     src/kylin/hf/safetensors_loader.cpp
+    src/kylin/hf/ggml_backend.cpp
     src/kylin/gguf/loader.cpp
     src/kylin/gguf/transformer.cpp
     src/kylin/gguf/ggml_operator.cpp
@@ -292,14 +301,53 @@ target_link_libraries(cllm_core PRIVATE
     Drogon::Drogon
 )
 
+# Apple Accelerate framework for BLAS
+if(APPLE)
+    find_library(ACCELERATE_FRAMEWORK Accelerate)
+    if(ACCELERATE_FRAMEWORK)
+        target_link_libraries(cllm_core PRIVATE ${ACCELERATE_FRAMEWORK})
+        message(STATUS "✅ Linked Apple Accelerate framework for BLAS")
+    endif()
+endif()
+
+# OpenMP for parallel processing
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(cllm_core PRIVATE OpenMP::OpenMP_CXX)
+    target_compile_definitions(cllm_core PRIVATE _OPENMP)
+    message(STATUS "✅ Linked OpenMP for parallel kernels")
+endif()
+
 # Link llama.cpp if available
 if(LLAMA_CPP_FOUND)
     target_sources(cllm_core PRIVATE src/inference/llama_cpp_backend.cpp)
     # 添加 llama.cpp include 目录
     include_directories(${CMAKE_SOURCE_DIR}/third_party/llama.cpp/include)
+    include_directories(${CMAKE_SOURCE_DIR}/third_party/llama.cpp/install/include)
     target_link_libraries(cllm_core PRIVATE llama)
     target_compile_definitions(cllm_core PRIVATE CLLM_USE_LLAMA_CPP)
     message(STATUS "✅ Linked llama.cpp library")
+    
+    # Link GGML Metal for GPU support on macOS
+    if(APPLE)
+        set(GGML_METAL_LIB "${CMAKE_SOURCE_DIR}/third_party/llama.cpp/build/lib/libggml-metal.dylib")
+        if(EXISTS "${GGML_METAL_LIB}")
+            target_link_libraries(cllm_core PRIVATE "${GGML_METAL_LIB}")
+            target_compile_definitions(cllm_core PRIVATE GGML_USE_METAL)
+            # Link Metal and Foundation frameworks
+            find_library(METAL_FRAMEWORK Metal)
+            find_library(FOUNDATION_FRAMEWORK Foundation)
+            find_library(METALKIT_FRAMEWORK MetalKit)
+            if(METAL_FRAMEWORK AND FOUNDATION_FRAMEWORK)
+                target_link_libraries(cllm_core PRIVATE 
+                    ${METAL_FRAMEWORK} 
+                    ${FOUNDATION_FRAMEWORK}
+                    ${METALKIT_FRAMEWORK})
+                message(STATUS "✅ Linked GGML Metal library for GPU acceleration")
+            endif()
+        else()
+            message(STATUS "ℹ️  GGML Metal library not found, GPU acceleration disabled")
+        endif()
+    endif()
 else()
     message(STATUS "ℹ️  llama.cpp not available, LlamaCppBackend disabled")
 endif()
@@ -359,6 +407,19 @@ if(BUILD_TESTS)
         spdlog::spdlog
     )
     add_test(NAME KylinGGUFQ4KTest COMMAND test_kylin_gguf_q4k)
+    
+    # Kylin 引擎精细化性能基准测试
+    add_executable(test_kylin_detailed_benchmark
+        tests/test_kylin_detailed_benchmark.cpp
+    )
+    target_link_libraries(test_kylin_detailed_benchmark
+        cllm_core
+        gtest
+        gtest_main
+        Threads::Threads
+        spdlog::spdlog
+    )
+    add_test(NAME KylinDetailedBenchmarkTest COMMAND test_kylin_detailed_benchmark)
     
     # 简单的 hello 推理测试 - 暂时注释掉，文件不存在
     # add_executable(test_hello_inference

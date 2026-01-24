@@ -7,12 +7,14 @@
 
 #include "cllm/kylin/gguf/transformer.h"
 #include "cllm/common/logger.h"
+#include "cllm/common/config.h"
 
 #include <cstring>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <algorithm>
+#include <thread>
 
 namespace cllm {
 namespace kylin {
@@ -35,7 +37,15 @@ GGMLTransformerModel::GGMLTransformerModel(BackendType backend)
     , debugLogits_(nullptr) {
     
     debugLayerOutputs_.reserve(32);
+    nThreads_ = Config::instance().backendKylinNumThreads();
+    if (nThreads_ <= 0) {
+        nThreads_ = static_cast<int>(std::thread::hardware_concurrency());
+    }
+    if (nThreads_ <= 0) {
+        nThreads_ = 4;
+    }
     CLLM_DEBUG("[GGMLTransformerModel] Created with backend type: %d", static_cast<int>(backend));
+    CLLM_INFO("[GGMLTransformerModel] Using %d threads", nThreads_);
 }
 
 GGMLTransformerModel::~GGMLTransformerModel() = default;
@@ -278,49 +288,52 @@ std::vector<float> GGMLTransformerModel::forward(const std::vector<int32_t>& inp
     
     ggml_tensor* logits = buildForwardGraph(inputIds, kvCacheLen_);
     ggml_cgraph* graph = computeCtx_->buildGraph(logits);
-    computeCtx_->compute(graph);
+    computeCtx_->computeWithBackend(graph, nThreads_);
     
     // 调试输出
-    if (debugEmbedding_) {
+    const bool debugEnabled = Logger::instance().shouldLog(spdlog::level::debug);
+    if (debugEnabled && debugEmbedding_) {
         TensorStats stats;
         if (safeComputeTensorStats(debugEmbedding_, stats)) {
             printTensorStats("Embedding", debugEmbedding_, stats);
-            CLLM_INFO("[Debug] Embedding: min=%.4f, max=%.4f, mean=%.4f, std=%.4f",
-                      stats.minVal, stats.maxVal, stats.mean, stats.stddev);
+            CLLM_DEBUG("[Debug] Embedding: min=%.4f, max=%.4f, mean=%.4f, std=%.4f",
+                       stats.minVal, stats.maxVal, stats.mean, stats.stddev);
         }
     }
     
     // 打印所有层输出的统计信息（用于追踪累积误差）
-    float prevStd = 0.0f;
-    for (size_t i = 0; i < debugLayerOutputs_.size(); ++i) {
-        TensorStats stats;
-        if (safeComputeTensorStats(debugLayerOutputs_[i], stats)) {
-            float stdRatio = (prevStd > 0.01f) ? (stats.stddev / prevStd) : 1.0f;
-            // 只打印前 5 层、最后 5 层、或 std 突然变化的层
-            if (i < 5 || i >= debugLayerOutputs_.size() - 5 || stdRatio > 1.5f || stdRatio < 0.5f) {
-                CLLM_INFO("[Debug] Layer %zu: min=%.2f, max=%.2f, mean=%.4f, std=%.4f (ratio=%.2f)",
-                          i, stats.minVal, stats.maxVal, stats.mean, stats.stddev, stdRatio);
+    if (debugEnabled) {
+        float prevStd = 0.0f;
+        for (size_t i = 0; i < debugLayerOutputs_.size(); ++i) {
+            TensorStats stats;
+            if (safeComputeTensorStats(debugLayerOutputs_[i], stats)) {
+                float stdRatio = (prevStd > 0.01f) ? (stats.stddev / prevStd) : 1.0f;
+                // 只打印前 5 层、最后 5 层、或 std 突然变化的层
+                if (i < 5 || i >= debugLayerOutputs_.size() - 5 || stdRatio > 1.5f || stdRatio < 0.5f) {
+                    CLLM_DEBUG("[Debug] Layer %zu: min=%.2f, max=%.2f, mean=%.4f, std=%.4f (ratio=%.2f)",
+                               i, stats.minVal, stats.maxVal, stats.mean, stats.stddev, stdRatio);
+                }
+                prevStd = stats.stddev;
             }
-            prevStd = stats.stddev;
         }
     }
     
     // Layer 27 详细调试
-    if (debugLayer27AttnInput_) {
+    if (debugEnabled && debugLayer27AttnInput_) {
         TensorStats attnInStats, attnOutStats, ffnInStats, ffnOutStats;
         safeComputeTensorStats(debugLayer27AttnInput_, attnInStats);
         safeComputeTensorStats(debugLayer27AttnOutput_, attnOutStats);
         safeComputeTensorStats(debugLayer27FfnInput_, ffnInStats);
         safeComputeTensorStats(debugLayer27FfnOutput_, ffnOutStats);
         
-        CLLM_INFO("[Layer 27 Detail] Attn Input:  min=%.2f, max=%.2f, std=%.2f", 
-                  attnInStats.minVal, attnInStats.maxVal, attnInStats.stddev);
-        CLLM_INFO("[Layer 27 Detail] Attn Output: min=%.2f, max=%.2f, std=%.2f", 
-                  attnOutStats.minVal, attnOutStats.maxVal, attnOutStats.stddev);
-        CLLM_INFO("[Layer 27 Detail] FFN Input:   min=%.2f, max=%.2f, std=%.2f", 
-                  ffnInStats.minVal, ffnInStats.maxVal, ffnInStats.stddev);
-        CLLM_INFO("[Layer 27 Detail] FFN Output:  min=%.2f, max=%.2f, std=%.2f", 
-                  ffnOutStats.minVal, ffnOutStats.maxVal, ffnOutStats.stddev);
+        CLLM_DEBUG("[Layer 27 Detail] Attn Input:  min=%.2f, max=%.2f, std=%.2f", 
+                   attnInStats.minVal, attnInStats.maxVal, attnInStats.stddev);
+        CLLM_DEBUG("[Layer 27 Detail] Attn Output: min=%.2f, max=%.2f, std=%.2f", 
+                   attnOutStats.minVal, attnOutStats.maxVal, attnOutStats.stddev);
+        CLLM_DEBUG("[Layer 27 Detail] FFN Input:   min=%.2f, max=%.2f, std=%.2f", 
+                   ffnInStats.minVal, ffnInStats.maxVal, ffnInStats.stddev);
+        CLLM_DEBUG("[Layer 27 Detail] FFN Output:  min=%.2f, max=%.2f, std=%.2f", 
+                   ffnOutStats.minVal, ffnOutStats.maxVal, ffnOutStats.stddev);
     }
     
     flushKVCache();
@@ -356,7 +369,7 @@ std::vector<float> GGMLTransformerModel::forward(const std::vector<int32_t>& inp
         }
     }
     
-    CLLM_INFO("[Forward] Logits shape: [%lld, %lld]", logits->ne[0], logits->ne[1]);
+    CLLM_DEBUG("[Forward] Logits shape: [%lld, %lld]", logits->ne[0], logits->ne[1]);
     
     return result;
 }

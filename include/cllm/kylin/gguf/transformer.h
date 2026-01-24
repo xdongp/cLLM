@@ -163,6 +163,7 @@ private:
     std::unique_ptr<GGMLContext> weightCtx_;
     std::unique_ptr<GGMLContext> computeCtx_;
     std::unique_ptr<GGMLContext> kvCacheCtx_;
+    int nThreads_ = 0;
     
     // ========== 权重张量 ==========
     ggml_tensor* tokEmbed_;

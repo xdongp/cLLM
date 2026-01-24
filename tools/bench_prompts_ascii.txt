@@ -1,0 +1,5 @@
+Hello world.
+Explain AI in one sentence.
+Write a short list of fruits.
+Count from 1 to 10.
+Summarize: The quick brown fox jumps over the lazy dog.
