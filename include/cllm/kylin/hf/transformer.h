@@ -11,11 +11,14 @@
 #include "cllm/kylin/hf/config.h"
 #include "cllm/kylin/hf/safetensors_loader.h"
 #include "cllm/kylin/hf/ggml_backend.h"
+#include "cllm/kylin/hf/kv_cache_pool.h"
 #include "cllm/kylin/core/ggml_kernels.h"
+#include "cllm/kylin/core/quantization.h"
 
 #include <memory>
 #include <vector>
 #include <string>
+#include <mutex>
 
 namespace cllm {
 namespace kylin {
@@ -39,9 +42,17 @@ public:
      * 
      * @param modelDir 包含 config.json 和 model.safetensors 的目录
      * @param device 计算设备类型（默认 CPU）
+     * @param quantType 权重量化类型（默认 FP32）
      */
-    explicit HFTransformerModel(const std::string& modelDir, DeviceType device = DeviceType::CPU);
+    explicit HFTransformerModel(const std::string& modelDir, 
+                                DeviceType device = DeviceType::CPU,
+                                QuantType quantType = QuantType::FP32);
     ~HFTransformerModel();
+    
+    /**
+     * @brief 获取当前量化类型
+     */
+    QuantType getQuantType() const { return quantType_; }
     
     /**
      * @brief 检查模型是否加载成功
@@ -49,7 +60,7 @@ public:
     bool isLoaded() const { return loaded_; }
     
     /**
-     * @brief 前向推理
+     * @brief 前向推理（使用全局 KV Cache，兼容旧接口）
      * 
      * @param inputIds 输入 token IDs
      * @return logits [seq_len * vocab_size]
@@ -57,9 +68,43 @@ public:
     std::vector<float> forward(const std::vector<int32_t>& inputIds);
     
     /**
-     * @brief 重置 KV Cache
+     * @brief 前向推理（使用 per-request KV Cache，支持并发）
+     * 
+     * @param inputIds 输入 token IDs
+     * @param requestId 请求 ID（用于查找 KV Cache）
+     * @return logits [vocab_size]
+     */
+    std::vector<float> forwardWithRequestId(const std::vector<int32_t>& inputIds, size_t requestId);
+    
+    /**
+     * @brief 批量前向推理（真正并发）
+     * 
+     * @param batchInputIds 每个请求的输入 token IDs
+     * @param requestIds 每个请求的 ID
+     * @return 每个请求的 logits
+     */
+    std::vector<std::vector<float>> forwardBatch(
+        const std::vector<std::vector<int32_t>>& batchInputIds,
+        const std::vector<size_t>& requestIds
+    );
+    
+    /**
+     * @brief 重置 KV Cache（全局）
      */
     void resetKVCache();
+    
+    /**
+     * @brief 释放请求的 KV Cache
+     * 
+     * @param requestId 请求 ID
+     */
+    void releaseKVCache(size_t requestId);
+    
+    /**
+     * @brief 获取 KV Cache 池统计信息
+     */
+    int getAvailableKVSlots() const;
+    int getUsedKVSlots() const;
     
     /**
      * @brief 获取模型配置
@@ -83,9 +128,22 @@ private:
     // 计算组件
     void embedding(const std::vector<int32_t>& inputIds, std::vector<float>& output);
     void rmsNorm(const float* input, const float* weight, float* output, int size, float eps);
+    
+    // 原始 attention（使用全局 KV Cache）
     void attention(int layerIdx, const float* input, float* output, int seqLen, int startPos);
+    
+    // 新版 attention（使用独立 KV Cache）
+    void attentionWithKVCache(int layerIdx, const float* input, float* output, 
+                              int seqLen, int startPos,
+                              KVCacheSlot* kvSlot, WorkBufferSlot* workBuf);
+    
     void ffn(int layerIdx, const float* input, float* output);
+    void ffnWithBuffer(int layerIdx, const float* input, float* output, WorkBufferSlot* workBuf);
     void lmHead(const float* input, float* output);
+    
+    // 单请求处理（用于 forwardBatch）
+    void forwardSingle(const std::vector<int32_t>& inputIds, size_t requestId,
+                       std::vector<float>& logits);
     
     // RoPE
     void applyRoPE(float* q, float* k, int headDim, int nHeads, int nKVHeads, int seqLen, int startPos);
@@ -98,8 +156,27 @@ private:
     void matmulF32(const float* weight, const float* input, float* output,
                    int outFeatures, int inFeatures);
     
-    // 预转换权重到 F32
+    // 矩阵乘法（FP16 权重 @ F32 输入）- FP16 量化模式
+    void matmulFP16(const uint16_t* weight, const float* input, float* output,
+                    int outFeatures, int inFeatures);
+    
+    // 矩阵乘法（INT8 权重 @ F32 输入）- INT8 量化模式
+    void matmulINT8(const int8_t* weight, const float* input, float* output,
+                    int outFeatures, int inFeatures, float scale, int32_t zeroPoint);
+    
+    // 统一的矩阵乘法接口（根据量化类型自动选择）
+    void matmulQuantized(int layerIdx, const char* weightName,
+                         const float* input, float* output,
+                         int outFeatures, int inFeatures);
+    
+    // 预转换权重到目标精度
     void preconvertWeights();
+    
+    // 转换权重到 FP16
+    void convertWeightsToFP16();
+    
+    // 转换权重到 INT8
+    void convertWeightsToINT8();
     
     // 模型状态
     bool loaded_ = false;
@@ -139,12 +216,14 @@ private:
         std::vector<float> kProj;
         std::vector<float> vProj;
         std::vector<float> oProj;
+        std::vector<float> qkvProj;
         std::vector<float> qNorm;
         std::vector<float> kNorm;
         std::vector<float> postAttentionLayernorm;
         std::vector<float> gateProj;
         std::vector<float> upProj;
         std::vector<float> downProj;
+        std::vector<float> gateUpProj;
     };
     std::vector<LayerWeightsF32> layersF32_;
     
@@ -153,14 +232,79 @@ private:
     std::vector<float> lmHeadWeightF32_;
     std::vector<float> finalNormWeightF32_;
     
+    // 量化类型
+    QuantType quantType_ = QuantType::FP32;
+    
     // 是否使用预转换模式
     bool usePreconvertedWeights_ = true;
     
-    // KV Cache [layer, 2, maxSeqLen, numKVHeads, headDim]
+    // FP16 权重（当 quantType_ == FP16 时使用）
+    struct LayerWeightsFP16 {
+        std::vector<uint16_t> inputLayernorm;
+        std::vector<uint16_t> qProj;
+        std::vector<uint16_t> kProj;
+        std::vector<uint16_t> vProj;
+        std::vector<uint16_t> oProj;
+        std::vector<uint16_t> qkvProj;
+        std::vector<uint16_t> qNorm;
+        std::vector<uint16_t> kNorm;
+        std::vector<uint16_t> postAttentionLayernorm;
+        std::vector<uint16_t> gateProj;
+        std::vector<uint16_t> upProj;
+        std::vector<uint16_t> downProj;
+        std::vector<uint16_t> gateUpProj;
+    };
+    std::vector<LayerWeightsFP16> layersFP16_;
+    
+    // 全局 FP16 权重
+    std::vector<uint16_t> embedTokensFP16_;
+    std::vector<uint16_t> lmHeadWeightFP16_;
+    std::vector<uint16_t> finalNormWeightFP16_;
+    
+    // INT8 权重（当 quantType_ == INT8 时使用）
+    struct LayerWeightsINT8 {
+        std::vector<int8_t> qProj;
+        std::vector<int8_t> kProj;
+        std::vector<int8_t> vProj;
+        std::vector<int8_t> oProj;
+        std::vector<int8_t> qkvProj;      // 融合 QKV
+        std::vector<int8_t> gateProj;
+        std::vector<int8_t> upProj;
+        std::vector<int8_t> downProj;
+        std::vector<int8_t> gateUpProj;   // 融合 Gate+Up
+        
+        // 每个权重矩阵的量化参数（per-tensor 量化）
+        float qProjScale = 1.0f, kProjScale = 1.0f, vProjScale = 1.0f;
+        float oProjScale = 1.0f, qkvProjScale = 1.0f;
+        float gateProjScale = 1.0f, upProjScale = 1.0f, downProjScale = 1.0f;
+        float gateUpProjScale = 1.0f;
+        
+        int32_t qProjZP = 0, kProjZP = 0, vProjZP = 0;
+        int32_t oProjZP = 0, qkvProjZP = 0;
+        int32_t gateProjZP = 0, upProjZP = 0, downProjZP = 0;
+        int32_t gateUpProjZP = 0;
+    };
+    std::vector<LayerWeightsINT8> layersINT8_;
+    
+    // 全局 INT8 权重
+    std::vector<int8_t> embedTokensINT8_;
+    std::vector<int8_t> lmHeadWeightINT8_;
+    float embedTokensScale_ = 1.0f, lmHeadScale_ = 1.0f;
+    int32_t embedTokensZP_ = 0, lmHeadZP_ = 0;
+    
+    // 全局 KV Cache（兼容旧接口）
     std::vector<float> kCache_;
     std::vector<float> vCache_;
     int kvCacheLen_ = 0;
     static constexpr int kMaxSeqLen = 4096;
+    
+    // Per-Request KV Cache Pool（支持并发）
+    std::unique_ptr<KVCachePool> kvCachePool_;
+    std::unique_ptr<WorkBufferPool> workBufferPool_;
+    static constexpr int kMaxConcurrentRequests = 16;  // 最大并发请求数
+    
+    // 全局锁（保护全局资源）
+    mutable std::mutex globalMutex_;
     
     // 预计算的 RoPE 频率
     std::vector<float> ropeFreqsCos_;
@@ -184,6 +328,7 @@ private:
     // FFN 工作缓冲区
     std::vector<float> gateBuffer_;
     std::vector<float> upBuffer_;
+    std::vector<float> gateUpBuffer_;
     
     // Norm 权重缓冲区
     std::vector<float> normWeightBuffer_;
