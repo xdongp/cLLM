@@ -2,6 +2,20 @@
 #include "cllm/common/logger.h"
 
 namespace cllm {
+namespace {
+
+YAML::Node getMapChild(const YAML::Node& node, const char* key) {
+    if (!node || !node.IsMap()) {
+        return YAML::Node();
+    }
+    auto child = node[key];
+    if (!child || !child.IsMap()) {
+        return YAML::Node();
+    }
+    return child;
+}
+
+}  // namespace
 
 void Config::load(const std::string& configPath) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -269,6 +283,9 @@ Config::DynamicBatchTunerConfig Config::dynamicBatchTunerConfig() const {
 
     DynamicBatchTunerConfig cfg{};
     const auto node = config_["dynamic_batch_tuner"];
+    if (!node || !node.IsMap()) {
+        return cfg;
+    }
 
     cfg.enabled = node["enabled"].as<bool>(false);
     cfg.strategy = node["strategy"].as<std::string>("static");
@@ -478,145 +495,276 @@ int Config::backendKylinNumThreads() const {
 // API端点配置
 std::string Config::apiEndpointHealthName() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["endpoints"]["health"]["name"].as<std::string>("health");
+
+    const auto api = getMapChild(config_, "api");
+    const auto endpoints = getMapChild(api, "endpoints");
+    const auto health = getMapChild(endpoints, "health");
+    if (!health) {
+        return "health";
+    }
+    return health["name"].as<std::string>("health");
 }
 
 std::string Config::apiEndpointHealthPath() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["endpoints"]["health"]["path"].as<std::string>("/health");
+
+    const auto api = getMapChild(config_, "api");
+    const auto endpoints = getMapChild(api, "endpoints");
+    const auto health = getMapChild(endpoints, "health");
+    if (!health) {
+        return "/health";
+    }
+    return health["path"].as<std::string>("/health");
 }
 
 std::string Config::apiEndpointHealthMethod() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["endpoints"]["health"]["method"].as<std::string>("GET");
+
+    const auto api = getMapChild(config_, "api");
+    const auto endpoints = getMapChild(api, "endpoints");
+    const auto health = getMapChild(endpoints, "health");
+    if (!health) {
+        return "GET";
+    }
+    return health["method"].as<std::string>("GET");
 }
 
 std::string Config::apiEndpointGenerateName() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["endpoints"]["generate"]["name"].as<std::string>("generate");
+
+    const auto api = getMapChild(config_, "api");
+    const auto endpoints = getMapChild(api, "endpoints");
+    const auto generate = getMapChild(endpoints, "generate");
+    if (!generate) {
+        return "generate";
+    }
+    return generate["name"].as<std::string>("generate");
 }
 
 std::string Config::apiEndpointGeneratePath() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["endpoints"]["generate"]["path"].as<std::string>("/generate");
+
+    const auto api = getMapChild(config_, "api");
+    const auto endpoints = getMapChild(api, "endpoints");
+    const auto generate = getMapChild(endpoints, "generate");
+    if (!generate) {
+        return "/generate";
+    }
+    return generate["path"].as<std::string>("/generate");
 }
 
 std::string Config::apiEndpointGenerateMethod() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["endpoints"]["generate"]["method"].as<std::string>("POST");
+
+    const auto api = getMapChild(config_, "api");
+    const auto endpoints = getMapChild(api, "endpoints");
+    const auto generate = getMapChild(endpoints, "generate");
+    if (!generate) {
+        return "POST";
+    }
+    return generate["method"].as<std::string>("POST");
 }
 
 std::string Config::apiEndpointGenerateStreamName() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["endpoints"]["generate_stream"]["name"].as<std::string>("generate_stream");
+
+    const auto api = getMapChild(config_, "api");
+    const auto endpoints = getMapChild(api, "endpoints");
+    const auto stream = getMapChild(endpoints, "generate_stream");
+    if (!stream) {
+        return "generate_stream";
+    }
+    return stream["name"].as<std::string>("generate_stream");
 }
 
 std::string Config::apiEndpointGenerateStreamPath() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["endpoints"]["generate_stream"]["path"].as<std::string>("/generate_stream");
+
+    const auto api = getMapChild(config_, "api");
+    const auto endpoints = getMapChild(api, "endpoints");
+    const auto stream = getMapChild(endpoints, "generate_stream");
+    if (!stream) {
+        return "/generate_stream";
+    }
+    return stream["path"].as<std::string>("/generate_stream");
 }
 
 std::string Config::apiEndpointGenerateStreamMethod() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["endpoints"]["generate_stream"]["method"].as<std::string>("POST");
+
+    const auto api = getMapChild(config_, "api");
+    const auto endpoints = getMapChild(api, "endpoints");
+    const auto stream = getMapChild(endpoints, "generate_stream");
+    if (!stream) {
+        return "POST";
+    }
+    return stream["method"].as<std::string>("POST");
 }
 
 std::string Config::apiEndpointEncodeName() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["endpoints"]["encode"]["name"].as<std::string>("encode");
+
+    const auto api = getMapChild(config_, "api");
+    const auto endpoints = getMapChild(api, "endpoints");
+    const auto encode = getMapChild(endpoints, "encode");
+    if (!encode) {
+        return "encode";
+    }
+    return encode["name"].as<std::string>("encode");
 }
 
 std::string Config::apiEndpointEncodePath() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["endpoints"]["encode"]["path"].as<std::string>("/encode");
+
+    const auto api = getMapChild(config_, "api");
+    const auto endpoints = getMapChild(api, "endpoints");
+    const auto encode = getMapChild(endpoints, "encode");
+    if (!encode) {
+        return "/encode";
+    }
+    return encode["path"].as<std::string>("/encode");
 }
 
 std::string Config::apiEndpointEncodeMethod() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["endpoints"]["encode"]["method"].as<std::string>("POST");
+
+    const auto api = getMapChild(config_, "api");
+    const auto endpoints = getMapChild(api, "endpoints");
+    const auto encode = getMapChild(endpoints, "encode");
+    if (!encode) {
+        return "POST";
+    }
+    return encode["method"].as<std::string>("POST");
 }
 
 // API默认参数
 std::string Config::apiDefaultPrompt() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["defaults"]["prompt"].as<std::string>("");
+
+    const auto api = getMapChild(config_, "api");
+    const auto defaults = getMapChild(api, "defaults");
+    if (!defaults) {
+        return "";
+    }
+    return defaults["prompt"].as<std::string>("");
 }
 
 int Config::apiDefaultMaxTokens() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
+
     // API 默认 max_tokens：优先 api.defaults.max_tokens；否则回退到 model.default_max_tokens
     const int modelDefault = config_["model"]["default_max_tokens"].as<int>(100);
-    return config_["api"]["defaults"]["max_tokens"].as<int>(modelDefault);
+    const auto api = getMapChild(config_, "api");
+    const auto defaults = getMapChild(api, "defaults");
+    if (!defaults) {
+        return modelDefault;
+    }
+    return defaults["max_tokens"].as<int>(modelDefault);
 }
 
 float Config::apiDefaultTemperature() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["defaults"]["temperature"].as<float>(0.7f);
+
+    const auto api = getMapChild(config_, "api");
+    const auto defaults = getMapChild(api, "defaults");
+    if (!defaults) {
+        return 0.7f;
+    }
+    return defaults["temperature"].as<float>(0.7f);
 }
 
 float Config::apiDefaultTopP() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["defaults"]["top_p"].as<float>(0.9f);
+
+    const auto api = getMapChild(config_, "api");
+    const auto defaults = getMapChild(api, "defaults");
+    if (!defaults) {
+        return 0.9f;
+    }
+    return defaults["top_p"].as<float>(0.9f);
 }
 
 // API响应配置
 std::string Config::apiResponseContentTypeJson() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["response"]["content_type"]["json"].as<std::string>("application/json");
+
+    const auto api = getMapChild(config_, "api");
+    const auto response = getMapChild(api, "response");
+    const auto contentType = getMapChild(response, "content_type");
+    if (!contentType) {
+        return "application/json";
+    }
+    return contentType["json"].as<std::string>("application/json");
 }
 
 std::string Config::apiResponseContentTypeStream() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["response"]["content_type"]["stream"].as<std::string>("text/event-stream");
+
+    const auto api = getMapChild(config_, "api");
+    const auto response = getMapChild(api, "response");
+    const auto contentType = getMapChild(response, "content_type");
+    if (!contentType) {
+        return "text/event-stream";
+    }
+    return contentType["stream"].as<std::string>("text/event-stream");
 }
 
 std::string Config::apiResponseHeaderCacheControl() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["response"]["headers"]["cache_control"].as<std::string>("no-cache");
+
+    const auto api = getMapChild(config_, "api");
+    const auto response = getMapChild(api, "response");
+    const auto headers = getMapChild(response, "headers");
+    if (!headers) {
+        return "no-cache";
+    }
+    return headers["cache_control"].as<std::string>("no-cache");
 }
 
 std::string Config::apiResponseHeaderConnection() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["response"]["headers"]["connection"].as<std::string>("keep-alive");
+
+    const auto api = getMapChild(config_, "api");
+    const auto response = getMapChild(api, "response");
+    const auto headers = getMapChild(response, "headers");
+    if (!headers) {
+        return "keep-alive";
+    }
+    return headers["connection"].as<std::string>("keep-alive");
 }
 
 // 超时和限制
 float Config::apiTimeoutMin() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["timeouts"]["min"].as<float>(60.0f);
+
+    const auto api = getMapChild(config_, "api");
+    const auto timeouts = getMapChild(api, "timeouts");
+    if (!timeouts) {
+        return 60.0f;
+    }
+    return timeouts["min"].as<float>(60.0f);
 }
 
 float Config::apiTimeoutMax() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["timeouts"]["max"].as<float>(600.0f);
+
+    const auto api = getMapChild(config_, "api");
+    const auto timeouts = getMapChild(api, "timeouts");
+    if (!timeouts) {
+        return 600.0f;
+    }
+    return timeouts["max"].as<float>(600.0f);
 }
 
 float Config::apiTimeoutTokenFactor() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    return config_["api"]["timeouts"]["token_factor"].as<float>(10.0f);
+
+    const auto api = getMapChild(config_, "api");
+    const auto timeouts = getMapChild(api, "timeouts");
+    if (!timeouts) {
+        return 10.0f;
+    }
+    return timeouts["token_factor"].as<float>(10.0f);
 }
 
 // 日志配置

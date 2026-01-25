@@ -15,11 +15,11 @@ model:
   vocab_size: 151936       # 词表大小（可被后端自动探测覆盖）
   max_context_length: 2048 # 最大上下文长度
   default_max_tokens: 500  # 默认最大生成 token 数 - 优化：对标Ollama，增加max_tokens以提升吞吐量
-  quantization: "fp16"     # 量化类型: fp16, int8, int4
+  quantization: "int8"     # 量化类型: fp32, fp16, int8
 
 # HTTP 配置
 http:
-  max_input_tokens: 120    # 最大输入 token（过长 prompt 会被裁剪）
+  max_input_tokens: 512    # 最大输入 token（过长 prompt 会被裁剪）
   timeout_ms: 30000        # HTTP 请求超时时间(毫秒)
 
 # API 端点配置
@@ -78,7 +78,7 @@ scheduler:
 
 # 资源配置
 resources:
-  max_batch_size: 8        # 优化：减少最大批处理大小以避免内存问题
+  max_batch_size: 16       # 优化：提高批处理上限以提升吞吐
   max_context_length: 2048
   kv_cache_max_size: 100    # 优化：减少KV cache大小以避免内存问题
   kv_cache_max_memory_mb: 4096  # 优化：减少KV cache内存限制
@@ -104,7 +104,7 @@ backend:
   kylin:
     device_backend: "cpu"
     operator_backend: "ggml"
-    n_threads: 0
+    n_threads: 8
  
   # llama.cpp 后端配置
   llama_cpp:
@@ -135,5 +135,5 @@ dynamic_batch_tuner:
 
 # 日志配置
 logging:
-  level: "debug"
+  level: "info"
   file: ""

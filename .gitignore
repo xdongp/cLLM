@@ -350,6 +350,8 @@ htmlcov/
 .coverage.*
 coverage.xml
 
+vpn_smart_route/
+
 # ASan/TSan 输出
 *.asan.log
 *.tsan.log

@@ -26,6 +26,12 @@ option(BUILD_EXAMPLES "Build examples" ON)
 find_package(Threads REQUIRED)
 
 # Find OpenMP for parallel processing
+if(APPLE)
+    if(EXISTS "/opt/homebrew/opt/libomp/lib/libomp.dylib")
+        set(OpenMP_ROOT "/opt/homebrew/opt/libomp")
+        message(STATUS "✅ Using Homebrew libomp at ${OpenMP_ROOT}")
+    endif()
+endif()
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
     message(STATUS "✅ Found OpenMP: ${OpenMP_CXX_VERSION}")
@@ -242,6 +248,7 @@ add_library(cllm_core
     src/kylin/hf/config.cpp
     src/kylin/hf/safetensors_loader.cpp
     src/kylin/hf/ggml_backend.cpp
+    src/kylin/hf/kv_cache_pool.cpp
     src/kylin/gguf/loader.cpp
     src/kylin/gguf/transformer.cpp
     src/kylin/gguf/ggml_operator.cpp
@@ -313,7 +320,6 @@ endif()
 # OpenMP for parallel processing
 if(OpenMP_CXX_FOUND)
     target_link_libraries(cllm_core PRIVATE OpenMP::OpenMP_CXX)
-    target_compile_definitions(cllm_core PRIVATE _OPENMP)
     message(STATUS "✅ Linked OpenMP for parallel kernels")
 endif()
 
@@ -602,6 +608,7 @@ if(BUILD_TESTS)
     target_link_libraries(load_qwen_model
         cllm_core
         Threads::Threads
+        spdlog::spdlog
     )
 endif()
 

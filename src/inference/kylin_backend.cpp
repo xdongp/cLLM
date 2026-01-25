@@ -21,9 +21,9 @@ namespace {
 inline void fill_tensor_with_pattern(kylin::Tensor &tensor, float scale) {
     const size_t n = tensor.size();
     for (size_t i = 0; i < n; ++i) {
-        // 使用一个简单位移后的周期模式，保证数值稳定且非零
-        float v = static_cast<float>((i % 31) - 15);
-        tensor[i] = v * scale;
+        // 使用有符号偏移避免 size_t 下溢
+        int v = static_cast<int>(i % 31) - 15;
+        tensor[i] = static_cast<float>(v) * scale;
     }
 }
 
@@ -39,9 +39,9 @@ inline void xavier_init(kylin::Tensor &tensor, size_t fan_in, size_t fan_out) {
     // 使用正态分布的近似：Box-Muller变换的简化版本
     // 为了简单，使用均匀分布乘以scale，然后添加小的随机偏移
     for (size_t i = 0; i < n; ++i) {
-        // 使用周期模式模拟均匀分布 [-1, 1]
-        float u = static_cast<float>((i % 100) - 50) / 50.0f;
-        tensor[i] = u * scale;
+        // 使用有符号偏移避免 size_t 下溢
+        int u = static_cast<int>(i % 100) - 50;
+        tensor[i] = static_cast<float>(u) / 50.0f * scale;
     }
 }
 
@@ -50,8 +50,8 @@ inline void small_value_init(kylin::Tensor &tensor, float scale = 0.1f) {
     const size_t n = tensor.size();
     for (size_t i = 0; i < n; ++i) {
         // 使用小的均匀分布值
-        float v = static_cast<float>((i % 21) - 10) / 100.0f * scale;
-        tensor[i] = v;
+        int v = static_cast<int>(i % 21) - 10;
+        tensor[i] = static_cast<float>(v) / 100.0f * scale;
     }
 }
 
@@ -166,6 +166,8 @@ KylinBackend::KylinBackend(
         wDown_.resize(numLayers);
         norm1_.resize(numLayers);
         norm2_.resize(numLayers);
+        attnQNorm_.resize(numLayers);
+        attnKNorm_.resize(numLayers);
     }
 }
 
@@ -276,8 +278,16 @@ bool KylinBackend::initializeHFModel() {
             CLLM_INFO("[KylinBackend] Requesting CUDA GPU acceleration for HF model");
         }
         
+        // 从全局配置读取量化类型
+        kylin::QuantType quantType = kylin::QuantType::FP32;  // 默认 FP32
+        std::string quantStr = Config::instance().serverQuantization();
+        if (!quantStr.empty()) {
+            quantType = kylin::parseQuantType(quantStr);
+            CLLM_INFO("[KylinBackend] Using quantization: %s", kylin::quantTypeName(quantType));
+        }
+        
         // 创建并加载 HuggingFace 模型
-        hfModel_ = std::make_unique<kylin::HFTransformerModel>(modelPath_, deviceType);
+        hfModel_ = std::make_unique<kylin::HFTransformerModel>(modelPath_, deviceType, quantType);
         
         if (!hfModel_->isLoaded()) {
             CLLM_ERROR("[KylinBackend] Failed to load HuggingFace model: %s", modelPath_.c_str());
@@ -810,10 +820,13 @@ void KylinBackend::bindWeightsToModel() {
 
     // 绑定 Embedding 和 LM Head
     model_.setEmbeddingWeight(embedding_);
+    CLLM_INFO("[KylinBackend] Binding LM head...");
     model_.setLmHeadWeight(lmHead_);
+    CLLM_INFO("[KylinBackend] LM head bound");
 
     // 绑定每层权重
     for (size_t layer = 0; layer < numLayers; ++layer) {
+        CLLM_INFO("[KylinBackend] Binding layer %zu weights...", layer);
         // 检查是否有 Q/K 归一化权重
         kylin::Tensor attnQNorm = attnQNorm_[layer].shape().empty() ? kylin::Tensor() : attnQNorm_[layer];
         kylin::Tensor attnKNorm = attnKNorm_[layer].shape().empty() ? kylin::Tensor() : attnKNorm_[layer];
@@ -832,6 +845,7 @@ void KylinBackend::bindWeightsToModel() {
             attnQNorm,  // Q 归一化权重（可选）
             attnKNorm   // K 归一化权重（可选）
         );
+        CLLM_INFO("[KylinBackend] Layer %zu weights bound", layer);
     }
 
     // 绑定 Final Norm
@@ -844,11 +858,22 @@ kylin::Tensor KylinBackend::forward(const std::vector<int> &inputIds) {
     if (!initialized_) {
         throw std::runtime_error("KylinBackend::forward: backend not initialized");
     }
+    if (inputIds.empty()) {
+        throw std::invalid_argument("KylinBackend::forward: empty inputIds");
+    }
+    const size_t vocabSize = externalConfig_.vocabSize;
+    if (vocabSize == 0) {
+        throw std::runtime_error("KylinBackend::forward: vocabSize is 0");
+    }
+    for (int id : inputIds) {
+        if (id < 0 || static_cast<size_t>(id) >= vocabSize) {
+            throw std::out_of_range("KylinBackend::forward: token id out of range");
+        }
+    }
 
     // ========== HuggingFace 模型 ==========
     if (useHFModel_ && hfModel_) {
         const size_t seqLen = inputIds.size();
-        const size_t vocabSize = externalConfig_.vocabSize;
         
         CLLM_DEBUG("[KylinBackend::forward] HF mode: seqLen=%zu, vocabSize=%zu", seqLen, vocabSize);
         
@@ -949,37 +974,43 @@ kylin::Tensor KylinBackend::forwardBatch(
     
     // ========== HuggingFace 模型 ==========
     if (useHFModel_ && hfModel_) {
-        CLLM_DEBUG("[KylinBackend] HuggingFace mode: processing %zu requests sequentially", batchSize);
+        // 使用 per-request KV Cache 实现真正的并发
+        CLLM_DEBUG("[KylinBackend] HuggingFace mode: processing %zu requests with per-request KV cache", batchSize);
         
+        // 并行处理所有请求
+        #pragma omp parallel for schedule(dynamic) if(batchSize > 1)
         for (size_t i = 0; i < batchSize; ++i) {
             const auto &pos = requestPositions[i];
             const size_t start = pos.first;
             const size_t end = pos.second;
 
             if (start > end || end > totalTokens) {
-                throw std::out_of_range("KylinBackend::forwardBatch: invalid requestPositions range");
+                CLLM_ERROR("[KylinBackend] Invalid requestPositions range for request %zu", i);
+                continue;
             }
+            
+            // 获取请求 ID（用于 per-request KV Cache）
+            size_t requestId = (i < sequenceIds.size()) ? sequenceIds[i] : i;
             
             const size_t reqLen = end - start;
             
-            // 对于新请求（多 token），清除 KV cache 并逐 token 处理
             if (reqLen > 1) {
-                hfModel_->resetKVCache();
-                CLLM_DEBUG("[KylinBackend] Reset KV cache for new prompt (len=%zu)", reqLen);
+                // 新请求（多 token）：使用 per-request KV Cache 逐 token 处理
+                // 先释放旧的 KV Cache（如果存在）
+                hfModel_->releaseKVCache(requestId);
                 
-                // 逐 token 处理以正确构建 KV cache
                 for (size_t t = 0; t < reqLen; ++t) {
                     std::vector<int32_t> singleToken = {flatInputIds[start + t]};
-                    std::vector<float> tokenLogits = hfModel_->forward(singleToken);
+                    std::vector<float> tokenLogits = hfModel_->forwardWithRequestId(singleToken, requestId);
                     
                     // 复制到输出
                     std::copy(tokenLogits.begin(), tokenLogits.end(),
                              logits.data() + (start + t) * vocab);
                 }
             } else {
-                // 单 token 推理：增量生成
+                // 单 token 推理：增量生成，使用现有的 KV Cache
                 std::vector<int32_t> requestIds32(flatInputIds.begin() + start, flatInputIds.begin() + end);
-                std::vector<float> requestLogits = hfModel_->forward(requestIds32);
+                std::vector<float> requestLogits = hfModel_->forwardWithRequestId(requestIds32, requestId);
                 
                 // 复制到输出
                 std::copy(requestLogits.begin(), requestLogits.end(), 
@@ -1204,6 +1235,16 @@ std::string KylinBackend::getOperatorBackendName() const {
         return op_->getName();
     }
     return "None";
+}
+
+bool KylinBackend::cleanupKVCache(size_t requestId) {
+    if (useHFModel_ && hfModel_) {
+        hfModel_->releaseKVCache(requestId);
+        CLLM_DEBUG("[KylinBackend] Released KV cache for request %zu", requestId);
+        return true;
+    }
+    // 其他模式暂不支持 per-request KV cache
+    return false;
 }
 
 } // namespace inference

@@ -144,6 +144,14 @@ public:
      * @return 算子接口指针
      */
     kylin::IOperator* getOperator() { return op_.get(); }
+    
+    /**
+     * @brief 清理请求的 KV Cache
+     * 
+     * @param requestId 请求 ID
+     * @return true 成功，false 失败
+     */
+    bool cleanupKVCache(size_t requestId);
 
 private:
     // ========== 配置和状态 ==========

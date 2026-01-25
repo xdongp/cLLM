@@ -455,6 +455,13 @@ const ModelConfig& ModelExecutor::getConfig() const {
     return config_;
 }
 
+std::string ModelExecutor::getBackendName() const {
+    if (!inferenceEngine_) {
+        return "None";
+    }
+    return inferenceEngine_->getBackendType();
+}
+
 void ModelExecutor::setConfig(const ModelConfig& config) {
     config_ = config;
     // 如果 InferenceEngine 已初始化，也更新它的配置

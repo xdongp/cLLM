@@ -154,6 +154,12 @@ public:
     const std::string& getBackendType() const {
         return backendType_;
     }
+
+    /**
+     * @brief 获取实际后端名称
+     * @return 后端名称字符串（"Kylin", "LibTorch", "llama.cpp" 等）
+     */
+    std::string getBackendName() const;
     
     /**
      * @brief 释放序列ID（Phase 2: 序列ID管理）

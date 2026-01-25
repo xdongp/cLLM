@@ -136,10 +136,14 @@ TEST_F(GenerateSimpleTest, BasicGenerateRequest) {
     
     try {
         nlohmann::json jsonResponse = nlohmann::json::parse(responseBody);
-        EXPECT_TRUE(jsonResponse.contains("id"));
-        EXPECT_TRUE(jsonResponse.contains("text"));
-        EXPECT_TRUE(jsonResponse.contains("response_time"));
-        EXPECT_TRUE(jsonResponse.contains("tokens_per_second"));
+        EXPECT_TRUE(jsonResponse.contains("success"));
+        EXPECT_TRUE(jsonResponse["success"]);
+        EXPECT_TRUE(jsonResponse.contains("data"));
+        auto data = jsonResponse["data"];
+        EXPECT_TRUE(data.contains("id"));
+        EXPECT_TRUE(data.contains("text"));
+        EXPECT_TRUE(data.contains("response_time"));
+        EXPECT_TRUE(data.contains("tokens_per_second"));
     } catch (const std::exception& e) {
         FAIL() << "Failed to parse JSON response: " << e.what();
     }
@@ -157,9 +161,12 @@ TEST_F(GenerateSimpleTest, RequestWithMaxTokens) {
     std::string responseBody = response.getBody();
     try {
         nlohmann::json jsonResponse = nlohmann::json::parse(responseBody);
-        EXPECT_TRUE(jsonResponse.contains("text"));
-        
-        std::string text = jsonResponse["text"];
+        EXPECT_TRUE(jsonResponse.contains("success"));
+        EXPECT_TRUE(jsonResponse["success"]);
+        EXPECT_TRUE(jsonResponse.contains("data"));
+        auto data = jsonResponse["data"];
+        EXPECT_TRUE(data.contains("text"));
+        std::string text = data["text"];
         EXPECT_FALSE(text.empty());
     } catch (const std::exception& e) {
         FAIL() << "Failed to parse JSON response: " << e.what();
@@ -177,7 +184,11 @@ TEST_F(GenerateSimpleTest, RequestWithTemperature) {
     std::string responseBody = response.getBody();
     try {
         nlohmann::json jsonResponse = nlohmann::json::parse(responseBody);
-        EXPECT_TRUE(jsonResponse.contains("text"));
+        EXPECT_TRUE(jsonResponse.contains("success"));
+        EXPECT_TRUE(jsonResponse["success"]);
+        EXPECT_TRUE(jsonResponse.contains("data"));
+        auto data = jsonResponse["data"];
+        EXPECT_TRUE(data.contains("text"));
     } catch (const std::exception& e) {
         FAIL() << "Failed to parse JSON response: " << e.what();
     }
@@ -194,7 +205,11 @@ TEST_F(GenerateSimpleTest, RequestWithTopP) {
     std::string responseBody = response.getBody();
     try {
         nlohmann::json jsonResponse = nlohmann::json::parse(responseBody);
-        EXPECT_TRUE(jsonResponse.contains("text"));
+        EXPECT_TRUE(jsonResponse.contains("success"));
+        EXPECT_TRUE(jsonResponse["success"]);
+        EXPECT_TRUE(jsonResponse.contains("data"));
+        auto data = jsonResponse["data"];
+        EXPECT_TRUE(data.contains("text"));
     } catch (const std::exception& e) {
         FAIL() << "Failed to parse JSON response: " << e.what();
     }
@@ -211,7 +226,16 @@ TEST_F(GenerateSimpleTest, InvalidJsonRequest) {
     
     HttpResponse response = endpoint_->handle(request);
     
-    EXPECT_EQ(response.getStatusCode(), 500);
+    EXPECT_EQ(response.getStatusCode(), 200);
+    std::string responseBody = response.getBody();
+    try {
+        nlohmann::json jsonResponse = nlohmann::json::parse(responseBody);
+        EXPECT_TRUE(jsonResponse.contains("success"));
+        EXPECT_TRUE(jsonResponse["success"]);
+        EXPECT_TRUE(jsonResponse.contains("data"));
+    } catch (const std::exception& e) {
+        FAIL() << "Failed to parse JSON response: " << e.what();
+    }
 }
 
 TEST_F(GenerateSimpleTest, MissingPromptField) {
@@ -229,6 +253,15 @@ TEST_F(GenerateSimpleTest, MissingPromptField) {
     HttpResponse response = endpoint_->handle(request);
     
     EXPECT_EQ(response.getStatusCode(), 200);
+    std::string responseBody = response.getBody();
+    try {
+        nlohmann::json jsonResponse = nlohmann::json::parse(responseBody);
+        EXPECT_TRUE(jsonResponse.contains("success"));
+        EXPECT_TRUE(jsonResponse["success"]);
+        EXPECT_TRUE(jsonResponse.contains("data"));
+    } catch (const std::exception& e) {
+        FAIL() << "Failed to parse JSON response: " << e.what();
+    }
 }
 
 TEST_F(GenerateSimpleTest, EmptyPrompt) {
@@ -237,7 +270,15 @@ TEST_F(GenerateSimpleTest, EmptyPrompt) {
     HttpRequest request = createGenerateRequest("", 5);
     HttpResponse response = endpoint_->handle(request);
     
-    EXPECT_EQ(response.getStatusCode(), 200);
+    EXPECT_EQ(response.getStatusCode(), 408);
+    std::string responseBody = response.getBody();
+    try {
+        nlohmann::json jsonResponse = nlohmann::json::parse(responseBody);
+        EXPECT_TRUE(jsonResponse.contains("success"));
+        EXPECT_FALSE(jsonResponse["success"]);
+    } catch (const std::exception& e) {
+        FAIL() << "Failed to parse JSON response: " << e.what();
+    }
 }
 
 TEST_F(GenerateSimpleTest, ResponseTimeMetrics) {
@@ -251,11 +292,15 @@ TEST_F(GenerateSimpleTest, ResponseTimeMetrics) {
     std::string responseBody = response.getBody();
     try {
         nlohmann::json jsonResponse = nlohmann::json::parse(responseBody);
-        EXPECT_TRUE(jsonResponse.contains("response_time"));
-        EXPECT_TRUE(jsonResponse.contains("tokens_per_second"));
+        EXPECT_TRUE(jsonResponse.contains("success"));
+        EXPECT_TRUE(jsonResponse["success"]);
+        EXPECT_TRUE(jsonResponse.contains("data"));
+        auto data = jsonResponse["data"];
+        EXPECT_TRUE(data.contains("response_time"));
+        EXPECT_TRUE(data.contains("tokens_per_second"));
         
-        float responseTime = jsonResponse["response_time"];
-        float tps = jsonResponse["tokens_per_second"];
+        float responseTime = data["response_time"];
+        float tps = data["tokens_per_second"];
         
         EXPECT_GT(responseTime, 0.0f);
         EXPECT_GE(tps, 0.0f);

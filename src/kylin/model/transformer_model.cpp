@@ -40,43 +40,11 @@ TransformerModel::TransformerModel(const ModelConfig& config)
 void TransformerModel::setEmbeddingWeight(const Tensor& embedding) {
     embedding_ = embedding;
     
-    // 检查 embedding 权重的统计信息
     const auto& embShape = embedding_.shape();
     if (embShape.size() == 2) {
-        const float* embData = embedding_.data();
-        size_t embSize = embShape[0] * embShape[1];
-        
-        float embMax = embData[0];
-        float embMin = embData[0];
-        float embSum = 0.0f;
-        size_t embNanCount = 0;
-        size_t embInfCount = 0;
-        size_t embNonZeroCount = 0;
-        
-        for (size_t i = 0; i < std::min(embSize, (size_t)10000); ++i) {
-            float val = embData[i];
-            if (std::isnan(val)) {
-                embNanCount++;
-            } else if (std::isinf(val)) {
-                embInfCount++;
-            } else {
-                if (val > embMax) embMax = val;
-                if (val < embMin) embMin = val;
-                embSum += val;
-                if (std::abs(val) > 1e-6f) embNonZeroCount++;
-            }
-        }
-        
-        CLLM_INFO("TransformerModel::setEmbeddingWeight: shape=[%zu,%zu], total_size=%zu", 
-                 embShape[0], embShape[1], embSize);
-        CLLM_INFO("TransformerModel::setEmbeddingWeight: stats (first 10000): max=%.6f, min=%.6f, avg=%.6f", 
-                 embMax, embMin, embSum / 10000.0f);
-        CLLM_INFO("TransformerModel::setEmbeddingWeight: nan_count=%zu, inf_count=%zu, non_zero_count=%zu", 
-                 embNanCount, embInfCount, embNonZeroCount);
-        
-        if (embNanCount > 0 || embInfCount > 0) {
-            CLLM_ERROR("TransformerModel::setEmbeddingWeight: WARNING - embedding contains invalid values!");
-        }
+        const size_t embSize = embShape[0] * embShape[1];
+        CLLM_INFO("TransformerModel::setEmbeddingWeight: shape=[%zu,%zu], total_size=%zu",
+                  embShape[0], embShape[1], embSize);
     }
 }
 

@@ -4,13 +4,29 @@
 #include "cllm/batch/output.h"
 #include "cllm/memory/float_array.h"
 #include "cllm/common/config.h"
+#include <filesystem>
 
 using namespace cllm;
+namespace fs = std::filesystem;
+
+static std::string resolveSchedulerConfigPath() {
+    const std::vector<std::string> candidates = {
+        "config/scheduler_config.yaml",
+        "../config/scheduler_config.yaml",
+        "../../config/scheduler_config.yaml"
+    };
+    for (const auto& path : candidates) {
+        if (fs::exists(path)) {
+            return fs::absolute(path).string();
+        }
+    }
+    return "config/scheduler_config.yaml";
+}
 
 class BatchManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        Config::instance().load("config/scheduler_config.yaml");
+        Config::instance().load(resolveSchedulerConfigPath());
         batchManager = std::make_unique<BatchManager>(2048, 32);
     }
     

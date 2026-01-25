@@ -258,6 +258,7 @@ private:
     void checkKVCachEviction();  ///< Phase 5: 检查KV缓存淘汰
     size_t getCurrentTime();  ///< 获取当前时间（毫秒）
     void applyTunedBatchSize(size_t tunedBatchSize);
+    void enforceBackendBatchConstraints();  ///< 根据后端能力调整批处理大小
     
     RequestQueue requestQueue_;        ///< 请求队列
     BatchManager batchManager_;        ///< 批处理管理器

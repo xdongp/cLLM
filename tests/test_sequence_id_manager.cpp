@@ -2,15 +2,31 @@
 #include <cllm/inference/llama_cpp_backend.h>
 #include <cllm/common/config.h>
 #include <cllm/common/logger.h>
+#include <filesystem>
 
 using namespace cllm;
 using namespace cllm::inference;
+namespace fs = std::filesystem;
+
+static std::string resolveSchedulerConfigPath() {
+    const std::vector<std::string> candidates = {
+        "config/scheduler_config.yaml",
+        "../config/scheduler_config.yaml",
+        "../../config/scheduler_config.yaml"
+    };
+    for (const auto& path : candidates) {
+        if (fs::exists(path)) {
+            return fs::absolute(path).string();
+        }
+    }
+    return "config/scheduler_config.yaml";
+}
 
 class SequenceIdManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
         try {
-            Config::instance().load("config/scheduler_config.yaml");
+            Config::instance().load(resolveSchedulerConfigPath());
         } catch (const std::exception& e) {
             std::cerr << "Warning: Failed to load config: " << e.what() << std::endl;
         }
@@ -25,10 +41,10 @@ protected:
             std::cerr << "Warning: LlamaCppBackend initialization failed: " << e.what() << std::endl;
         }
         
-        if (backend_) {
+        if (backend_ && backend_->isInitialized()) {
             CLLM_INFO("Testing sequence ID management with backend");
         } else {
-            CLLM_WARN("Backend not initialized, skipping tests that require backend");
+            GTEST_SKIP() << "Backend not initialized, skipping sequence ID tests";
         }
     }
 

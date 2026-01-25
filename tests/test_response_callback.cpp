@@ -6,6 +6,7 @@
 #include <chrono>
 #include <atomic>
 #include <vector>
+#include <unordered_set>
 
 namespace cllm {
 
@@ -17,6 +18,7 @@ protected:
         callbackInvoked_ = false;
         callbackRequestId_ = 0;
         callbackState_ = RequestState();
+        callbackShouldThrow_ = false;
         callbackExceptionThrown_ = false;
     }
     
@@ -63,7 +65,19 @@ TEST_F(ResponseCallbackTest, SetAndGetCallback) {
     scheduler_->setResponseCallback([&callbackSet](size_t requestId, const RequestState& state) {
         callbackSet = true;
     });
-    
+
+    RequestState request;
+    request.requestId = 123;
+    request.maxTokens = 4;
+    request.temperature = 0.7f;
+    request.tokenizedPrompt = {1, 2, 3};
+    request.generatedTokens = {};
+    scheduler_->addRequest(request);
+
+    auto start = std::chrono::steady_clock::now();
+    while (!callbackSet && std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
     EXPECT_TRUE(callbackSet);
 }
 
@@ -123,10 +137,15 @@ TEST_F(ResponseCallbackTest, MultipleCallbacks_AllInvoked) {
     for (auto& req : requests) {
         scheduler_->addRequest(req);
     }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    
-    EXPECT_EQ(callbackRequestIds.size(), 3);
+
+    auto start = std::chrono::steady_clock::now();
+    while (callbackRequestIds.size() < 3 &&
+           std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    std::unordered_set<size_t> uniqueIds(callbackRequestIds.begin(), callbackRequestIds.end());
+    EXPECT_GE(callbackRequestIds.size(), 3);
+    EXPECT_EQ(uniqueIds.size(), 3);
 }
 
 TEST_F(ResponseCallbackTest, Callback_ThreadSafety) {

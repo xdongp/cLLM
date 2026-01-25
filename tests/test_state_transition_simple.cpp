@@ -98,12 +98,12 @@ TEST_F(StateTransitionTest, RequestStateIsTimeout) {
     RequestState request = createTestRequest(1);
     request.startTime = getCurrentTime() - 70 * 1000;
     
-    EXPECT_TRUE(request.isTimeout(getCurrentTime(), 60.0f)) << "Request should be TIMEOUT";
+    EXPECT_TRUE(request.checkTimeout(getCurrentTime(), 60.0f)) << "Request should be TIMEOUT";
     
     RequestState notTimeoutRequest = createTestRequest(2);
     notTimeoutRequest.startTime = getCurrentTime() - 30 * 1000;
     
-    EXPECT_FALSE(notTimeoutRequest.isTimeout(getCurrentTime(), 60.0f)) << "Request should not be TIMEOUT";
+    EXPECT_FALSE(notTimeoutRequest.checkTimeout(getCurrentTime(), 60.0f)) << "Request should not be TIMEOUT";
 }
 
 TEST_F(StateTransitionTest, RequestStateTransitions) {

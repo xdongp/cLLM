@@ -301,22 +301,11 @@ bool GGUFLoader::loadWeightByName(const std::string& name, cllm::model::WeightDa
                 break;
             case 12: // Q4_K (Q4_K_M)
                 {
-                    // Q4_K格式: 每个块144字节，包含256个元素
-                    using namespace kylin::quantization;
-
-                    const size_t blockCount = (elementCount + QK_K - 1) / QK_K;
-                    const size_t q4DataSize = blockCount * sizeof(block_q4_K);
-
-                    std::vector<uint8_t> q4Data;
-                    q4Data.reserve(q4DataSize);
-                    q4Data.resize(q4DataSize);
-
-                    // 批量读取Q4_K数据
-                    readValues(q4Data.data(), q4DataSize);
-
-                    // 反量化输出
-                    weight.data.resize(elementCount);
-                    dequantize_q4_K_to_f32(q4Data.data(), weight.data.data(), elementCount);
+                    // Q4_K格式: TODO - 需要实现反量化
+                    CLLM_ERROR("Q4_K dequantization not yet implemented");
+                    weight.data.clear();
+                    setFilePosition(savedPos);
+                    return false;
                 }
                 break;
             case 13: // Q5_K (Q5_K_M)
@@ -339,22 +328,11 @@ bool GGUFLoader::loadWeightByName(const std::string& name, cllm::model::WeightDa
                 break;
             case 14: // Q6_K
                 {
-                    // Q6_K格式：256个元素/块，使用 kylin::quantization 的反量化实现
-                    using namespace kylin::quantization;
-
-                    const size_t blockCount = (elementCount + QK_K - 1) / QK_K;
-                    const size_t q6DataSize = blockCount * sizeof(block_q6_K);
-
-                    std::vector<uint8_t> q6Data;
-                    q6Data.reserve(q6DataSize);
-                    q6Data.resize(q6DataSize);
-
-                    // 批量读取Q6_K数据
-                    readValues(q6Data.data(), q6DataSize);
-
-                    // 反量化输出
-                    weight.data.resize(elementCount);
-                    dequantize_q6_K_to_f32(q6Data.data(), weight.data.data(), elementCount);
+                    // Q6_K格式: TODO - 需要实现反量化
+                    CLLM_ERROR("Q6_K dequantization not yet implemented");
+                    weight.data.clear();
+                    setFilePosition(savedPos);
+                    return false;
                 }
                 break;
             default:

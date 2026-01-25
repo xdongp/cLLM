@@ -19,7 +19,7 @@ scheduler:
   default_top_p: 0.9
   default_top_k: 50
   default_max_tokens: 100
-  request_timeout: 60.0
+  request_timeout: 1.0
   loop_interval: 10
   idle_loop_interval: 100
   wait_poll_interval_ms: 10
@@ -28,6 +28,10 @@ scheduler:
 server:
   port: 8080
   host: "0.0.0.0"
+
+http:
+  max_input_tokens: 7000
+  timeout_ms: 30000
 
 resources:
   max_batch_size: 8
@@ -59,3 +63,29 @@ profiling:
   enable: false
   output_dir: "./profiling_results"
   detailed_metrics: false
+
+# API配置（测试使用默认值）
+api:
+  endpoints:
+    health: {}
+    generate: {}
+    generate_stream: {}
+    encode: {}
+  defaults:
+    prompt: "test"
+  response:
+    content_type:
+      json: "application/json"
+      stream: "text/event-stream"
+    headers:
+      cache_control: "no-cache"
+      connection: "keep-alive"
+  timeouts:
+    min: 60.0
+    max: 600.0
+    token_factor: 10.0
+
+# 后端配置
+backend:
+  llama_cpp:
+    n_seq_max: 16

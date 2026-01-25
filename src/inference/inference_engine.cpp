@@ -188,11 +188,19 @@ bool InferenceEngine::cleanupKVCache(size_t requestId) const {
         return false;
     }
     
-    // Phase 4: 只对 LlamaCppBackend 有效
     std::string backendName = backend_->getName();
+    
+    // 支持 Kylin 后端的 per-request KV cache 清理
+    if (backendName == "Kylin") {
+        auto* kylinBackend = dynamic_cast<KylinBackend*>(backend_.get());
+        if (kylinBackend) {
+            return kylinBackend->cleanupKVCache(requestId);
+        }
+    }
+    
+    // 支持 llama.cpp 后端
     if (backendName == "llama.cpp") {
         #ifdef CLLM_USE_LLAMA_CPP
-        // 动态转换为 LlamaCppBackend 并调用 cleanupKVCache
         auto* llamaBackend = dynamic_cast<LlamaCppBackend*>(backend_.get());
         if (llamaBackend) {
             return llamaBackend->cleanupKVCache(requestId);
@@ -200,7 +208,6 @@ bool InferenceEngine::cleanupKVCache(size_t requestId) const {
         #endif
     }
     
-    // 其他后端不需要KV缓存清理
     return false;
 }
 

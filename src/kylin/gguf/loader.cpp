@@ -562,12 +562,11 @@ bool GGUFLoader::loadInto(
             for (size_t i = 0; i < numElements; ++i) {
                 dst[i] = ggml_fp16_to_fp32(src[i]);
             }
-        } else if (srcType == GGML_TYPE_Q4_K) {
-            // Q4_K 反量化
-            quantization::dequantize_q4_K_to_f32(quantizedData.data(), dst.data(), numElements);
-        } else if (srcType == GGML_TYPE_Q6_K) {
-            // Q6_K 反量化
-            quantization::dequantize_q6_K_to_f32(quantizedData.data(), dst.data(), numElements);
+        } else if (srcType == GGML_TYPE_Q4_K || srcType == GGML_TYPE_Q6_K) {
+            // Q4_K / Q6_K 反量化 - TODO: 实现反量化函数
+            CLLM_ERROR("[GGUFLoader::loadInto] Q4_K/Q6_K dequantization not yet implemented for tensor %s",
+                      name.c_str());
+            return false;
         } else {
             CLLM_ERROR("[GGUFLoader::loadInto] Unsupported quantization type for tensor %s: %d",
                       name.c_str(), static_cast<int>(srcType));

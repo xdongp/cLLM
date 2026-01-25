@@ -5,13 +5,29 @@
 #include <cllm/common/queue.h>
 #include <cllm/batch/manager.h>
 #include <cllm/common/config.h>
+#include <filesystem>
 
 using namespace cllm;
+namespace fs = std::filesystem;
+
+static std::string resolveSchedulerConfigPath() {
+    const std::vector<std::string> candidates = {
+        "config/scheduler_config.yaml",
+        "../config/scheduler_config.yaml",
+        "../../config/scheduler_config.yaml"
+    };
+    for (const auto& path : candidates) {
+        if (fs::exists(path)) {
+            return fs::absolute(path).string();
+        }
+    }
+    return "config/scheduler_config.yaml";
+}
 
 class SchedulerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        Config::instance().load("config/scheduler_config.yaml");
+        Config::instance().load(resolveSchedulerConfigPath());
         maxBatchSize_ = 4;
         maxContextLength_ = 1024;
         

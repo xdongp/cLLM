@@ -76,6 +76,13 @@ public:
      * 在 GPU 上执行整个 forward pass，比单次 matmul 更高效
      */
     std::vector<float> forward(int tokenId, int position);
+
+    /**
+     * @brief 最小可用 GGML 计算图（Embedding + LM Head）
+     *
+     * 用于学习/验证 GGML 计算图执行流程
+     */
+    std::vector<float> forwardGraphMinimal(int tokenId, int position);
     
     /**
      * @brief 检查 GPU 是否可用
@@ -90,6 +97,7 @@ public:
 private:
     // GGML 后端
     ggml_backend_t backend_ = nullptr;
+    ggml_backend_t backendCPU_ = nullptr;
     ggml_backend_buffer_t weightBuffer_ = nullptr;
     ggml_backend_buffer_t computeBuffer_ = nullptr;
     
@@ -98,6 +106,21 @@ private:
     
     // 计算上下文（每次 forward 重用）
     ggml_context* computeCtx_ = nullptr;
+
+    // Stage 7: 持久化 GGML 计算图资源
+    ggml_context* graphCtx_ = nullptr;
+    ggml_backend_buffer_t graphBuffer_ = nullptr;
+    ggml_backend_sched_t graphSched_ = nullptr;
+    ggml_cgraph* graph_ = nullptr;
+    ggml_tensor* graphToken_ = nullptr;
+    ggml_tensor* graphPos_ = nullptr;
+    ggml_tensor* graphLogits_ = nullptr;
+    std::vector<ggml_tensor*> graphKCacheLayers_;
+    std::vector<ggml_tensor*> graphVCacheLayers_;
+    std::vector<ggml_tensor*> graphKCacheUpdLayers_;
+    std::vector<ggml_tensor*> graphVCacheUpdLayers_;
+    int graphBuiltPosition_ = -1;
+    int graphBuiltStage_ = 0;
     
     // 权重张量（指向 GPU 内存）
     ggml_tensor* embedTokens_ = nullptr;
@@ -131,6 +154,10 @@ private:
     
     // CPU 权重缓存（避免每次从 GPU 获取）
     std::unordered_map<std::string, std::vector<float>> weightsCached_;
+
+    // 学习版 GGML 计算图 KV Cache（多层）
+    std::vector<std::vector<float>> kCacheGraphCPU_;
+    std::vector<std::vector<float>> vCacheGraphCPU_;
     
     // 模型配置
     HFModelConfig config_;
@@ -144,6 +171,9 @@ private:
     
     // 缓存权重到 CPU
     void cacheWeightsToCPU();
+
+    // GGML 计算图阶段（0=关闭, 1=Embedding+LMHead, 2=+RMSNorm+FFN, 3=+Attention, 4=+KV Cache, 5=多层, 6=调度器, 7=持久化, 8=混合调度）
+    int graphStage_ = 0;
     
 public:
     /**

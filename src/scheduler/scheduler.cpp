@@ -65,6 +65,8 @@ Scheduler::Scheduler(
     if (!modelExecutor_->isLoaded()) {
         throw std::runtime_error("Model executor must be pre-loaded before creating Scheduler");
     }
+
+    enforceBackendBatchConstraints();
 }
 
 Scheduler::Scheduler(
@@ -101,6 +103,8 @@ Scheduler::Scheduler(
     
     // 加载模型
     modelExecutor_->loadModel();
+
+    enforceBackendBatchConstraints();
 }
 
 Scheduler::~Scheduler() {
@@ -111,6 +115,29 @@ Scheduler::~Scheduler() {
     // Only delete modelExecutor_ if we own it (used by tests)
     if (ownsModelExecutor_ && modelExecutor_) {
         delete modelExecutor_;
+    }
+}
+
+void Scheduler::enforceBackendBatchConstraints() {
+    if (!modelExecutor_) {
+        return;
+    }
+
+    const std::string backendName = modelExecutor_->getBackendName();
+    if (backendName == "Kylin") {
+        // Kylin 后端现在支持 per-request KV Cache，可以真正并发
+        // 限制最大并发数为 16（与 KVCachePool 的 maxSlots 一致）
+        static constexpr size_t kKylinMaxConcurrent = 16;
+        if (maxBatchSize_ > kKylinMaxConcurrent) {
+            CLLM_WARN("[Scheduler] Kylin backend limits maxBatchSize from %zu to %zu (per-request KV cache slots)",
+                      maxBatchSize_, kKylinMaxConcurrent);
+            maxBatchSize_ = kKylinMaxConcurrent;
+            tunedMaxBatchSize_.store(kKylinMaxConcurrent, std::memory_order_relaxed);
+            config_.maxBatchSize = kKylinMaxConcurrent;
+            batchManager_.setMaxBatchSize(kKylinMaxConcurrent);
+        } else {
+            CLLM_INFO("[Scheduler] Kylin backend with per-request KV cache, maxBatchSize=%zu", maxBatchSize_);
+        }
     }
 }
 

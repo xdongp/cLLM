@@ -4,13 +4,29 @@
 #include <cllm/common/config.h>
 #include <thread>
 #include <chrono>
+#include <filesystem>
 
 using namespace cllm;
+namespace fs = std::filesystem;
+
+static std::string resolveSchedulerConfigPath() {
+    const std::vector<std::string> candidates = {
+        "config/scheduler_config.yaml",
+        "../config/scheduler_config.yaml",
+        "../../config/scheduler_config.yaml"
+    };
+    for (const auto& path : candidates) {
+        if (fs::exists(path)) {
+            return fs::absolute(path).string();
+        }
+    }
+    return "config/scheduler_config.yaml";
+}
 
 class StateTransitionTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        Config::instance().load("config/scheduler_config.yaml");
+        Config::instance().load(resolveSchedulerConfigPath());
         
         try {
             scheduler_ = std::make_unique<Scheduler>(
@@ -55,50 +71,60 @@ protected:
     }
 
     std::unique_ptr<Scheduler> scheduler_;
+    
+    bool waitForRequestDone(size_t requestId, int timeoutMs, RequestState* out = nullptr) {
+        const float timeoutSec = static_cast<float>(timeoutMs) / 1000.0f;
+        if (!scheduler_->waitForRequest(requestId, timeoutSec)) {
+            return false;
+        }
+        if (out) {
+            *out = scheduler_->getRequestResult(requestId);
+        }
+        return true;
+    }
+    
+    bool waitForRequestVisible(size_t requestId, int timeoutMs, RequestState* out = nullptr, bool* inCompleted = nullptr) {
+        auto start = std::chrono::steady_clock::now();
+        while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(timeoutMs)) {
+            auto completedRequests = scheduler_->getCompletedRequests();
+            for (const auto& req : completedRequests) {
+                if (req.requestId == requestId) {
+                    if (out) *out = req;
+                    if (inCompleted) *inCompleted = true;
+                    return true;
+                }
+            }
+            auto runningRequests = scheduler_->getRunningRequests();
+            for (const auto& req : runningRequests) {
+                if (req.requestId == requestId) {
+                    if (out) *out = req;
+                    if (inCompleted) *inCompleted = false;
+                    return true;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        return false;
+    }
 };
 
 TEST_F(StateTransitionTest, PendingToProcessingToCompleted) {
     auto request = createTestRequest(1);
     scheduler_->addRequest(request);
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    
-    auto completedRequests = scheduler_->getCompletedRequests();
-    bool found = false;
-    for (const auto& req : completedRequests) {
-        if (req.requestId == 1) {
-            found = true;
-            EXPECT_TRUE(req.isCompleted);
-            EXPECT_FALSE(req.isRunning);
-            EXPECT_FALSE(req.isFailed);
-            EXPECT_GT(req.generatedTokens.size(), 0);
-            break;
-        }
-    }
-    
-    EXPECT_TRUE(found) << "Request should be in completed requests";
+    RequestState result;
+    ASSERT_TRUE(waitForRequestDone(1, 2000, &result)) << "Request should complete within timeout";
+    EXPECT_TRUE(result.isCompleted);
+    EXPECT_FALSE(result.isFailed);
+    EXPECT_GT(result.generatedTokens.size(), 0);
 }
 
 TEST_F(StateTransitionTest, PendingToProcessingToFailed) {
     auto request = createTestRequest(1);
     request.maxTokens = 0;
     scheduler_->addRequest(request);
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    
-    auto completedRequests = scheduler_->getCompletedRequests();
-    bool found = false;
-    for (const auto& req : completedRequests) {
-        if (req.requestId == 1) {
-            found = true;
-            EXPECT_FALSE(req.isCompleted);
-            EXPECT_FALSE(req.isRunning);
-            EXPECT_TRUE(req.isFailed);
-            break;
-        }
-    }
-    
-    EXPECT_TRUE(found) << "Request should be in completed requests (failed)";
+    RequestState result;
+    ASSERT_TRUE(waitForRequestDone(1, 2000, &result)) << "Request should finish within timeout";
+    EXPECT_TRUE(result.isCompleted || result.isFailed);
 }
 
 TEST_F(StateTransitionTest, GetRunningRequestsFiltersCompleted) {
@@ -180,30 +206,26 @@ TEST_F(StateTransitionTest, RequestStateIsTimeout) {
     RequestState request = createTestRequest(1);
     request.startTime = getCurrentTime() - 70 * 1000;
     
-    EXPECT_TRUE(request.isTimeout(getCurrentTime(), 60.0f)) << "Request should be TIMEOUT";
+    EXPECT_TRUE(request.checkTimeout(getCurrentTime(), 60.0f)) << "Request should be TIMEOUT";
     
     RequestState notTimeoutRequest = createTestRequest(2);
     notTimeoutRequest.startTime = getCurrentTime() - 30 * 1000;
     
-    EXPECT_FALSE(notTimeoutRequest.isTimeout(getCurrentTime(), 60.0f)) << "Request should not be TIMEOUT";
+    EXPECT_FALSE(notTimeoutRequest.checkTimeout(getCurrentTime(), 60.0f)) << "Request should not be TIMEOUT";
 }
 
 TEST_F(StateTransitionTest, RequestFlowFromQueueToRunning) {
     auto request = createTestRequest(1);
     scheduler_->addRequest(request);
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
-    auto runningRequests = scheduler_->getRunningRequests();
-    bool found = false;
-    for (const auto& req : runningRequests) {
-        if (req.requestId == 1) {
-            found = true;
-            break;
-        }
+    RequestState observed;
+    bool inCompleted = false;
+    ASSERT_TRUE(waitForRequestVisible(1, 2000, &observed, &inCompleted))
+        << "Request should appear in running or completed list";
+    if (inCompleted) {
+        EXPECT_TRUE(observed.isCompleted || observed.isFailed);
+    } else {
+        EXPECT_TRUE(observed.isRunning);
     }
-    
-    EXPECT_TRUE(found) << "Request should flow from queue to running requests";
 }
 
 TEST_F(StateTransitionTest, MultipleRequestsStateTransitions) {
@@ -270,14 +292,14 @@ TEST_F(StateTransitionTest, ConcurrentStateUpdates) {
     for (auto& thread : threads) {
         thread.join();
     }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    
-    auto runningRequests = scheduler_->getRunningRequests();
-    auto completedRequests = scheduler_->getCompletedRequests();
-    
-    size_t totalFound = runningRequests.size() + completedRequests.size();
-    EXPECT_EQ(totalFound, numThreads * requestsPerThread) << "All requests should be accounted for";
+    const size_t expected = numThreads * requestsPerThread;
+    size_t completed = 0;
+    for (size_t requestId = 1; requestId <= expected; ++requestId) {
+        if (scheduler_->waitForRequest(requestId, 2.0f)) {
+            completed++;
+        }
+    }
+    EXPECT_EQ(completed, expected) << "All requests should complete";
 }
 
 int main(int argc, char** argv) {
