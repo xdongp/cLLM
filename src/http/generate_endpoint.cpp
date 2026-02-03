@@ -608,14 +608,48 @@ void GenerateEndpoint::handleStreamingCallback(const HttpRequest& request, Strea
     
     // 使用 Scheduler::generateStreaming 进行真流式生成
     // 每生成一个 token 立即通过回调发送
-    auto tokenCallback = [this, &requestId, &writeCallback](int tokenId) -> bool {
-        // 解码 token
+    
+    // 累积 token IDs，用于批量解码（处理不完整 UTF-8）
+    std::vector<int> pendingTokens;
+    
+    auto tokenCallback = [this, &requestId, &writeCallback, &pendingTokens](int tokenId) -> bool {
+        // 累积 token
+        pendingTokens.push_back(tokenId);
+        
+        // 尝试解码所有累积的 tokens
         std::string tokenText;
         try {
-            tokenText = tokenizer_->decode({tokenId}, false);
+            tokenText = tokenizer_->decode(pendingTokens, false);
         } catch (...) {
-            return true;  // 解码失败，继续生成
+            // 解码失败（可能是不完整的 UTF-8），继续累积
+            return true;
         }
+        
+        // 检查是否是有效的 UTF-8（不以不完整的多字节序列结尾）
+        if (!tokenText.empty()) {
+            unsigned char lastByte = static_cast<unsigned char>(tokenText.back());
+            // 如果最后一个字节是多字节序列的开始但不完整，继续累积
+            if ((lastByte & 0xC0) == 0xC0) {  // 多字节序列开始
+                // 检查序列是否完整
+                size_t expectedLen = 0;
+                if ((lastByte & 0xE0) == 0xC0) expectedLen = 2;
+                else if ((lastByte & 0xF0) == 0xE0) expectedLen = 3;
+                else if ((lastByte & 0xF8) == 0xF0) expectedLen = 4;
+                
+                // 从最后一个多字节序列开始检查
+                size_t pos = tokenText.size() - 1;
+                while (pos > 0 && (static_cast<unsigned char>(tokenText[pos]) & 0xC0) == 0x80) {
+                    pos--;
+                }
+                size_t actualLen = tokenText.size() - pos;
+                if (actualLen < expectedLen) {
+                    return true;  // 不完整，继续累积
+                }
+            }
+        }
+        
+        // 清空累积的 tokens
+        pendingTokens.clear();
         
         // 构建 SSE chunk
         nlohmann::json chunk;
@@ -631,6 +665,23 @@ void GenerateEndpoint::handleStreamingCallback(const HttpRequest& request, Strea
     
     // 执行流式生成
     RequestState result = scheduler_->generateStreaming(requestState, tokenCallback);
+    
+    // 发送剩余的 pending tokens（如果有）
+    if (!pendingTokens.empty()) {
+        try {
+            std::string remainingText = tokenizer_->decode(pendingTokens, false);
+            if (!remainingText.empty()) {
+                nlohmann::json chunk;
+                chunk["id"] = requestId;
+                chunk["token"] = remainingText;
+                chunk["done"] = false;
+                std::string sseData = "data: " + chunk.dump() + "\n\n";
+                writeCallback(sseData);
+            }
+        } catch (...) {
+            // 忽略解码错误
+        }
+    }
     
     // 发送完成消息
     nlohmann::json finalChunk;
