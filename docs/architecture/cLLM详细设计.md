@@ -378,6 +378,88 @@ curl -X POST http://localhost:8085/generate_stream \
   -d '{"prompt":"你好","max_tokens":50,"stream":true}'
 ```
 
+### 7.4 常用工具
+
+#### 7.4.1 交互式客户端 (cllm_client.py)
+
+**功能**：交互式命令行客户端，支持流式和非流式文本生成。
+
+**位置**：`src/client/cllm_client.py`
+
+**使用方法**：
+```bash
+# 基本使用
+python3 src/client/cllm_client.py --server-url http://localhost:8085
+
+# 指定参数
+python3 src/client/cllm_client.py --max-tokens 200 --temperature 0.8
+```
+
+**命令行参数**：
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--server-url` | 服务器地址 | http://localhost:8080 |
+| `--max-tokens` | 最大生成 token 数 | 1024 |
+| `--temperature` | 温度参数 | 0.7 |
+| `--top-p` | Top-p 采样 | 0.9 |
+| `--top-k` | Top-k 采样 | 50 |
+
+**交互命令**：
+| 命令 | 说明 |
+|------|------|
+| `help` | 显示帮助 |
+| `quit` / `exit` | 退出 |
+| `stream on/off` | 开关流式输出 |
+| `set <key> <value>` | 设置参数 |
+| `params` | 显示当前参数 |
+
+#### 7.4.2 统一基准测试 (unified_benchmark.py)
+
+**功能**：统一基准测试工具，支持 cLLM 和 Ollama 性能对比。
+
+**位置**：`tools/unified_benchmark.py`
+
+**使用方法**：
+```bash
+# 测试 cLLM
+python3 tools/unified_benchmark.py \
+  --server-type cllm \
+  --server-url http://localhost:8085 \
+  --requests 72 \
+  --concurrency 8 \
+  --max-tokens 50
+
+# 测试 Ollama（对比）
+python3 tools/unified_benchmark.py \
+  --server-type ollama \
+  --server-url http://localhost:11434 \
+  --model qwen3:0.6b \
+  --requests 72
+```
+
+**命令行参数**：
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--server-type` | 服务器类型 | 必填（cllm/ollama） |
+| `--server-url` | 服务器地址 | http://localhost:8080 |
+| `--model` | 模型名称（Ollama） | qwen3:0.6b |
+| `--test-type` | 测试类型 | all |
+| `--requests` | 请求数量 | 72 |
+| `--concurrency` | 并发数 | 8 |
+| `--max-tokens` | 生成长度 | 50 |
+| `--output-file` | 输出 JSON 文件 | - |
+
+**测试类型**：
+- `api-sequential`：顺序 API 测试
+- `api-concurrent`：并发 API 测试
+- `all`：全部测试
+
+**输出指标**：
+- 吞吐量 (tokens/s)
+- 平均延迟 (ms)
+- P50/P90/P99 延迟
+- 成功率
+
 ## 8. 详细实现
 
 各模块的详细代码实现请参考：
