@@ -29,8 +29,38 @@ void HttpHandler::del(const std::string& path, HandlerFunc handler) {
     deleteHandlers_[normalizedPath] = handler;
 }
 
+void HttpHandler::postStreaming(const std::string& path, StreamingHandlerFunc handler) {
+    std::string normalizedPath = normalizePath(path);
+    streamingPostHandlers_[normalizedPath] = handler;
+}
+
 void HttpHandler::addMiddleware(MiddlewareFunc middleware) {
     middlewares_.push_back(middleware);
+}
+
+bool HttpHandler::isStreamingRequest(const std::string& method, const std::string& path) const {
+    if (method != "POST") {
+        return false;
+    }
+    
+    std::string normalizedPath = normalizePath(path);
+    for (const auto& entry : streamingPostHandlers_) {
+        if (matchPath(entry.first, normalizedPath)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void HttpHandler::handleStreamingRequest(const HttpRequest& request, StreamingWriteCallback writeCallback) {
+    std::string path = normalizePath(request.getPath());
+    
+    for (const auto& entry : streamingPostHandlers_) {
+        if (matchPath(entry.first, path)) {
+            entry.second(request, writeCallback);
+            return;
+        }
+    }
 }
 
 HttpResponse HttpHandler::handleRequest(const HttpRequest& request) {

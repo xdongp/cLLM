@@ -56,12 +56,16 @@ private:
     HttpServer(const HttpServer&) = delete;
     HttpServer& operator=(const HttpServer&) = delete;
     
+    // 连接状态管理（前向声明）
+    struct ConnectionState;
+    
     // 内部实现
     void run();
     void eventLoop(int workerId);
     void handleConnection(int clientFd);
     void handleReadEvent(int clientFd);
     void handleWriteEvent(int clientFd);
+    void handleStreamingConnection(int clientFd, ConnectionState& connection);
     
     // epoll/kqueue相关
     void setupEventLoop();
@@ -75,11 +79,12 @@ private:
         std::string writeBuffer;
         HttpRequest request;
         HttpResponse response;
-        enum { READING_HEADER, READING_BODY, WRITING } state;
+        enum { READING_HEADER, READING_BODY, WRITING, STREAMING } state;
         size_t contentLength;
         bool keepAlive;
+        bool isStreaming;  // 是否为流式请求
         
-        ConnectionState() : state(READING_HEADER), contentLength(0), keepAlive(true) {}
+        ConnectionState() : state(READING_HEADER), contentLength(0), keepAlive(true), isStreaming(false) {}
     };
     
     // 静态成员

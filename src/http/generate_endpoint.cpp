@@ -551,4 +551,99 @@ std::string GenerateEndpoint::generateRequestId() {
     return id;
 }
 
+void GenerateEndpoint::handleStreamingCallback(const HttpRequest& request, StreamingWriteCallback writeCallback) {
+    std::string requestId = generateRequestId();
+    
+    // 解析请求
+    GenerateRequest req = parseRequest(request);
+    
+    // 检查依赖
+    if (scheduler_ == nullptr || tokenizer_ == nullptr) {
+        nlohmann::json errorChunk;
+        errorChunk["id"] = requestId;
+        errorChunk["error"] = "Server not ready";
+        errorChunk["done"] = true;
+        std::string errorData = "data: " + errorChunk.dump() + "\n\n";
+        writeCallback(errorData);
+        return;
+    }
+    
+    // 创建请求状态
+    RequestState requestState;
+    requestState.requestId = 0;
+    requestState.maxTokens = req.maxTokens;
+    requestState.temperature = req.temperature;
+    requestState.topP = req.topP;
+    requestState.topK = 0;
+    requestState.eosTokenId = tokenizer_->getEosId();
+    requestState.priority = 0;
+    requestState.isCompleted = false;
+    requestState.isRunning = false;
+    requestState.isFailed = false;
+    
+    // 编码 prompt
+    try {
+        requestState.tokenizedPrompt = tokenizer_->encode(req.prompt, false);
+    } catch (const std::exception& e) {
+        nlohmann::json errorChunk;
+        errorChunk["id"] = requestId;
+        errorChunk["error"] = std::string("Tokenization failed: ") + e.what();
+        errorChunk["done"] = true;
+        std::string errorData = "data: " + errorChunk.dump() + "\n\n";
+        writeCallback(errorData);
+        return;
+    }
+    
+    // 控制输入长度
+    const int maxInputTokens = cllm::Config::instance().httpMaxInputTokens();
+    if (maxInputTokens > 0) {
+        const size_t MAX_INPUT_TOKENS = static_cast<size_t>(maxInputTokens);
+        if (requestState.tokenizedPrompt.size() > MAX_INPUT_TOKENS) {
+            requestState.tokenizedPrompt.resize(MAX_INPUT_TOKENS);
+        }
+    }
+    
+    CLLM_INFO("[generateStreaming] Starting real streaming for request %s, prompt tokens: %zu, max_tokens: %d",
+              requestId.c_str(), requestState.tokenizedPrompt.size(), req.maxTokens);
+    
+    // 使用 Scheduler::generateStreaming 进行真流式生成
+    // 每生成一个 token 立即通过回调发送
+    auto tokenCallback = [this, &requestId, &writeCallback](int tokenId) -> bool {
+        // 解码 token
+        std::string tokenText;
+        try {
+            tokenText = tokenizer_->decode({tokenId}, false);
+        } catch (...) {
+            return true;  // 解码失败，继续生成
+        }
+        
+        // 构建 SSE chunk
+        nlohmann::json chunk;
+        chunk["id"] = requestId;
+        chunk["token"] = tokenText;
+        chunk["done"] = false;
+        
+        std::string sseData = "data: " + chunk.dump() + "\n\n";
+        
+        // 发送（返回 false 表示客户端断开）
+        return writeCallback(sseData);
+    };
+    
+    // 执行流式生成
+    RequestState result = scheduler_->generateStreaming(requestState, tokenCallback);
+    
+    // 发送完成消息
+    nlohmann::json finalChunk;
+    finalChunk["id"] = requestId;
+    finalChunk["token"] = "";
+    finalChunk["done"] = true;
+    finalChunk["generated_tokens"] = result.generatedTokens.size();
+    
+    std::string finalData = "data: " + finalChunk.dump() + "\n\n";
+    writeCallback(finalData);
+    
+    CLLM_INFO("[generateStreaming] Completed request %s, generated %zu tokens",
+              requestId.c_str(), result.generatedTokens.size());
+}
+
 } // namespace cllm

@@ -1032,4 +1032,71 @@ void Scheduler::cleanupLoop() {
     CLLM_INFO("[Scheduler::cleanupLoop] Cleanup thread exiting (total processed: %zu)", processedCount);
 }
 
+RequestState Scheduler::generateStreaming(const RequestState& request, TokenCallback tokenCallback) {
+    RequestState result = request;
+    result.isRunning = true;
+    result.startTime = getCurrentTime();
+    
+    if (!modelExecutor_) {
+        result.isFailed = true;
+        result.errorMessage = "Model executor not initialized";
+        CLLM_ERROR("[generateStreaming] Model executor not initialized");
+        return result;
+    }
+    
+    CLLM_DEBUG("[generateStreaming] Starting streaming generation for %d tokens", request.maxTokens);
+    
+    // 构建输入序列（prompt tokens）
+    std::vector<int> inputIds = request.tokenizedPrompt;
+    
+    // 逐 token 生成（使用 sampleToken）
+    for (int i = 0; i < request.maxTokens; ++i) {
+        int nextToken = -1;
+        
+        try {
+            // 使用 ModelExecutor::sampleToken 生成单个 token
+            nextToken = modelExecutor_->sampleToken(inputIds, request.temperature);
+        } catch (const std::exception& e) {
+            CLLM_ERROR("[generateStreaming] sampleToken failed: %s", e.what());
+            result.isFailed = true;
+            result.errorMessage = std::string("sampleToken failed: ") + e.what();
+            break;
+        }
+        
+        // 检查无效 token
+        if (nextToken < 0) {
+            CLLM_WARN("[generateStreaming] Invalid token %d at iteration %d", nextToken, i);
+            break;
+        }
+        
+        // 检查 EOS
+        if (request.eosTokenId >= 0 && nextToken == request.eosTokenId) {
+            CLLM_DEBUG("[generateStreaming] EOS token reached at iteration %d", i);
+            break;
+        }
+        
+        // 添加到结果和输入序列
+        result.generatedTokens.push_back(nextToken);
+        inputIds.push_back(nextToken);
+        
+        // 调用回调
+        if (tokenCallback) {
+            bool shouldContinue = tokenCallback(nextToken);
+            if (!shouldContinue) {
+                CLLM_DEBUG("[generateStreaming] Callback requested stop at iteration %d", i);
+                break;
+            }
+        }
+    }
+    
+    // 标记完成
+    result.isRunning = false;
+    result.isCompleted = true;
+    result.completionTime = getCurrentTime();
+    
+    CLLM_DEBUG("[generateStreaming] Completed, generated %zu tokens", result.generatedTokens.size());
+    
+    return result;
+}
+
 }

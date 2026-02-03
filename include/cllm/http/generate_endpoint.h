@@ -11,6 +11,7 @@
 #include "cllm/http/api_endpoint.h"
 #include "cllm/http/request.h"
 #include "cllm/http/response.h"
+#include "cllm/http/handler.h"
 
 namespace cllm {
 
@@ -71,8 +72,20 @@ private:
     GenerateRequest parseRequest(const HttpRequest& request);  ///< 解析生成请求
     std::string generateRequestId();  ///< 生成请求ID
     HttpResponse handleNonStreaming(const GenerateRequest& req);  ///< 处理非流式请求
-    HttpResponse handleStreaming(const GenerateRequest& req);  ///< 处理流式请求
+    HttpResponse handleStreaming(const GenerateRequest& req);  ///< 处理流式请求（伪流式，兼容旧接口）
     
+public:
+    /**
+     * @brief 真流式处理（边生成边发送）
+     * 
+     * 用于 HttpHandler::postStreaming 注册，每生成一个 token 立即通过回调发送。
+     * 
+     * @param request HTTP请求
+     * @param writeCallback 流式写入回调
+     */
+    void handleStreamingCallback(const HttpRequest& request, StreamingWriteCallback writeCallback);
+    
+private:
     Scheduler* scheduler_;      ///< 调度器指针
     ITokenizer* tokenizer_;      ///< 分词器指针
 };

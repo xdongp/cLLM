@@ -528,9 +528,11 @@ int main(int argc, char* argv[]) {
             return endpoint->handle(req);
         });
         
-        httpHandler->post(cllm::Config::instance().apiEndpointGenerateStreamPath(), [endpoint = generateEndpoint.get()](const cllm::HttpRequest& req) {
-            return endpoint->handle(req);
-        });
+        // 流式端点：使用真流式处理（边生成边发送）
+        httpHandler->postStreaming(cllm::Config::instance().apiEndpointGenerateStreamPath(), 
+            [endpoint = generateEndpoint.get()](const cllm::HttpRequest& req, cllm::StreamingWriteCallback writeCallback) {
+                endpoint->handleStreamingCallback(req, writeCallback);
+            });
         
         auto encodeEndpoint = std::make_unique<cllm::EncodeEndpoint>(tokenizer);
         httpHandler->post(cllm::Config::instance().apiEndpointEncodePath(), [endpoint = encodeEndpoint.get()](const cllm::HttpRequest& req) {

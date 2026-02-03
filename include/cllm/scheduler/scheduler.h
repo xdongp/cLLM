@@ -77,6 +77,15 @@ private:
 using ResponseCallback = std::function<void(size_t requestId, const RequestState& state)>;
 
 /**
+ * @brief 流式 Token 回调类型
+ * 
+ * 用于流式生成，每生成一个 token 调用一次。
+ * @param token 生成的 token ID
+ * @return true 继续生成，false 停止生成
+ */
+using TokenCallback = std::function<bool(int token)>;
+
+/**
  * @brief 批处理池（优化：减少内存分配）
  * 
  * 预分配批处理对象，避免频繁的内存分配和释放。
@@ -246,6 +255,18 @@ public:
     
     // Phase 7: 触发响应回调（供内部使用）
     void triggerResponseCallback(size_t requestId, const RequestState& state);
+    
+    /**
+     * @brief 流式生成（同步，每个 token 立即回调）
+     * 
+     * 用于真流式场景，不通过队列，直接在当前线程生成。
+     * 每生成一个 token 立即调用 tokenCallback。
+     * 
+     * @param request 请求状态（包含 prompt 和参数）
+     * @param tokenCallback 每个 token 生成后的回调，返回 false 可中止生成
+     * @return 最终请求状态（包含所有生成的 tokens）
+     */
+    RequestState generateStreaming(const RequestState& request, TokenCallback tokenCallback);
 
     // 动态批处理调谐器回调（内部使用）
     void onBatchProcessed(size_t batchSize, double processingTimeMs);

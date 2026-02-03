@@ -867,7 +867,22 @@ void HttpServer::handleReadEvent(int clientFd) {
     }
     
     if (connection.state == ConnectionState::WRITING) {
-        // 处理请求
+        // 检查是否为流式请求
+        bool isStreamingRequest = false;
+        if (handler_) {
+            isStreamingRequest = handler_->isStreamingRequest(
+                connection.request.getMethod(), 
+                connection.request.getPath()
+            );
+        }
+        
+        if (isStreamingRequest) {
+            // 流式请求：边处理边发送
+            handleStreamingConnection(clientFd, connection);
+            return;
+        }
+        
+        // 非流式请求：等待处理完成再发送
         HttpResponse response;
         try {
             if (handler_) {
@@ -968,6 +983,92 @@ void HttpServer::handleWriteEvent(int clientFd) {
             close(clientFd);
         }
     }
+}
+
+// 流式连接处理：边处理边发送
+void HttpServer::handleStreamingConnection(int clientFd, ConnectionState& connection) {
+    // 1. 发送 SSE 响应头
+    std::string headers = "HTTP/1.1 200 OK\r\n";
+    headers += "Content-Type: text/event-stream; charset=utf-8\r\n";
+    headers += "Cache-Control: no-cache\r\n";
+    headers += "Connection: keep-alive\r\n";
+    headers += "Transfer-Encoding: chunked\r\n";
+    headers += "\r\n";
+    
+    // 发送响应头
+    ssize_t sent = send(clientFd, headers.c_str(), headers.length(), 0);
+    if (sent < 0) {
+        CLLM_ERROR("Failed to send streaming headers: %s", strerror(errno));
+        {
+            std::lock_guard<std::mutex> lock(connectionsMutex_);
+            connections_.erase(clientFd);
+        }
+        delEvent(clientFd);
+        close(clientFd);
+        return;
+    }
+    
+    CLLM_DEBUG("Streaming headers sent for connection %d", clientFd);
+    
+    // 2. 创建流式写入回调
+    std::atomic<bool> connectionOpen{true};
+    
+    auto writeCallback = [clientFd, &connectionOpen](const std::string& chunk) -> bool {
+        if (!connectionOpen.load()) {
+            return false;
+        }
+        
+        // 使用 chunked transfer encoding 格式发送
+        std::string chunkedData;
+        char hexLen[16];
+        snprintf(hexLen, sizeof(hexLen), "%zx\r\n", chunk.length());
+        chunkedData = std::string(hexLen) + chunk + "\r\n";
+        
+        ssize_t totalSent = 0;
+        while (totalSent < static_cast<ssize_t>(chunkedData.length())) {
+            ssize_t sent = send(clientFd, 
+                               chunkedData.c_str() + totalSent, 
+                               chunkedData.length() - totalSent, 
+                               MSG_NOSIGNAL);
+            if (sent < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    // 缓冲区满，等待一下
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
+                CLLM_WARN("Streaming write failed: %s", strerror(errno));
+                connectionOpen.store(false);
+                return false;
+            }
+            totalSent += sent;
+        }
+        return true;
+    };
+    
+    // 3. 调用流式处理
+    try {
+        if (handler_) {
+            handler_->handleStreamingRequest(connection.request, writeCallback);
+        }
+    } catch (const std::exception& e) {
+        CLLM_ERROR("Exception in streaming handler: %s", e.what());
+    }
+    
+    // 4. 发送结束标记 (chunked encoding 终止符)
+    if (connectionOpen.load()) {
+        const char* endChunk = "0\r\n\r\n";
+        send(clientFd, endChunk, 5, MSG_NOSIGNAL);
+    }
+    
+    // 5. 清理连接
+    {
+        std::lock_guard<std::mutex> lock(connectionsMutex_);
+        connections_.erase(clientFd);
+    }
+    delEvent(clientFd);
+    close(clientFd);
+    
+    CLLM_DEBUG("Streaming connection %d closed", clientFd);
 }
 
 } // namespace cllm

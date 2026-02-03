@@ -22,6 +22,24 @@ namespace cllm {
 typedef std::function<HttpResponse(const HttpRequest&, const std::function<HttpResponse(const HttpRequest&)>&)> MiddlewareFunc;
 
 /**
+ * @brief 流式写入回调类型
+ * 
+ * 用于流式响应，每次调用发送一个数据块到客户端。
+ * @param chunk 要发送的数据块
+ * @return true 继续发送，false 停止（客户端断开或出错）
+ */
+using StreamingWriteCallback = std::function<bool(const std::string& chunk)>;
+
+/**
+ * @brief 流式请求处理函数类型
+ * 
+ * 用于处理需要流式响应的请求（如 SSE）。
+ * @param request HTTP请求对象
+ * @param writeCallback 流式写入回调
+ */
+using StreamingHandlerFunc = std::function<void(const HttpRequest& request, StreamingWriteCallback writeCallback)>;
+
+/**
  * @brief HTTP请求处理器，用于注册和处理HTTP请求
  * 
  * 该类提供了注册不同HTTP方法（GET、POST、PUT、DELETE）处理器的方法，
@@ -73,6 +91,13 @@ public:
     void del(const std::string& path, HandlerFunc handler);
     
     /**
+     * @brief 注册流式POST请求处理器
+     * @param path 请求路径
+     * @param handler 流式处理函数
+     */
+    void postStreaming(const std::string& path, StreamingHandlerFunc handler);
+    
+    /**
      * @brief 添加中间件
      * @param middleware 中间件函数
      */
@@ -84,6 +109,21 @@ public:
      * @return HTTP响应对象
      */
     virtual HttpResponse handleRequest(const HttpRequest& request);
+    
+    /**
+     * @brief 检查是否为流式请求路径
+     * @param method HTTP方法
+     * @param path 请求路径
+     * @return true 如果是流式请求路径
+     */
+    bool isStreamingRequest(const std::string& method, const std::string& path) const;
+    
+    /**
+     * @brief 处理流式请求
+     * @param request HTTP请求对象
+     * @param writeCallback 流式写入回调
+     */
+    void handleStreamingRequest(const HttpRequest& request, StreamingWriteCallback writeCallback);
     
     /**
      * @brief 检查是否存在指定方法和路径的处理器
@@ -122,6 +162,7 @@ private:
     std::map<std::string, HandlerFunc> postHandlers_;    ///< POST请求处理器映射
     std::map<std::string, HandlerFunc> putHandlers_;     ///< PUT请求处理器映射
     std::map<std::string, HandlerFunc> deleteHandlers_;  ///< DELETE请求处理器映射
+    std::map<std::string, StreamingHandlerFunc> streamingPostHandlers_;  ///< 流式POST请求处理器映射
     std::vector<MiddlewareFunc> middlewares_;            ///< 中间件列表
 };
 
