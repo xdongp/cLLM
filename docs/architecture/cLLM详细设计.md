@@ -161,17 +161,78 @@ private:
 ```
 
 #### 3.1.2 API 端点
-- `POST /generate`: 非流式生成
-- `POST /generate_stream`: 流式生成
-- `GET /health`: 健康检查
-- `GET /stats`: 统计信息
-- `POST /encode`: 文本编码
 
-#### 3.1.3 关键组件
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| GET | `/` | 显示所有可用端点（API 发现） |
+| GET | `/health` | 健康检查 |
+| POST | `/generate` | 文本生成（非流式） |
+| POST | `/generate_stream` | 文本生成（流式，真流式输出） |
+| POST | `/encode` | 文本编码（tokenize） |
+| POST | `/benchmark` | 性能基准测试 |
+| GET | `/model/info` | 模型信息（模型类型、参数、配置等） |
+
+**端点路径常量定义**（硬编码在 `main.cpp` 中）：
+```cpp
+namespace ApiEndpoints {
+    constexpr const char* ROOT = "/";
+    constexpr const char* HEALTH = "/health";
+    constexpr const char* GENERATE = "/generate";
+    constexpr const char* GENERATE_STREAM = "/generate_stream";
+    constexpr const char* ENCODE = "/encode";
+    constexpr const char* BENCHMARK = "/benchmark";
+    constexpr const char* MODEL_INFO = "/model/info";
+}
+```
+
+#### 3.1.3 API 响应格式
+
+**根路径 `/` 响应**（API 发现）：
+```json
+{
+  "success": true,
+  "data": {
+    "name": "cLLM Server",
+    "version": "1.0.0",
+    "endpoints": [
+      {"method": "GET",  "path": "/",               "description": "显示所有可用端点"},
+      {"method": "GET",  "path": "/health",         "description": "健康检查"},
+      {"method": "POST", "path": "/generate",       "description": "文本生成（非流式）"},
+      {"method": "POST", "path": "/generate_stream","description": "文本生成（流式）"},
+      {"method": "POST", "path": "/encode",         "description": "文本编码（tokenize）"},
+      {"method": "POST", "path": "/benchmark",      "description": "性能基准测试"},
+      {"method": "GET",  "path": "/model/info",     "description": "模型信息"}
+    ]
+  }
+}
+```
+
+**模型信息 `/model/info` 响应**：
+```json
+{
+  "success": true,
+  "data": {
+    "model_path": "/path/to/model.gguf",
+    "model_name": "qwen3-1.7b-q4_k_m",
+    "model_family": "qwen",
+    "model_type": "llama",
+    "vocab_size": 151936,
+    "hidden_size": 4096,
+    "num_layers": 32,
+    "num_attention_heads": 32,
+    "max_sequence_length": 8192,
+    "quantization": {"enabled": false, "type": ""},
+    "llama_cpp": {"batch_size": 512, "gpu_layers": 99, "num_threads": 8}
+  }
+}
+```
+
+#### 3.1.4 关键组件
 - **请求处理**: 通过 HttpHandler 接口处理不同类型的请求
 - **响应构建**: 使用 ResponseBuilder 构建标准化响应
 - **请求验证**: RequestValidator 确保请求参数合法
 - **端点管理**: 支持多种 API 端点，包括生成、编码和健康检查
+- **真流式输出**: 使用 chunked transfer encoding，每生成一个 token 立即发送
 
 ### 3.2 Scheduler
 
@@ -1704,11 +1765,29 @@ make -j$(nproc)
 ### 6.3 测试
 
 ```bash
-# 健康检查
-curl http://localhost:8080/health
+# 查看所有可用端点
+curl http://localhost:8085/
 
-# 文本生成
-curl -X POST http://localhost:8080/generate -H "Content-Type: application/json" -d '{"prompt":"Hello, world","max_new_tokens":50}'
+# 健康检查
+curl http://localhost:8085/health
+
+# 查看模型信息
+curl http://localhost:8085/model/info
+
+# 文本生成（非流式）
+curl -X POST http://localhost:8085/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"你好","max_tokens":50}'
+
+# 文本生成（流式）
+curl -X POST http://localhost:8085/generate_stream \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"你好","max_tokens":50,"stream":true}'
+
+# 文本编码
+curl -X POST http://localhost:8085/encode \
+  -H "Content-Type: application/json" \
+  -d '{"text":"你好世界"}'
 
 # 文本编码
 curl -X POST http://localhost:8080/encode -H "Content-Type: application/json" -d '{"text":"Hello, world"}'
@@ -2529,11 +2608,12 @@ private:
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│  HTTP Server (自研 epoll/kqueue)                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐           │
-│  │  /generate   │  │  /stream     │  │  /health     │           │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘           │
-└─────────┼─────────────────┼─────────────────┼───────────────────┘
+│  HTTP Server (自研 epoll/kqueue，支持真流式输出)                   │
+│  ┌────────┐ ┌────────┐ ┌─────────────┐ ┌────────┐ ┌───────────┐ │
+│  │   /    │ │/health │ │  /generate  │ │/encode │ │/model/info│ │
+│  └────┬───┘ └────┬───┘ │  /gen_stream│ └────┬───┘ └─────┬─────┘ │
+│       │          │     └──────┬──────┘      │           │       │
+└───────┼──────────┼────────────┼─────────────┼───────────┼───────┘
           │                 │                 │
           └─────────────────┼─────────────────┘
                             │
