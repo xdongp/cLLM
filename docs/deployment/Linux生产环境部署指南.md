@@ -251,13 +251,33 @@ make -j$(nproc)
 cd ../../..
 ```
 
-**CUDA 架构对照表**：
-| GPU 系列 | 架构代号 |
-|----------|----------|
-| GTX 10xx | 61 |
-| GTX 16xx, RTX 20xx | 75 |
-| RTX 30xx | 86 |
-| RTX 40xx | 89 |
+**CUDA 架构代号说明**：
+
+`CMAKE_CUDA_ARCHITECTURES` 指定编译器为哪些 GPU 架构生成优化代码。数字代表 NVIDIA GPU 的**计算能力（Compute Capability）**。
+
+| 代号 | 架构名称 | GPU 系列 | 说明 |
+|------|----------|----------|------|
+| 61 | Pascal | GTX 10xx (1060, 1070, 1080) | 较老，可不支持 |
+| 75 | Turing | GTX 16xx, RTX 20xx | 消费级入门 |
+| 80 | Ampere | A100, RTX 30xx | 数据中心/消费级 |
+| 86 | Ampere | RTX 30xx Ti | 消费级主流 |
+| 89 | Ada Lovelace | RTX 40xx (4060-4090) | 最新消费级 |
+| 90 | Hopper | H100, H200 | 数据中心 |
+
+**查看你的 GPU 架构代号**：
+```bash
+nvidia-smi --query-gpu=compute_cap --format=csv
+# 输出示例: 8.6 表示架构代号 86（RTX 3080）
+```
+
+**配置建议**：
+```bash
+# 只编译你实际使用的架构（减少编译时间）
+-DCMAKE_CUDA_ARCHITECTURES="86"           # 只有 RTX 3080
+-DCMAKE_CUDA_ARCHITECTURES="89"           # 只有 RTX 4090
+-DCMAKE_CUDA_ARCHITECTURES="80;90"        # 数据中心 A100 + H100
+-DCMAKE_CUDA_ARCHITECTURES="75;80;86;89"  # 兼容多种消费级 GPU
+```
 
 ### 4.3 编译 tokenizers-cpp
 
