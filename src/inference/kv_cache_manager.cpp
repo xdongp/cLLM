@@ -93,8 +93,9 @@ bool KVCacheManager::removeKVCache(llama_context* ctx, size_t requestId, int32_t
     
     auto it = statsMap_.find(requestId);
     if (it == statsMap_.end()) {
-        CLLM_WARN("[KVCacheManager] Request %zu not found in stats map", requestId);
-        return false;
+        // 正常情况：可能是首次清理（stats 未创建）或重复清理（已被清理过）
+        CLLM_DEBUG("[KVCacheManager] Request %zu not found in stats map (already cleaned or never tracked)", requestId);
+        return true;  // 返回 true 表示无需清理
     }
     
     const KVCacheStats& stats = it->second;

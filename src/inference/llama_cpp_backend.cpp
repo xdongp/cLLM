@@ -791,8 +791,9 @@ bool LlamaCppBackend::cleanupKVCache(size_t requestId) {
     // 获取 requestId 对应的 seqId
     int32_t seqId = getSequenceId(requestId);
     if (seqId < 0) {
-        CLLM_WARN("[LlamaCppBackend] Cannot clean KV cache: seqId not found for requestId=%zu", requestId);
-        return false;
+        // 正常情况：序列ID可能已被释放（重复清理是安全的）
+        CLLM_DEBUG("[LlamaCppBackend] KV cache cleanup: seqId not found for requestId=%zu (already released)", requestId);
+        return true;  // 返回 true 表示无需清理
     }
     
     // 调用 KVCacheManager 清理KV缓存
