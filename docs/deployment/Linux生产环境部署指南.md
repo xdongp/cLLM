@@ -41,7 +41,7 @@
 | cuDNN | >= 8.6 | 可选（llama.cpp 不依赖） |
 | GCC | >= 9.0（推荐 11.x） | 必需 |
 | CMake | >= 3.18 | 必需 |
-| Rust | >= 1.70 | tokenizers-cpp 编译需要 |
+| Rust | >= 1.70 | 方案 A 需要（tokenizers-cpp） |
 
 ### 1.3 GPU 显存要求（参考）
 
@@ -223,7 +223,7 @@ export CMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
 
 ```bash
 # 克隆项目
-git clone https://github.com/your-org/cLLM.git
+git clone https://github.com/xdongp/cLLM.git
 cd cLLM
 
 # 初始化子模块
@@ -279,7 +279,16 @@ nvidia-smi --query-gpu=compute_cap --format=csv
 -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89"  # 兼容多种消费级 GPU
 ```
 
-### 4.3 编译 tokenizers-cpp
+### 4.3 编译 tokenizers-cpp（二选一）
+
+cLLM 支持两种 Tokenizer 方案，根据需求选择：
+
+| 方案 | 依赖 | Tokenizer 来源 | 推荐场景 |
+|------|------|----------------|----------|
+| **方案 A** | 需要编译 tokenizers-cpp | `tokenizer.json` 文件 | 推荐，更精确 |
+| **方案 B** | 无额外依赖 | GGUF 模型内置 | 简化部署 |
+
+#### 方案 A：使用 tokenizers-cpp（推荐）
 
 ```bash
 cd third_party/tokenizers-cpp
@@ -295,6 +304,21 @@ make -j$(nproc)
 
 cd ../../..
 ```
+
+选择此方案后，需要下载 `tokenizer.json`（见第 5 节）。
+
+#### 方案 B：使用 GGUF 内置 Tokenizer（简化）
+
+跳过 tokenizers-cpp 编译，直接使用 GGUF 模型内置的 tokenizer。
+
+编译 cLLM 时禁用 tokenizers-cpp：
+```bash
+cmake .. -DUSE_TOKENIZERS_CPP=OFF -DCMAKE_BUILD_TYPE=Release
+```
+
+选择此方案后，**不需要下载** `tokenizer.json`，模型目录只需 GGUF 文件。
+
+> **注意**：方案 B 的 tokenizer 精度略低于方案 A，但对于大多数场景足够使用。
 
 ### 4.4 编译 cLLM
 
@@ -342,7 +366,9 @@ wget -P /opt/models/qwen2.5-7b \
     https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf
 ```
 
-### 5.2 下载 Tokenizer 文件
+### 5.2 下载 Tokenizer 文件（方案 A 需要）
+
+> **重要**：仅当使用 **方案 A（tokenizers-cpp）** 时需要下载。方案 B 跳过此步骤。
 
 ```bash
 # 下载 tokenizer.json（HuggingFace tokenizers 需要）
@@ -354,11 +380,18 @@ huggingface-cli download \
 
 ### 5.3 模型文件结构
 
+**方案 A（tokenizers-cpp）**：
 ```
 /opt/models/qwen2.5-7b/
-├── qwen2.5-7b-instruct-q4_k_m.gguf    # GGUF 模型文件
-├── tokenizer.json                      # HuggingFace tokenizer
-└── tokenizer_config.json               # tokenizer 配置
+├── qwen2.5-7b-instruct-q4_k_m.gguf    # GGUF 模型文件（必需）
+├── tokenizer.json                      # HuggingFace tokenizer（必需）
+└── tokenizer_config.json               # tokenizer 配置（可选）
+```
+
+**方案 B（GGUF 内置）**：
+```
+/opt/models/qwen2.5-7b/
+└── qwen2.5-7b-instruct-q4_k_m.gguf    # GGUF 模型文件（仅需此文件）
 ```
 
 ---
@@ -411,11 +444,16 @@ backend:
 # ============================================================
 # Tokenizer 配置
 # ============================================================
+# 方案 A（tokenizers-cpp）：
 tokenizer:
   type: "huggingface"
   path: "/opt/models/qwen2.5-7b/tokenizer.json"
   add_bos_token: false
   add_eos_token: false
+
+# 方案 B（GGUF 内置）：使用 "auto" 或 "gguf"
+# tokenizer:
+#   type: "auto"  # 自动从 GGUF 模型加载
 
 # ============================================================
 # 调度器配置
