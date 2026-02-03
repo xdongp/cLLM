@@ -98,7 +98,38 @@ HTTP Request → Handler → Scheduler → BatchProcessor → ModelExecutor → 
 - 每生成一个 token 立即触发回调
 - 支持客户端断开检测
 
-### 3.3 Model Executor 模块
+### 3.3 Dynamic Batching（动态批处理）
+
+**设计目标**：
+- 合并多个请求，提高 GPU 利用率
+- 平衡延迟和吞吐量
+
+**工作原理**：
+```
+请求1 (prompt长度10) ─┐
+请求2 (prompt长度20) ─┼─→ 合并为 Batch ─→ 单次 GPU 推理 ─→ 分发结果
+请求3 (prompt长度15) ─┘
+```
+
+**批处理策略**：
+| 策略 | 说明 |
+|------|------|
+| 等待窗口 | 等待 50ms 收集更多请求 |
+| 最大批大小 | 限制单批请求数（默认 16） |
+| 动态重组 | 当批效率 < 30% 时提前结束，重组新批 |
+
+**Prefill vs Decode**：
+- **Prefill 阶段**：处理 prompt，计算初始 KV Cache
+- **Decode 阶段**：逐 token 生成，每次只计算 1 个 token
+
+**配置参数**：
+```yaml
+scheduler:
+  max_batch_size: 16       # 最大批大小
+  batch_timeout_ms: 100    # 批处理超时
+```
+
+### 3.4 Model Executor 模块
 
 **设计原则**：
 - 统一的模型执行接口
@@ -111,7 +142,7 @@ HTTP Request → Handler → Scheduler → BatchProcessor → ModelExecutor → 
 3. 获取 logits
 4. 采样生成下一个 token
 
-### 3.4 多后端架构
+### 3.5 多后端架构
 
 **支持的后端**：
 
@@ -148,7 +179,7 @@ HTTP Request → Handler → Scheduler → BatchProcessor → ModelExecutor → 
 - 可选 GGML 或原生算子
 - 支持 CPU 和 Metal 加速
 
-### 3.5 Inference Engine 配置
+### 3.6 Inference Engine 配置
 
 **llama.cpp 主要参数**：
 - `n_gpu_layers`: GPU 层数（0=CPU，99=全 GPU）
@@ -156,19 +187,36 @@ HTTP Request → Handler → Scheduler → BatchProcessor → ModelExecutor → 
 - `n_ctx`: 上下文长度
 - `n_threads`: CPU 线程数
 
-### 3.6 Tokenizer 模块
+### 3.7 Tokenizer 模块
 
 **设计原则**：
-- 使用 Hugging Face tokenizers-cpp
-- 支持 GGUF 内嵌 tokenizer
-- UTF-8 编码处理
+- 使用 Hugging Face tokenizers-cpp（高性能 Rust 实现）
+- 支持 GGUF 内嵌 tokenizer（自动从模型提取）
+- 完整 UTF-8 编码处理
+
+**Tokenizer 来源**（按优先级）：
+1. **GGUF 内嵌**：从 GGUF 模型文件提取 tokenizer 元数据
+2. **tokenizer.json**：HuggingFace 格式的独立 tokenizer 文件
+3. **tokenizer.model**：SentencePiece 格式（旧版）
 
 **核心功能**：
-- `encode`: 文本 → token IDs
-- `decode`: token IDs → 文本
-- 特殊 token 处理（BOS、EOS、PAD）
+| 方法 | 输入 | 输出 | 说明 |
+|------|------|------|------|
+| `encode` | 文本 | token IDs | 分词编码 |
+| `decode` | token IDs | 文本 | 解码还原 |
+| `getVocabSize` | - | 词表大小 | 如 151936 (Qwen) |
+| `getEosId` | - | EOS token ID | 结束符 |
 
-### 3.7 Sampler 模块
+**特殊 Token**：
+- **BOS** (Begin of Sequence)：序列开始
+- **EOS** (End of Sequence)：序列结束，生成终止条件
+- **PAD**：填充 token
+
+**流式解码注意**：
+- 单个 token 可能是不完整的 UTF-8 字符（如中文的一部分）
+- 需要累积 tokens 直到形成完整 UTF-8 序列再发送
+
+### 3.8 Sampler 模块
 
 **采样策略**：
 - Temperature 采样
