@@ -1037,63 +1037,90 @@ RequestState Scheduler::generateStreaming(const RequestState& request, TokenCall
     result.isRunning = true;
     result.startTime = getCurrentTime();
     
-    if (!modelExecutor_) {
-        result.isFailed = true;
-        result.errorMessage = "Model executor not initialized";
-        CLLM_ERROR("[generateStreaming] Model executor not initialized");
-        return result;
-    }
-    
     CLLM_DEBUG("[generateStreaming] Starting streaming generation for %d tokens", request.maxTokens);
     
-    // 构建输入序列（prompt tokens）
-    std::vector<int> inputIds = request.tokenizedPrompt;
+    // 使用 Scheduler 的现有机制，通过轮询检查生成进度
+    // 这样可以正确使用批处理和 KV cache
     
-    // 逐 token 生成（使用 sampleToken）
-    for (int i = 0; i < request.maxTokens; ++i) {
-        int nextToken = -1;
+    try {
+        // 添加请求到队列
+        size_t reqId = addRequest(request);
         
-        try {
-            // 使用 ModelExecutor::sampleToken 生成单个 token
-            nextToken = modelExecutor_->sampleToken(inputIds, request.temperature);
-        } catch (const std::exception& e) {
-            CLLM_ERROR("[generateStreaming] sampleToken failed: %s", e.what());
-            result.isFailed = true;
-            result.errorMessage = std::string("sampleToken failed: ") + e.what();
-            break;
-        }
+        size_t lastTokenCount = 0;
+        const float timeoutSec = std::max(60.0f, static_cast<float>(request.maxTokens) * 0.5f);
+        auto startTime = std::chrono::steady_clock::now();
         
-        // 检查无效 token
-        if (nextToken < 0) {
-            CLLM_WARN("[generateStreaming] Invalid token %d at iteration %d", nextToken, i);
-            break;
-        }
-        
-        // 检查 EOS
-        if (request.eosTokenId >= 0 && nextToken == request.eosTokenId) {
-            CLLM_DEBUG("[generateStreaming] EOS token reached at iteration %d", i);
-            break;
-        }
-        
-        // 添加到结果和输入序列
-        result.generatedTokens.push_back(nextToken);
-        inputIds.push_back(nextToken);
-        
-        // 调用回调
-        if (tokenCallback) {
-            bool shouldContinue = tokenCallback(nextToken);
-            if (!shouldContinue) {
-                CLLM_DEBUG("[generateStreaming] Callback requested stop at iteration %d", i);
+        // 轮询检查生成进度，每发现新 token 就调用回调
+        while (true) {
+            // 检查超时
+            auto now = std::chrono::steady_clock::now();
+            float elapsed = std::chrono::duration<float>(now - startTime).count();
+            if (elapsed > timeoutSec) {
+                CLLM_WARN("[generateStreaming] Timeout after %.1fs", elapsed);
+                result.isTimeout = true;
                 break;
             }
+            
+            // 获取当前状态
+            RequestState current;
+            bool found = false;
+            {
+                std::shared_lock<std::shared_mutex> lock(requestsMutex_);
+                auto it = runningRequests_.find(reqId);
+                if (it != runningRequests_.end()) {
+                    current = it->second;
+                    found = true;
+                }
+                if (!found) {
+                    auto cit = completedRequests_.find(reqId);
+                    if (cit != completedRequests_.end()) {
+                        current = cit->second;
+                        found = true;
+                    }
+                }
+            }
+            
+            if (!found) {
+                // 请求还在队列中，等待
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
+            
+            // 检查是否有新 token
+            size_t currentTokenCount = current.generatedTokens.size();
+            if (currentTokenCount > lastTokenCount) {
+                // 有新 token，调用回调
+                for (size_t i = lastTokenCount; i < currentTokenCount; ++i) {
+                    int token = current.generatedTokens[i];
+                    if (tokenCallback) {
+                        bool shouldContinue = tokenCallback(token);
+                        if (!shouldContinue) {
+                            CLLM_DEBUG("[generateStreaming] Callback requested stop");
+                            // TODO: 可以考虑取消请求
+                            break;
+                        }
+                    }
+                }
+                lastTokenCount = currentTokenCount;
+            }
+            
+            // 检查是否完成
+            if (current.isCompleted || current.isFailed || current.isTimeout) {
+                result = current;
+                break;
+            }
+            
+            // 短暂等待再检查
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
+        
+    } catch (const std::exception& e) {
+        CLLM_ERROR("[generateStreaming] Exception: %s", e.what());
+        result.isFailed = true;
+        result.errorMessage = e.what();
     }
     
-    // 标记完成
-    result.isRunning = false;
-    result.isCompleted = true;
     result.completionTime = getCurrentTime();
-    
     CLLM_DEBUG("[generateStreaming] Completed, generated %zu tokens", result.generatedTokens.size());
     
     return result;
