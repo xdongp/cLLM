@@ -2,6 +2,9 @@
 
 本文档详细介绍如何在 Linux 生产环境（Ubuntu/CentOS）+ NVIDIA GPU 上部署 cLLM 服务。
 
+> **生产环境说明**：本指南仅涵盖 **GGUF 模型 + llama.cpp 后端** 的部署，这是当前推荐的生产配置。
+> 其他后端（Kylin、LibTorch）为实验性功能，暂不支持生产部署。
+
 ## 目录
 
 1. [系统要求](#1-系统要求)
@@ -30,14 +33,15 @@
 
 ### 1.2 软件要求
 
-| 组件 | 版本要求 |
-|------|----------|
-| 操作系统 | Ubuntu 20.04/22.04 LTS 或 CentOS 7/8/Stream |
-| NVIDIA 驱动 | >= 525.x |
-| CUDA | >= 11.8（推荐 12.x） |
-| cuDNN | >= 8.6 |
-| GCC | >= 9.0（推荐 11.x） |
-| CMake | >= 3.18 |
+| 组件 | 版本要求 | 说明 |
+|------|----------|------|
+| 操作系统 | Ubuntu 20.04/22.04 LTS 或 CentOS 7/8/Stream | |
+| NVIDIA 驱动 | >= 525.x | 必需 |
+| CUDA | >= 11.8（推荐 12.x） | 必需 |
+| cuDNN | >= 8.6 | 可选（llama.cpp 不依赖） |
+| GCC | >= 9.0（推荐 11.x） | 必需 |
+| CMake | >= 3.18 | 必需 |
+| Rust | >= 1.70 | tokenizers-cpp 编译需要 |
 
 ### 1.3 GPU 显存要求（参考）
 
@@ -141,7 +145,9 @@ source ~/.bashrc
 nvcc --version
 ```
 
-### 3.3 cuDNN 安装
+### 3.3 cuDNN 安装（可选）
+
+> **注意**：llama.cpp 后端使用 cuBLAS，**不依赖 cuDNN**。如果只部署 llama.cpp 后端，可以跳过此步骤。
 
 ```bash
 # 从 NVIDIA 开发者网站下载 cuDNN（需要注册）
@@ -270,20 +276,7 @@ make -j$(nproc)
 cd ../../..
 ```
 
-### 4.4 下载 LibTorch（CUDA 版本）
-
-```bash
-# 下载 LibTorch CUDA 版本
-cd third_party
-wget https://download.pytorch.org/libtorch/cu121/libtorch-cxx11-abi-shared-with-deps-2.2.0%2Bcu121.zip
-
-# 解压
-unzip libtorch-cxx11-abi-shared-with-deps-2.2.0+cu121.zip
-
-cd ..
-```
-
-### 4.5 编译 cLLM
+### 4.4 编译 cLLM
 
 ```bash
 mkdir -p build && cd build
@@ -354,10 +347,12 @@ huggingface-cli download \
 
 ### 6.1 生产环境配置示例
 
+> **重要**：生产环境必须使用 `backend.type: "llama_cpp"`，这是唯一支持生产部署的后端。
+
 创建 `/opt/cllm/config/production.yaml`：
 
 ```yaml
-# cLLM 生产环境配置 - NVIDIA GPU
+# cLLM 生产环境配置 - GGUF + llama.cpp 后端 + NVIDIA GPU
 
 # ============================================================
 # 服务器配置
@@ -715,8 +710,8 @@ nvidia-smi -q
 nvcc --version
 cat /usr/local/cuda/version.txt
 
-# 检查 cuDNN 版本
-cat /usr/local/cuda/include/cudnn_version.h | grep CUDNN_MAJOR -A 2
+# 检查 llama.cpp CUDA 支持
+ldd /opt/cllm/bin/cllm_server | grep -i cuda
 
 # 检查服务日志
 sudo journalctl -u cllm -n 100 --no-pager
@@ -727,6 +722,9 @@ sudo netstat -tlnp | grep 8080
 # 检查内存使用
 free -h
 cat /proc/meminfo | grep -E "MemTotal|MemFree|MemAvailable"
+
+# 检查 GPU 显存使用
+nvidia-smi --query-gpu=memory.used,memory.total --format=csv
 ```
 
 ### 10.3 性能诊断
@@ -799,5 +797,6 @@ echo "4. 启动服务: systemctl start cllm"
 
 ---
 
-*文档版本: 1.0*  
-*最后更新: 2026-02-03*
+*文档版本: 1.1*  
+*最后更新: 2026-02-03*  
+*支持后端: llama.cpp (GGUF)*
