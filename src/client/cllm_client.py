@@ -25,7 +25,7 @@ class CLLMClient:
         self.server_url = server_url
         self.session = requests.Session()
         self.default_params = {
-            "max_tokens": 100,
+            "max_tokens": 1024,
             "temperature": 0.7,
             "top_p": 0.9,
             "top_k": 50
@@ -376,7 +376,7 @@ def main():
     parser.add_argument(
         "--max-tokens", 
         type=int, 
-        default=100,
+        default=1024,
         help="最大生成token数 (默认: 100)"
     )
     parser.add_argument(
