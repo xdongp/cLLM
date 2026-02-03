@@ -23,6 +23,7 @@
 #include "cllm/http/generate_endpoint.h"
 #include "cllm/http/encode_endpoint.h"
 #include "cllm/http/benchmark_endpoint.h"
+#include "cllm/http/model_info_endpoint.h"
 #include "cllm/scheduler/scheduler.h"
 #include "cllm/model/executor.h"
 #include "cllm/tokenizer/manager.h"
@@ -547,12 +548,20 @@ int main(int argc, char* argv[]) {
             return endpoint->handle(req);
         });
         
+        // 模型信息端点
+        auto modelInfoEndpoint = std::make_unique<cllm::ModelInfoEndpoint>(
+            g_modelExecutor.get(), modelPath);
+        httpHandler->get("/model/info", [endpoint = modelInfoEndpoint.get()](const cllm::HttpRequest& req) {
+            return endpoint->handle(req);
+        });
+        
         CLLM_INFO("Registered endpoints:");
         CLLM_INFO("  - GET  %s", cllm::Config::instance().apiEndpointHealthPath().c_str());
         CLLM_INFO("  - POST %s", cllm::Config::instance().apiEndpointGeneratePath().c_str());
         CLLM_INFO("  - POST %s", cllm::Config::instance().apiEndpointGenerateStreamPath().c_str());
         CLLM_INFO("  - POST %s", cllm::Config::instance().apiEndpointEncodePath().c_str());
         CLLM_INFO("  - POST /benchmark");
+        CLLM_INFO("  - GET  /model/info");
         
         // 初始化并启动 HTTP 服务器（自研高性能服务器）
         CLLM_INFO("Initializing HTTP server...");
