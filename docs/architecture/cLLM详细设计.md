@@ -11,7 +11,7 @@
 
 ### 1.2 技术栈
 - **编程语言**: C++17
-- **HTTP 服务器**: Drogon（异步Web框架，支持协程）
+- **HTTP 服务器**: 自研高性能 HTTP Server（基于 epoll/kqueue，支持流式输出）
 - **深度学习推理**: LibTorch（PyTorch C++ API）
 - **数值计算**: Eigen3（线性代数库）
 - **JSON 处理**: nlohmann/json
@@ -49,9 +49,10 @@
 ### 2.2 模块划分
 
 #### 2.2.1 HTTP Server 模块
-- **文件**: `include/cllm/http/drogon_server.h`, `src/http/drogon_server.cpp`
+- **文件**: `include/cllm/http/http_server.h`, `src/http/http_server.cpp`
 - **职责**: 
-  - 基于Drogon框架处理HTTP请求和响应
+  - 自研高性能 HTTP 服务器，基于 epoll (Linux) / kqueue (macOS)
+  - 支持真流式输出（chunked transfer encoding）
   - 实现 RESTful API 端点（健康检查、生成、流式生成、编码）
   - 请求验证和错误处理
   - 服务器生命周期管理
@@ -1974,7 +1975,7 @@ public:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                      HTTP Server Layer                           │
-│                    (Drogon - Async I/O)                         │
+│              (自研 HTTP Server - epoll/kqueue)                   │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐           │
 │  │  Request 1   │  │  Request 2   │  │  Request N   │           │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘           │
@@ -2528,7 +2529,7 @@ private:
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│  HTTP Server (Drogon)                                            │
+│  HTTP Server (自研 epoll/kqueue)                                  │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐           │
 │  │  /generate   │  │  /stream     │  │  /health     │           │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘           │
@@ -2723,7 +2724,7 @@ public:
 
 | Python版本 | C++版本 | 说明 |
 |-----------|---------|------|
-| FastAPI + Uvicorn | Drogon | 异步Web框架，支持协程和流式响应 |
+| FastAPI + Uvicorn | 自研 HTTP Server | 基于 epoll/kqueue，支持真流式输出 |
 | PyTorch (torch) | LibTorch | PyTorch官方C++ API，完全兼容 |
 | NumPy | Eigen3 | 高性能数值计算库，内置SIMD优化 |
 | asyncio | Asio | 异步I/O库 |
@@ -2736,16 +2737,17 @@ public:
 | - | oneDNN | Intel深度学习优化库（可选） |
 
 ### 5.1 HTTP 服务器
-**选择**: Drogon
-- 现代C++异步Web框架，支持协程（类似Python的async/await）
-- 高性能，支持高并发
-- 完整的RESTful API支持
-- 支持流式响应（SSE）
-- 文档完善，社区活跃
-- 与Python版本的FastAPI+Uvicorn异步架构相匹配
+**选择**: 自研高性能 HTTP Server
+- 基于 epoll (Linux) / kqueue (macOS) 的事件驱动架构
+- 支持真流式输出（chunked transfer encoding）
+- 每生成一个 token 立即发送，TTFB < 0.1s
+- 轻量级，无外部依赖
+- 完整的 RESTful API 支持
+- 支持 SSE (Server-Sent Events) 格式
 
-**备选方案**:
-- oat++: 轻量级、高性能的C++ Web框架
+**设计特点**:
+- 非阻塞 I/O，高并发支持
+- 流式回调机制，避免轮询延迟
 - Pistache: 现代HTTP库，RESTful支持
 
 ### 5.2 深度学习推理引擎
@@ -2768,12 +2770,11 @@ public:
 - 与NumPy功能对应
 
 ### 5.4 异步框架
-**选择**: Asio (standalone Asio)
-- 高性能异步I/O库
-- 支持协程（C++20）
-- 跨平台支持
-- 与Python asyncio功能对应
-- Drogon内部也使用Asio
+**选择**: 原生系统调用 (epoll/kqueue)
+- 直接使用操作系统提供的高性能 I/O 多路复用
+- Linux: epoll, macOS/BSD: kqueue
+- 零依赖，最大性能
+- 与 Python asyncio 功能对应
 
 ### 5.5 并行计算库
 **选择**: Intel TBB (Threading Building Blocks)
@@ -2887,12 +2888,8 @@ cpp/cLLM/
 │   ├── benchmark.cpp
 │   └── profiler.cpp
 └── third_party/
-    ├── drogon/
-    ├── torch/
-    ├── sentencepiece/
-    ├── eigen/
-    ├── tbb/
-    ├── asio/
+    ├── llama.cpp/          # LLM 推理引擎
+    ├── tokenizers-cpp/     # Hugging Face tokenizers
     ├── spdlog/
     └── nlohmann_json/
 ```
@@ -2908,13 +2905,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # 依赖项
-find_package(Drogon CONFIG REQUIRED)
-find_package(Torch CONFIG REQUIRED)
-find_package(Sentencepiece CONFIG REQUIRED)
-find_package(Eigen3 CONFIG REQUIRED)
-find_package(TBB CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+# llama.cpp 和 tokenizers-cpp 作为子模块构建
 
 # 包含目录
 include_directories(
@@ -2931,10 +2924,8 @@ add_executable(cllm_server ${SOURCES})
 # 链接库
 target_link_libraries(cllm_server
     PRIVATE
-    Drogon::Drogon
-    ${TORCH_LIBRARIES}
-    sentencepiece::sentencepiece
-    TBB::tbb
+    llama              # llama.cpp 推理引擎
+    tokenizers_cpp     # Hugging Face tokenizers
     spdlog::spdlog
     nlohmann_json::nlohmann_json
 )
