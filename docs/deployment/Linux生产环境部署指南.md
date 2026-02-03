@@ -1,9 +1,16 @@
 # cLLM Linux 生产环境部署指南
 
-本文档详细介绍如何在 Linux 生产环境（Ubuntu/CentOS）+ NVIDIA GPU 上部署 cLLM 服务。
+本文档详细介绍如何在 Linux 生产环境（Ubuntu/CentOS）上部署 cLLM 服务，支持 **GPU 模式** 和 **纯 CPU 模式**。
 
 > **生产环境说明**：本指南仅涵盖 **GGUF 模型 + llama.cpp 后端** 的部署，这是当前推荐的生产配置。
 > 其他后端（Kylin、LibTorch）为实验性功能，暂不支持生产部署。
+
+## 部署模式选择
+
+| 模式 | 适用场景 | 性能 | 依赖 |
+|------|----------|------|------|
+| **GPU 模式** | 有 NVIDIA 显卡 | 高吞吐、低延迟 | CUDA + 驱动 |
+| **CPU 模式** | 无 GPU 或云服务器 | 中等，适合小模型 | 无特殊依赖 |
 
 ## 目录
 
@@ -24,6 +31,7 @@
 
 ### 1.1 硬件要求
 
+**GPU 模式**：
 | 组件 | 最低配置 | 推荐配置 |
 |------|----------|----------|
 | CPU | 4 核 | 8+ 核 |
@@ -31,19 +39,38 @@
 | GPU | NVIDIA GTX 1080 (8GB) | NVIDIA RTX 3090/4090 (24GB) |
 | 磁盘 | 50 GB SSD | 100+ GB NVMe SSD |
 
+**CPU 模式**：
+| 组件 | 最低配置 | 推荐配置 |
+|------|----------|----------|
+| CPU | 8 核 | 16+ 核（支持 AVX2） |
+| 内存 | 16 GB | 32+ GB |
+| GPU | 不需要 | - |
+| 磁盘 | 50 GB SSD | 100+ GB NVMe SSD |
+
+> **CPU 模式说明**：推荐使用支持 AVX2/AVX-512 指令集的现代 CPU（Intel Haswell+/AMD Zen+）以获得最佳性能。
+
 ### 1.2 软件要求
 
+**GPU 模式**：
 | 组件 | 版本要求 | 说明 |
 |------|----------|------|
 | 操作系统 | Ubuntu 20.04/22.04 LTS 或 CentOS 7/8/Stream | |
 | NVIDIA 驱动 | >= 525.x | 必需 |
 | CUDA | >= 11.8（推荐 12.x） | 必需 |
-| cuDNN | >= 8.6 | 可选（llama.cpp 不依赖） |
 | GCC | >= 9.0（推荐 11.x） | 必需 |
 | CMake | >= 3.18 | 必需 |
-| Rust | >= 1.70 | 方案 A 需要（tokenizers-cpp） |
+| Rust | >= 1.70 | Tokenizer 方案 A 需要 |
 
-### 1.3 GPU 显存要求（参考）
+**CPU 模式**：
+| 组件 | 版本要求 | 说明 |
+|------|----------|------|
+| 操作系统 | Ubuntu 20.04/22.04 LTS 或 CentOS 7/8/Stream | |
+| GCC | >= 9.0（推荐 11.x） | 必需 |
+| CMake | >= 3.18 | 必需 |
+| OpenBLAS | 最新版 | 推荐，加速矩阵运算 |
+| Rust | >= 1.70 | Tokenizer 方案 A 需要 |
+
+### 1.3 GPU 显存要求（GPU 模式）
 
 | 模型大小 | 最低显存 | 推荐显存 |
 |----------|----------|----------|
@@ -51,6 +78,17 @@
 | 3B-7B    | 8 GB     | 16 GB    |
 | 13B-14B  | 16 GB    | 24 GB    |
 | 32B+     | 24 GB    | 48+ GB   |
+
+### 1.4 内存要求（CPU 模式）
+
+| 模型大小 | 量化格式 | 最低内存 | 推荐内存 |
+|----------|----------|----------|----------|
+| 0.5B-1B  | Q4_K_M   | 4 GB     | 8 GB     |
+| 3B-7B    | Q4_K_M   | 8 GB     | 16 GB    |
+| 7B-14B   | Q4_K_M   | 16 GB    | 32 GB    |
+| 32B+     | Q4_K_M   | 32 GB    | 64+ GB   |
+
+> **提示**：CPU 模式下推荐使用 Q4_K_M 或 Q4_K_S 量化模型以减少内存占用。
 
 ---
 
@@ -89,7 +127,9 @@ sudo yum install -y git wget curl vim htop cmake3 openssl-devel
 
 ## 3. 依赖安装
 
-### 3.1 NVIDIA 驱动安装
+> **CPU 模式**：可跳过 3.1-3.3 节（NVIDIA 驱动、CUDA、cuDNN），直接到 3.4 节。
+
+### 3.1 NVIDIA 驱动安装（GPU 模式）
 
 #### Ubuntu
 
@@ -124,7 +164,7 @@ sudo ./NVIDIA-Linux-x86_64-535.xxx.run
 nvidia-smi
 ```
 
-### 3.2 CUDA 安装
+### 3.2 CUDA 安装（GPU 模式）
 
 ```bash
 # 下载 CUDA 12.x（以 Ubuntu 22.04 为例）
@@ -230,12 +270,14 @@ cd cLLM
 git submodule update --init --recursive
 ```
 
-### 4.2 编译 llama.cpp（带 CUDA 支持）
+### 4.2 编译 llama.cpp
+
+根据部署模式选择编译选项：
+
+#### GPU 模式（CUDA）
 
 ```bash
 cd third_party/llama.cpp
-
-# 创建构建目录
 mkdir -p build && cd build
 
 # 配置（启用 CUDA）
@@ -245,13 +287,33 @@ cmake .. \
     -DGGML_CUDA_F16=ON \
     -DCMAKE_BUILD_TYPE=Release
 
-# 编译
 make -j$(nproc)
-
 cd ../../..
 ```
 
-**CUDA 架构代号说明**：
+#### CPU 模式（纯 CPU）
+
+```bash
+cd third_party/llama.cpp
+mkdir -p build && cd build
+
+# 配置（纯 CPU，启用优化）
+cmake .. \
+    -DGGML_CUDA=OFF \
+    -DGGML_BLAS=ON \
+    -DGGML_BLAS_VENDOR=OpenBLAS \
+    -DCMAKE_BUILD_TYPE=Release
+
+make -j$(nproc)
+cd ../../..
+```
+
+> **CPU 优化提示**：
+> - `GGML_BLAS=ON` 启用 BLAS 加速矩阵运算
+> - 确保已安装 OpenBLAS：`sudo apt install libopenblas-dev`（Ubuntu）
+> - llama.cpp 会自动检测并使用 AVX2/AVX-512 指令集
+
+**CUDA 架构代号说明**（GPU 模式）：
 
 `CMAKE_CUDA_ARCHITECTURES` 指定编译器为哪些 GPU 架构生成优化代码。数字代表 NVIDIA GPU 的**计算能力（Compute Capability）**。
 
@@ -322,26 +384,32 @@ cmake .. -DUSE_TOKENIZERS_CPP=OFF -DCMAKE_BUILD_TYPE=Release
 
 ### 4.4 编译 cLLM
 
+#### GPU 模式
+
 ```bash
 mkdir -p build && cd build
 
-# 配置（使用 vcpkg）
-cmake .. \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
-    -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89"
-
-# 或不使用 vcpkg（依赖系统安装）
 cmake .. \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89"
 
-# 编译
 make -j$(nproc)
-
-# 验证
 ./bin/cllm_server --help
 ```
+
+#### CPU 模式
+
+```bash
+mkdir -p build && cd build
+
+cmake .. \
+    -DCMAKE_BUILD_TYPE=Release
+
+make -j$(nproc)
+./bin/cllm_server --help
+```
+
+> **注意**：cLLM 本身不需要 CUDA，CUDA 依赖在 llama.cpp 编译时处理。
 
 ---
 
@@ -398,114 +466,141 @@ huggingface-cli download \
 
 ## 6. 配置文件
 
-### 6.1 生产环境配置示例
-
 > **重要**：生产环境必须使用 `backend.type: "llama_cpp"`，这是唯一支持生产部署的后端。
 
-创建 `/opt/cllm/config/production.yaml`：
+### 6.1 GPU 模式配置
+
+创建 `/opt/cllm/config/production_gpu.yaml`：
 
 ```yaml
-# cLLM 生产环境配置 - GGUF + llama.cpp 后端 + NVIDIA GPU
+# cLLM 生产环境配置 - GPU 模式
 
-# ============================================================
-# 服务器配置
-# ============================================================
 server:
-  host: "0.0.0.0"          # 监听所有网卡
-  port: 8080               # 服务端口
-  num_threads: 16          # HTTP 工作线程数（建议 = CPU 核心数）
-  min_threads: 8           # 最小线程数
+  host: "0.0.0.0"
+  port: 8080
+  num_threads: 16
 
-# ============================================================
-# 模型配置
-# ============================================================
 model:
   path: "/opt/models/qwen2.5-7b/qwen2.5-7b-instruct-q4_k_m.gguf"
-  vocab_size: 152064       # Qwen2.5 词表大小
+  vocab_size: 152064
   max_context_length: 32768
   default_max_tokens: 2048
 
-# ============================================================
-# 后端配置（关键）
-# ============================================================
 backend:
   type: "llama_cpp"
   
   llama_cpp:
-    n_batch: 2048          # 批处理大小（GPU 可以设置更大）
-    n_threads: 8           # CPU 线程数（用于非 GPU 操作）
-    n_gpu_layers: 99       # 所有层放 GPU（99 = 全部）
-    n_ctx: 32768           # 上下文长度
-    n_seq_max: 8           # 最大并发序列数
-    use_mmap: true         # 内存映射
-    use_mlock: true        # 锁定内存（防止换出）
-    flash_attn: true       # Flash Attention（如果支持）
+    n_batch: 2048          # GPU 可以设置更大
+    n_threads: 8           # CPU 线程（用于非 GPU 操作）
+    n_gpu_layers: 99       # 🔥 关键：99 = 所有层放 GPU
+    n_ctx: 32768
+    n_seq_max: 8
+    use_mmap: true
+    use_mlock: true
+    flash_attn: true       # Flash Attention（GPU）
 
-# ============================================================
-# Tokenizer 配置
-# ============================================================
-# 方案 A（tokenizers-cpp）：
 tokenizer:
   type: "huggingface"
   path: "/opt/models/qwen2.5-7b/tokenizer.json"
-  add_bos_token: false
-  add_eos_token: false
 
-# 方案 B（GGUF 内置）：使用 "auto" 或 "gguf"
-# tokenizer:
-#   type: "auto"  # 自动从 GGUF 模型加载
-
-# ============================================================
-# 调度器配置
-# ============================================================
 scheduler:
-  max_batch_size: 8        # 最大批处理大小
-  request_timeout: 600.0   # 请求超时（秒）
+  max_batch_size: 8
+  request_timeout: 600.0
   default_max_tokens: 2048
-  loop_interval: 1         # 调度循环间隔（毫秒）
-  
-  # 采样参数
-  default_temperature: 0.7
-  default_top_p: 0.9
-  default_top_k: 50
 
-# ============================================================
-# 资源配置
-# ============================================================
 resources:
   max_context_length: 32768
-  kv_cache_max_size: 32    # KV cache 最大条目数
-  memory_limit_mb: 0       # 0 = 不限制
+  kv_cache_max_size: 32
 
-# ============================================================
-# 日志配置
-# ============================================================
 logging:
-  level: "info"            # debug | info | warn | error
+  level: "info"
   file: "/var/log/cllm/cllm.log"
-  max_size_mb: 100
-  max_files: 10
 ```
 
-### 6.2 环境变量配置
+### 6.2 CPU 模式配置
 
-创建 `/opt/cllm/env.sh`：
+创建 `/opt/cllm/config/production_cpu.yaml`：
 
+```yaml
+# cLLM 生产环境配置 - CPU 模式
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  num_threads: 16          # 建议 = CPU 核心数
+
+model:
+  path: "/opt/models/qwen2.5-3b/qwen2.5-3b-instruct-q4_k_m.gguf"  # 推荐小模型
+  vocab_size: 152064
+  max_context_length: 8192   # CPU 模式建议减小
+  default_max_tokens: 1024
+
+backend:
+  type: "llama_cpp"
+  
+  llama_cpp:
+    n_batch: 512           # CPU 模式建议较小值
+    n_threads: 16          # 🔥 关键：设置为 CPU 核心数
+    n_gpu_layers: 0        # 🔥 关键：0 = 纯 CPU 模式
+    n_ctx: 8192            # CPU 模式建议减小
+    n_seq_max: 2           # CPU 并发能力有限
+    use_mmap: true
+    use_mlock: false       # CPU 模式可关闭
+
+tokenizer:
+  type: "huggingface"
+  path: "/opt/models/qwen2.5-3b/tokenizer.json"
+
+scheduler:
+  max_batch_size: 2        # CPU 模式建议减小
+  request_timeout: 600.0
+  default_max_tokens: 1024
+
+resources:
+  max_context_length: 8192
+  kv_cache_max_size: 8     # CPU 模式减小
+
+logging:
+  level: "info"
+  file: "/var/log/cllm/cllm.log"
+```
+
+**CPU 模式配置要点**：
+| 参数 | GPU 模式 | CPU 模式 | 说明 |
+|------|----------|----------|------|
+| `n_gpu_layers` | 99 | **0** | CPU 模式必须为 0 |
+| `n_threads` | 8 | **CPU 核心数** | 影响推理速度 |
+| `n_batch` | 2048 | 512 | CPU 处理能力有限 |
+| `n_ctx` | 32768 | 8192 | 减少内存占用 |
+| `n_seq_max` | 8 | 2 | 减少并发压力 |
+| `max_batch_size` | 8 | 2 | 减少调度压力 |
+
+### 6.3 环境变量配置
+
+**GPU 模式** (`/opt/cllm/env_gpu.sh`)：
 ```bash
 #!/bin/bash
 export CUDA_HOME=/usr/local/cuda
 export PATH=$CUDA_HOME/bin:$PATH
 export LD_LIBRARY_PATH=$CUDA_HOME/lib64:/opt/cllm/lib:$LD_LIBRARY_PATH
-
-# CUDA 设备选择（多卡时指定）
 export CUDA_VISIBLE_DEVICES=0
+export LLAMA_LOG_LEVEL=warn
+export OMP_NUM_THREADS=8
+```
 
-# llama.cpp 日志级别
+**CPU 模式** (`/opt/cllm/env_cpu.sh`)：
+```bash
+#!/bin/bash
+export LD_LIBRARY_PATH=/opt/cllm/lib:$LD_LIBRARY_PATH
 export LLAMA_LOG_LEVEL=warn
 
-# 线程配置
-export OMP_NUM_THREADS=8
-export MKL_NUM_THREADS=8
+# 🔥 CPU 线程配置（设置为 CPU 核心数）
+export OMP_NUM_THREADS=16
+export MKL_NUM_THREADS=16
+export OPENBLAS_NUM_THREADS=16
+
+# 禁用 NUMA 交错（单 NUMA 节点优化）
+export GOMP_CPU_AFFINITY="0-15"
 ```
 
 ---
@@ -531,11 +626,11 @@ sudo chown $USER:$USER /var/log/cllm
 
 ### 7.2 Systemd 服务配置
 
-创建 `/etc/systemd/system/cllm.service`：
+**GPU 模式** - 创建 `/etc/systemd/system/cllm.service`：
 
 ```ini
 [Unit]
-Description=cLLM Large Language Model Server
+Description=cLLM Large Language Model Server (GPU)
 After=network.target
 
 [Service]
@@ -544,24 +639,51 @@ User=cllm
 Group=cllm
 WorkingDirectory=/opt/cllm
 
-# 环境变量
+# GPU 模式环境变量
 Environment="CUDA_HOME=/usr/local/cuda"
 Environment="LD_LIBRARY_PATH=/usr/local/cuda/lib64:/opt/cllm/lib"
 Environment="CUDA_VISIBLE_DEVICES=0"
 Environment="OMP_NUM_THREADS=8"
 
-# 启动命令
-ExecStart=/opt/cllm/bin/cllm_server --config /opt/cllm/config/production.yaml
+ExecStart=/opt/cllm/bin/cllm_server --config /opt/cllm/config/production_gpu.yaml
 
-# 重启策略
 Restart=always
 RestartSec=10
-
-# 资源限制
 LimitNOFILE=65535
 LimitNPROC=65535
 
-# 日志
+StandardOutput=append:/var/log/cllm/cllm.log
+StandardError=append:/var/log/cllm/cllm.error.log
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**CPU 模式** - 创建 `/etc/systemd/system/cllm.service`：
+
+```ini
+[Unit]
+Description=cLLM Large Language Model Server (CPU)
+After=network.target
+
+[Service]
+Type=simple
+User=cllm
+Group=cllm
+WorkingDirectory=/opt/cllm
+
+# CPU 模式环境变量
+Environment="LD_LIBRARY_PATH=/opt/cllm/lib"
+Environment="OMP_NUM_THREADS=16"
+Environment="OPENBLAS_NUM_THREADS=16"
+
+ExecStart=/opt/cllm/bin/cllm_server --config /opt/cllm/config/production_cpu.yaml
+
+Restart=always
+RestartSec=10
+LimitNOFILE=65535
+LimitNPROC=65535
+
 StandardOutput=append:/var/log/cllm/cllm.log
 StandardError=append:/var/log/cllm/cllm.error.log
 
@@ -687,7 +809,32 @@ sudo nvidia-smi -lgc 1500,1500  # 锁定 GPU 时钟
 sudo nvidia-smi -pl 350  # 设置功耗上限
 ```
 
-### 9.2 系统优化
+### 9.2 CPU 优化
+
+```bash
+# 检查 CPU 支持的指令集
+cat /proc/cpuinfo | grep -E "avx|avx2|avx512" | head -1
+
+# 设置 CPU 性能模式（关闭节能）
+echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+
+# 禁用透明大页（可能影响延迟）
+echo never | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
+
+# NUMA 优化（多 CPU 服务器）
+# 绑定到单个 NUMA 节点
+numactl --cpunodebind=0 --membind=0 /opt/cllm/bin/cllm_server --config ...
+```
+
+**CPU 线程配置建议**：
+| CPU 核心数 | `n_threads` | `OMP_NUM_THREADS` | 说明 |
+|------------|-------------|-------------------|------|
+| 4 核 | 4 | 4 | 小型服务器 |
+| 8 核 | 8 | 8 | 标准配置 |
+| 16 核 | 16 | 16 | 推荐配置 |
+| 32+ 核 | 16-24 | 16-24 | 过多线程可能降低效率 |
+
+### 9.3 系统优化
 
 ```bash
 # 增加文件描述符限制
@@ -707,14 +854,25 @@ EOF
 sudo sysctl -p
 ```
 
-### 9.3 配置调优建议
+### 9.4 配置调优建议
 
+**GPU 模式**：
 | 参数 | 小模型 (< 3B) | 中等模型 (3-14B) | 大模型 (> 14B) |
 |------|---------------|------------------|----------------|
 | `n_batch` | 512 | 1024-2048 | 512-1024 |
-| `n_ctx` | 8192 | 16384 | 8192-16384 |
+| `n_ctx` | 8192 | 16384-32768 | 8192-16384 |
 | `n_seq_max` | 8-16 | 4-8 | 2-4 |
 | `max_batch_size` | 16 | 8 | 4 |
+
+**CPU 模式**：
+| 参数 | 小模型 (< 3B) | 中等模型 (3-7B) | 说明 |
+|------|---------------|-----------------|------|
+| `n_batch` | 256-512 | 128-256 | CPU 处理能力有限 |
+| `n_ctx` | 4096-8192 | 2048-4096 | 减少内存占用 |
+| `n_seq_max` | 2-4 | 1-2 | 减少并发 |
+| `max_batch_size` | 4 | 2 | 减少调度压力 |
+
+> **CPU 模式建议**：推荐使用 3B 以下的小模型（如 Qwen2.5-3B），配合 Q4_K_M 量化获得最佳性价比。
 
 ---
 
