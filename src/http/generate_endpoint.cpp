@@ -651,16 +651,26 @@ void GenerateEndpoint::handleStreamingCallback(const HttpRequest& request, Strea
         // 清空累积的 tokens
         pendingTokens.clear();
         
+        // 验证 UTF-8，如果无效则清理
+        if (!UnicodeUtils::isValidUtf8(tokenText)) {
+            tokenText = sanitizeUtf8(tokenText);
+        }
+        
         // 构建 SSE chunk
-        nlohmann::json chunk;
-        chunk["id"] = requestId;
-        chunk["token"] = tokenText;
-        chunk["done"] = false;
-        
-        std::string sseData = "data: " + chunk.dump() + "\n\n";
-        
-        // 发送（返回 false 表示客户端断开）
-        return writeCallback(sseData);
+        try {
+            nlohmann::json chunk;
+            chunk["id"] = requestId;
+            chunk["token"] = tokenText;
+            chunk["done"] = false;
+            
+            std::string sseData = "data: " + chunk.dump() + "\n\n";
+            
+            // 发送（返回 false 表示客户端断开）
+            return writeCallback(sseData);
+        } catch (const std::exception& e) {
+            CLLM_WARN("[streaming] JSON error, skipping chunk: %s", e.what());
+            return true;  // 继续生成
+        }
     };
     
     // 执行流式生成
@@ -671,6 +681,10 @@ void GenerateEndpoint::handleStreamingCallback(const HttpRequest& request, Strea
         try {
             std::string remainingText = tokenizer_->decode(pendingTokens, false);
             if (!remainingText.empty()) {
+                // 验证 UTF-8
+                if (!UnicodeUtils::isValidUtf8(remainingText)) {
+                    remainingText = sanitizeUtf8(remainingText);
+                }
                 nlohmann::json chunk;
                 chunk["id"] = requestId;
                 chunk["token"] = remainingText;
@@ -678,8 +692,8 @@ void GenerateEndpoint::handleStreamingCallback(const HttpRequest& request, Strea
                 std::string sseData = "data: " + chunk.dump() + "\n\n";
                 writeCallback(sseData);
             }
-        } catch (...) {
-            // 忽略解码错误
+        } catch (const std::exception& e) {
+            CLLM_WARN("[streaming] Failed to send remaining tokens: %s", e.what());
         }
     }
     
