@@ -421,6 +421,45 @@ void Scheduler::triggerResponseCallback(size_t requestId, const RequestState& st
     }
 }
 
+void Scheduler::updateRunningRequestToken(size_t requestId, int token) {
+    // 实时更新 runningRequests_ 中的 generatedTokens
+    // 用于真流式输出，让轮询能够看到中间状态
+    std::unique_lock<std::shared_mutex> lock(requestsMutex_);
+    auto it = runningRequests_.find(requestId);
+    if (it != runningRequests_.end()) {
+        it->second.generatedTokens.push_back(token);
+    }
+}
+
+void Scheduler::setStreamingTokenCallback(size_t requestId, TokenCallback callback) {
+    std::lock_guard<std::mutex> lock(streamingCallbackMutex_);
+    streamingTokenCallbacks_[requestId] = std::move(callback);
+}
+
+void Scheduler::removeStreamingTokenCallback(size_t requestId) {
+    std::lock_guard<std::mutex> lock(streamingCallbackMutex_);
+    streamingTokenCallbacks_.erase(requestId);
+}
+
+void Scheduler::triggerStreamingTokenCallback(size_t requestId, int token) {
+    TokenCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(streamingCallbackMutex_);
+        auto it = streamingTokenCallbacks_.find(requestId);
+        if (it != streamingTokenCallbacks_.end()) {
+            callback = it->second;
+        }
+    }
+    
+    if (callback) {
+        try {
+            callback(token);
+        } catch (const std::exception& e) {
+            CLLM_ERROR("Error in streaming token callback for requestId=%zu: %s", requestId, e.what());
+        }
+    }
+}
+
 void Scheduler::onBatchProcessed(size_t batchSize, double processingTimeMs) {
     if (!batchTuner_) {
         return;
@@ -1039,18 +1078,19 @@ RequestState Scheduler::generateStreaming(const RequestState& request, TokenCall
     
     CLLM_DEBUG("[generateStreaming] Starting streaming generation for %d tokens", request.maxTokens);
     
-    // 使用 Scheduler 的现有机制，通过轮询检查生成进度
-    // 这样可以正确使用批处理和 KV cache
-    
     try {
         // 添加请求到队列
         size_t reqId = addRequest(request);
         
-        size_t lastTokenCount = 0;
+        // 🔥 关键：注册流式回调，batch_processor 会在生成每个 token 后立即调用
+        if (tokenCallback) {
+            setStreamingTokenCallback(reqId, tokenCallback);
+        }
+        
         const float timeoutSec = std::max(60.0f, static_cast<float>(request.maxTokens) * 0.5f);
         auto startTime = std::chrono::steady_clock::now();
         
-        // 轮询检查生成进度，每发现新 token 就调用回调
+        // 等待请求完成
         while (true) {
             // 检查超时
             auto now = std::chrono::steady_clock::now();
@@ -1061,58 +1101,43 @@ RequestState Scheduler::generateStreaming(const RequestState& request, TokenCall
                 break;
             }
             
-            // 获取当前状态
+            // 检查请求状态
             RequestState current;
             bool found = false;
+            bool completed = false;
             {
                 std::shared_lock<std::shared_mutex> lock(requestsMutex_);
-                auto it = runningRequests_.find(reqId);
-                if (it != runningRequests_.end()) {
-                    current = it->second;
+                auto cit = completedRequests_.find(reqId);
+                if (cit != completedRequests_.end()) {
+                    current = cit->second;
                     found = true;
+                    completed = true;
                 }
                 if (!found) {
-                    auto cit = completedRequests_.find(reqId);
-                    if (cit != completedRequests_.end()) {
-                        current = cit->second;
+                    auto it = runningRequests_.find(reqId);
+                    if (it != runningRequests_.end()) {
+                        current = it->second;
                         found = true;
                     }
                 }
             }
             
-            if (!found) {
-                // 请求还在队列中，等待
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                continue;
-            }
-            
-            // 检查是否有新 token
-            size_t currentTokenCount = current.generatedTokens.size();
-            if (currentTokenCount > lastTokenCount) {
-                // 有新 token，调用回调
-                for (size_t i = lastTokenCount; i < currentTokenCount; ++i) {
-                    int token = current.generatedTokens[i];
-                    if (tokenCallback) {
-                        bool shouldContinue = tokenCallback(token);
-                        if (!shouldContinue) {
-                            CLLM_DEBUG("[generateStreaming] Callback requested stop");
-                            // TODO: 可以考虑取消请求
-                            break;
-                        }
-                    }
-                }
-                lastTokenCount = currentTokenCount;
-            }
-            
-            // 检查是否完成
-            if (current.isCompleted || current.isFailed || current.isTimeout) {
+            if (completed) {
                 result = current;
                 break;
             }
             
-            // 短暂等待再检查
+            if (found && (current.isFailed || current.isTimeout)) {
+                result = current;
+                break;
+            }
+            
+            // 短暂等待
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
+        
+        // 清理回调
+        removeStreamingTokenCallback(reqId);
         
     } catch (const std::exception& e) {
         CLLM_ERROR("[generateStreaming] Exception: %s", e.what());

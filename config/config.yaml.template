@@ -1,40 +1,59 @@
-# cLLM 配置文件（模板）
-# 复制为 config.yaml 后按需修改
+# ============================================================
+# cLLM 配置文件模板
+# ============================================================
+#
+# 使用方法:
+#   1. 复制此文件为 config.yaml
+#   2. 根据需要修改配置
+#   3. 启动服务: ./build/bin/cllm_server --config config/config.yaml
+#
+# 预设配置文件:
+#   - config_cpu.yaml:      Kylin 后端 + CPU 模式
+#   - config_gpu.yaml:      Kylin 后端 + Metal GPU 模式
+#   - config_llama_cpp.yaml: llama.cpp 后端 + GPU 模式
+#
+# ============================================================
 
+# ============================================================
 # 服务器配置
+# ============================================================
 server:
   host: "0.0.0.0"          # 服务器监听地址
   port: 8080               # 服务器监听端口
-  num_threads: 4           # Drogon 工作线程数（0 表示使用硬件并发数）
-  min_threads: 2           # 最小线程数（避免 /generate 阻塞导致 /health 卡住）
-  use_libtorch: false      # 是否使用 LibTorch 后端（否则使用 Kylin）
+  num_threads: 8           # HTTP 工作线程数（0 = 使用硬件并发数）
+  min_threads: 4           # 最小线程数（保证轻量端点不被阻塞）
+  
+  # [已废弃] use_libtorch: 请使用 backend.type 替代
+  # use_libtorch: false
 
+# ============================================================
 # 模型配置
+# ============================================================
 model:
-  path: "/path/to/model"   # 模型目录或模型文件路径
+  # 模型路径:
+  # - HuggingFace 格式: 包含 config.json, model.safetensors, tokenizer.json 的目录
+  # - GGUF 格式: .gguf 文件路径
+  path: "/path/to/model"
+  
   vocab_size: 151936       # 词表大小（可被后端自动探测覆盖）
-  max_context_length: 2048 # 最大上下文长度
-  default_max_tokens: 100  # 默认最大生成 token 数
-  quantization: "fp16"     # 量化类型: fp16, int8, int4
+  max_context_length: 4096 # 最大上下文长度（输入 + 输出的总 token 数）
+  default_max_tokens: 1024 # 默认最大生成 token 数
+  
+  # 量化类型:
+  # - Kylin 后端: fp32 | fp16 | int8
+  # - llama.cpp 后端: 由 GGUF 文件决定 (q4_k_m, q8_0, f16 等)
+  quantization: "int8"
 
+# ============================================================
 # HTTP 配置
+# ============================================================
 http:
-  max_input_tokens: 120           # 最大输入 token（过长 prompt 会被裁剪）
-  timeout_ms: 30000               # HTTP 请求超时时间(毫秒)
-  max_concurrent_requests: 8      # HTTP Server最大并发请求数（超过此值立即返回429）
-                                   # 建议设置为序列ID数量（n_seq_max）或略大（如8-16）
-                                   # 作用：在HTTP层就拒绝超载请求，避免请求进入队列后等待
+  max_input_tokens: 2048   # 最大输入 token（超长 prompt 会被裁剪）
+  timeout_ms: 120000       # HTTP 请求超时（毫秒）
 
-# 队列配置
-queue:
-  max_size: 1000                  # HTTP请求队列最大长度
-                                   # HTTP层内部请求队列的最大容量
-                                   # 当队列满时，新请求会被拒绝
-                                   # 作用：限制等待处理的请求数量，防止内存无限增长
-                                   # 注意：这个队列是HTTP层到调度层的缓冲，通常远大于 max_concurrent_requests
-  priority_weight: 1.0            # 优先级权重（用于请求优先级计算）
-
+# ============================================================
 # API 端点配置
+# ============================================================
 api:
   endpoints:
     health:
@@ -69,79 +88,160 @@ api:
     top_p: 0.9
 
   timeouts:
-    min: 60.0
-    max: 600.0
-    token_factor: 10.0
+    min: 60.0              # 最小超时（秒）
+    max: 600.0             # 最大超时（秒）
+    token_factor: 10.0     # 每 token 超时系数
 
+# ============================================================
 # 调度器配置
+# ============================================================
 scheduler:
-  max_iterations: 1000            # 每个请求的最大推理迭代次数
-  batch_timeout_ms: 500           # 批处理超时时间（毫秒）
-  max_batch_size: 32              # 最大批处理大小（应该 ≤ n_seq_max）
-  context_usage_threshold: 0.75   # 上下文使用率阈值（0.0-1.0）
-                                   # 当运行中请求的总上下文长度达到 max_context_length × threshold 时，不再接受新请求
-  default_temperature: 0.7        # 默认温度参数
-  default_top_p: 0.9              # 默认 Top-P 参数
-  default_top_k: 50               # 默认 Top-K 参数
-  default_max_tokens: 100         # 默认最大生成 token 数
-  request_timeout: 60.0           # 请求超时时间（秒）
-  loop_interval: 10               # 调度器循环间隔（微秒，活跃时）
-  idle_loop_interval: 100         # 调度器循环间隔（微秒，空闲时）
-  wait_poll_interval_ms: 10       # 等待轮询间隔（毫秒）
-  sequence_reuse_delay_ms: 0      # 序列ID重用延迟（毫秒）
-                                   # 默认0ms，因为通过序列ID池管理，确保重用前已完全清理
-                                   # 如果出现序列ID重用冲突，可以设置50-100ms的延迟
-
-# 资源配置
-resources:
-  max_batch_size: 8               # 最大批处理大小（应该 ≤ n_seq_max）
-  max_context_length: 2048        # 最大上下文长度（单个序列支持的最大token数）
-  kv_cache_max_size: 8            # 最大KV缓存数量（应该等于或略小于 n_seq_max）
-                                   # 限制同时保持KV缓存的请求数量
-  kv_cache_max_memory_mb: 4096    # KV缓存最大内存限制（MB）
-                                   # 当内存使用超过此限制时，触发LRU淘汰
-  memory_limit_mb: 16384          # 总内存限制（MB）
-
-# 缓存配置
-cache:
-  default_max_size: 100           # 默认缓存最大数量（已弃用，使用 resources.kv_cache_max_size）
-  default_max_memory_mb: 4096     # 默认缓存最大内存（已弃用，使用 resources.kv_cache_max_memory_mb）
-  enable_lru: true                # 启用LRU淘汰策略
-  enable_memory_limit: true       # 启用内存限制
-  enable_stats: true              # 启用缓存统计
-  eviction_strategy: "LRU"        # 缓存淘汰策略（当前仅支持LRU）
-                                   # LRU: Least Recently Used，淘汰最久未使用的缓存
-  eviction_threshold: 0.8         # 缓存淘汰触发阈值（0.0-1.0）
-                                   # 当缓存使用率达到此阈值时，开始触发淘汰
-                                   # 例如：0.8表示使用率达到80%时开始淘汰
-  cleanup_interval: 1000          # KV缓存清理检查间隔（毫秒）
-                                   # 定期检查KV缓存是否需要清理的间隔时间
-                                   # 过短的间隔会增加CPU开销，过长的间隔可能导致内存不及时释放
-
-# 后端配置
-backend:
-  # LibTorch 后端配置
-  libtorch:
-    seq_len_candidates: [8, 16, 32, 64, 128, 256]  # TorchScript模型支持的序列长度候选列表
-    fallback_seq_len: 8                            # 无法探测时的回退序列长度
+  # 最大迭代次数
+  # 必须 >= max_context_length 以支持长序列生成
+  max_iterations: 5000
   
-  # llama.cpp 后端配置
-  llama_cpp:
-    n_batch: 512                   # llama.cpp批处理大小（一次处理的最大token数）
-    n_threads: 0                   # CPU线程数（0表示使用默认值）
-    n_gpu_layers: 0                # GPU层数（0表示仅使用CPU）
-    n_seq_max: 8                   # llama.cpp最大序列数（定义支持的最大并行序列数）
-                                   # **默认值**：1（llama.cpp的默认值，单序列处理模式）
-                                   # **取值范围**：1-256（LLAMA_MAX_SEQ）
-                                   # **建议值**：等于或略小于 http.max_concurrent_requests
-                                   # **作用**：限制llama.cpp内部可同时处理的序列数量，影响KV cache的分配
-                                   #   - 每个序列最多可以使用 n_ctx / n_seq_max 的tokens
-                                   #   - 例如：n_ctx=2048, n_seq_max=8，每个序列最多256个tokens
-                                   # **注意**：如果设置的值不在1-256范围内，会自动调整到有效范围
-    use_mmap: true                 # 使用内存映射加载模型
-    use_mlock: false               # 锁定内存页面（防止被交换到磁盘）
+  batch_timeout_ms: 100    # 批处理超时（毫秒）
+  max_batch_size: 16       # 最大批处理大小
+  context_usage_threshold: 0.75  # 上下文使用阈值
+  
+  # 采样参数默认值
+  default_temperature: 0.7
+  default_top_p: 0.9
+  default_top_k: 50
+  default_max_tokens: 1024
+  
+  # 请求处理参数
+  request_timeout: 300.0   # 请求超时（秒）
+  loop_interval: 5         # 调度循环间隔（毫秒）
+  idle_loop_interval: 50   # 空闲时循环间隔（毫秒）
+  wait_poll_interval_ms: 5 # 等待轮询间隔（毫秒）
 
+# ============================================================
+# 资源配置
+# ============================================================
+resources:
+  max_batch_size: 16       # 最大批处理大小
+  max_context_length: 4096 # 最大上下文长度
+  kv_cache_max_size: 32    # KV 缓存最大条目数
+  kv_cache_max_memory_mb: 4096  # KV 缓存最大内存（MB）
+  memory_limit_mb: 8192    # 总内存限制（MB）
+
+# ============================================================
+# 缓存配置
+# ============================================================
+cache:
+  default_max_size: 100    # 默认最大缓存条目数
+  default_max_memory_mb: 4096  # 默认最大缓存内存（MB）
+  enable_lru: true         # 启用 LRU 淘汰策略
+  enable_memory_limit: true
+  enable_stats: true       # 启用统计信息
+  eviction_threshold: 0.9  # 淘汰阈值（内存使用率）
+  cleanup_interval: 500    # 清理间隔（毫秒）
+
+# ============================================================
+# 后端配置
+# ============================================================
+backend:
+  # 后端类型（必填）:
+  #   kylin:     自研推理后端，支持 HuggingFace safetensors 模型
+  #   llama_cpp: llama.cpp 后端，支持 GGUF 量化模型
+  #   libtorch:  LibTorch 后端，支持 TorchScript 模型
+  type: "kylin"
+  
+  # ------------------------------------------------------------
+  # Kylin 后端配置
+  # 自研高性能推理引擎，支持 HuggingFace 模型格式
+  # ------------------------------------------------------------
+  kylin:
+    # 设备后端:
+    #   cpu:   使用 CPU 推理
+    #   cuda:  使用 NVIDIA GPU (需要 CUDA)
+    #   metal: 使用 Apple Metal (macOS)
+    device_backend: "cpu"
+    
+    # 算子后端:
+    #   auto:   自动选择最优算子
+    #   native: 使用原生 C++ 实现
+    #   ggml:   使用 GGML 算子（推荐，性能更好）
+    operator_backend: "ggml"
+    
+    # 计算线程数（0 = 自动）
+    n_threads: 8
+
+  # ------------------------------------------------------------
+  # llama.cpp 后端配置
+  # 高性能量化推理引擎，支持 GGUF 模型格式
+  # ------------------------------------------------------------
+  llama_cpp:
+    # 批处理大小（prompt 处理）
+    n_batch: 512
+    
+    # CPU 计算线程数
+    n_threads: 8
+    
+    # GPU 层数:
+    #   0:  仅使用 CPU
+    #   N:  前 N 层在 GPU
+    #   99: 全部层在 GPU（Metal/CUDA）
+    n_gpu_layers: 0
+    
+    # 最大并发序列数
+    # 影响 KV cache 内存使用，建议根据显存调整
+    n_seq_max: 8
+    
+    # 内存映射选项
+    use_mmap: true         # 使用内存映射加载模型
+    use_mlock: false       # 锁定内存（防止交换到磁盘）
+
+  # ------------------------------------------------------------
+  # LibTorch 后端配置
+  # PyTorch C++ 推理引擎，支持 TorchScript 模型格式
+  # ------------------------------------------------------------
+  libtorch:
+    # 预编译的序列长度候选（用于优化）
+    seq_len_candidates: [8, 16, 32, 64, 128, 256]
+    
+    # 回退序列长度
+    fallback_seq_len: 8
+
+# ============================================================
+# 动态批处理调谐器配置
+# ============================================================
+dynamic_batch_tuner:
+  enabled: false           # 是否启用动态批处理调谐
+  
+  # 策略:
+  #   static:  使用固定批处理大小
+  #   dynamic: 根据负载动态调整
+  #   hybrid:  混合模式
+  strategy: "static"
+  
+  fixed_batch_size: 8      # 固定批处理大小（strategy=static 时生效）
+  min_batch_size: 1        # 最小批处理大小
+  max_batch_size: 64       # 最大批处理大小
+  initial_batch_size: 8    # 初始批处理大小
+  
+  # 调谐参数
+  probing_growth_factor: 2.0
+  max_probing_attempts: 10
+  time_increase_threshold: 0.30
+  adjustment_factor: 0.30
+  validation_interval: 50
+  exploration_interval: 200
+  probe_batch_count: 10
+  validation_batch_count: 10
+  max_consecutive_time_increases: 5
+
+# ============================================================
 # 日志配置
+# ============================================================
 logging:
+  # 日志级别: trace | debug | info | warn | error
   level: "info"
+  
+  # 日志文件路径（空 = 仅输出到控制台）
   file: ""
+  
+  # 日志轮转配置
+  max_size_mb: 100         # 单个日志文件最大大小（MB）
+  max_files: 5             # 保留的日志文件数量

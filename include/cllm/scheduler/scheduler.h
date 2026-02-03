@@ -256,6 +256,18 @@ public:
     // Phase 7: 触发响应回调（供内部使用）
     void triggerResponseCallback(size_t requestId, const RequestState& state);
     
+    // 实时更新 runningRequests_ 中的 token（用于真流式）
+    void updateRunningRequestToken(size_t requestId, int token);
+    
+    // 注册流式 token 回调（用于真流式）
+    void setStreamingTokenCallback(size_t requestId, TokenCallback callback);
+    
+    // 移除流式 token 回调
+    void removeStreamingTokenCallback(size_t requestId);
+    
+    // 触发流式 token 回调（供 batch_processor 调用）
+    void triggerStreamingTokenCallback(size_t requestId, int token);
+    
     /**
      * @brief 流式生成（同步，每个 token 立即回调）
      * 
@@ -318,6 +330,10 @@ private:
     // Phase 7: 响应回调
     ResponseCallback responseCallback_;  ///< 响应回调函数
     mutable std::mutex callbackMutex_;   ///< 回调互斥锁
+    
+    // 流式 token 回调（真流式支持）
+    std::unordered_map<size_t, TokenCallback> streamingTokenCallbacks_;
+    mutable std::mutex streamingCallbackMutex_;
     
     // 异步资源清理
     std::queue<size_t> cleanupQueue_;    ///< 清理任务队列

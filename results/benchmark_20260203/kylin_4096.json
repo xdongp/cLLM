@@ -1,0 +1,13 @@
+{
+  "test_time": "2026-02-03 13:42:09",
+  "server_type": "cllm",
+  "server_url": "http://localhost:18080",
+  "model": null,
+  "requests": 10,
+  "concurrency": 2,
+  "max_tokens": 4096,
+  "sequential": null,
+  "concurrent": {
+    "failed_requests": 10
+  }
+}

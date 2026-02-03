@@ -509,6 +509,12 @@ void SchedulerBatchProcessor::updateRequestStates(
         batch[i].generatedTokens.push_back(nextToken);
         CLLM_DEBUG("Request %zu - Generated tokens now: %zu", i, batch[i].generatedTokens.size());
         
+        // 🔥 真流式支持：立即触发流式回调
+        if (scheduler_) {
+            scheduler_->updateRunningRequestToken(batch[i].requestId, nextToken);
+            scheduler_->triggerStreamingTokenCallback(batch[i].requestId, nextToken);
+        }
+        
         // 🔒 安全兜底：防止生成数量超过 maxTokens
         if (batch[i].maxTokens > 0 &&
             batch[i].generatedTokens.size() > static_cast<size_t>(batch[i].maxTokens)) {

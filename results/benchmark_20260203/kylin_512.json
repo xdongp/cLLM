@@ -1,0 +1,24 @@
+{
+  "test_time": "2026-02-03 13:16:47",
+  "server_type": "cllm",
+  "server_url": "http://localhost:18080",
+  "model": null,
+  "requests": 10,
+  "concurrency": 2,
+  "max_tokens": 512,
+  "sequential": null,
+  "concurrent": {
+    "total_requests": 10,
+    "successful_requests": 10,
+    "failed_requests": 0,
+    "avg_response_time": 37.0790931224823,
+    "min_response_time": 17.602125883102417,
+    "max_response_time": 55.9604868888855,
+    "avg_throughput": 27.616505739700724,
+    "avg_tokens_per_second": 16.712938117980958,
+    "total_tokens_processed": 5548,
+    "total_generated_tokens": 5120,
+    "avg_generated_tokens": 512.0,
+    "total_test_time": 185.39637303352356
+  }
+}

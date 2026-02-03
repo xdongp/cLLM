@@ -1,27 +1,43 @@
-# cLLM 配置文件 - llama.cpp 后端专用
+# cLLM 配置文件 - llama.cpp 后端 GPU 模式
+# 
+# 支持的后端类型 (backend.type):
+#   - kylin:     自研推理后端，支持 HuggingFace safetensors 模型格式
+#   - llama_cpp: llama.cpp 后端，支持 GGUF 模型格式
+#   - libtorch:  LibTorch 后端，支持 TorchScript 模型格式
+#
+# 本配置使用 llama.cpp 后端 + Metal GPU 加速
 
+# ============================================================
 # 服务器配置
+# ============================================================
 server:
-  host: "0.0.0.0"
-  port: 8085
-  num_threads: 8
-  min_threads: 4
-  use_libtorch: false
+  host: "0.0.0.0"          # 服务器监听地址
+  port: 8085               # 服务器监听端口
+  num_threads: 8           # HTTP 工作线程数
+  min_threads: 4           # 最小线程数
 
-# 模型配置 - 使用 GGUF 模型
+# ============================================================
+# 模型配置
+# ============================================================
 model:
-  path: "/Users/dannypan/PycharmProjects/xllm/cpp/cLLM/model/Qwen/qwen3-0.6b-q4_k_m.gguf"
-  vocab_size: 151936
-  max_context_length: 2048
-  default_max_tokens: 100
-  quantization: "q4_k_m"
+  # GGUF 模型文件路径
+  path: "/Users/dannypan/PycharmProjects/cLLM/model/Qwen/qwen3-0.6b-q4_k_m.gguf"
+  
+  vocab_size: 151936       # 词表大小（由 GGUF 文件自动探测）
+  max_context_length: 8192 # 最大上下文长度
+  default_max_tokens: 2048 # 默认最大生成 token 数
+  quantization: "q4_k_m"   # 记录量化类型（由 GGUF 文件决定）
 
+# ============================================================
 # HTTP 配置
+# ============================================================
 http:
-  max_input_tokens: 120
-  timeout_ms: 30000
+  max_input_tokens: 4096   # 最大输入 token
+  timeout_ms: 300000       # HTTP 请求超时（毫秒）
 
+# ============================================================
 # API 端点配置
+# ============================================================
 api:
   endpoints:
     health:
@@ -60,30 +76,38 @@ api:
     max: 600.0
     token_factor: 10.0
 
+# ============================================================
 # 调度器配置
+# ============================================================
 scheduler:
-  max_iterations: 2000
-  batch_timeout_ms: 100
-  max_batch_size: 128
+  max_iterations: 10000    # 最大迭代次数
+  batch_timeout_ms: 100    # 批处理超时（毫秒）
+  max_batch_size: 16       # 最大批处理大小
   context_usage_threshold: 0.75
+  
   default_temperature: 0.7
   default_top_p: 0.9
   default_top_k: 50
-  default_max_tokens: 100
-  request_timeout: 120.0
-  loop_interval: 1
-  idle_loop_interval: 10
-  wait_poll_interval_ms: 1
+  default_max_tokens: 2048
+  
+  request_timeout: 600.0   # 请求超时（秒）
+  loop_interval: 1         # 调度循环间隔（毫秒）
+  idle_loop_interval: 10   # 空闲时循环间隔（毫秒）
+  wait_poll_interval_ms: 1 # 等待轮询间隔（毫秒）
 
+# ============================================================
 # 资源配置
+# ============================================================
 resources:
-  max_batch_size: 128
-  max_context_length: 2048
-  kv_cache_max_size: 64
-  kv_cache_max_memory_mb: 2048
-  memory_limit_mb: 8192
+  max_batch_size: 16       # 最大批处理大小
+  max_context_length: 8192 # 最大上下文长度
+  kv_cache_max_size: 16    # KV 缓存最大条目数
+  kv_cache_max_memory_mb: 8192  # KV 缓存最大内存（MB）
+  memory_limit_mb: 16384   # 总内存限制（MB）
 
+# ============================================================
 # 缓存配置
+# ============================================================
 cache:
   default_max_size: 64
   default_max_memory_mb: 2048
@@ -93,41 +117,75 @@ cache:
   eviction_threshold: 0.8
   cleanup_interval: 500
 
-# 后端配置 - 使用 llama.cpp
+# ============================================================
+# 后端配置
+# ============================================================
 backend:
+  # 后端类型: kylin | llama_cpp | libtorch
   type: "llama_cpp"
   
-  # llama.cpp 后端配置
-  llama_cpp:
-    n_batch: 512
+  # ------------------------------------------------------------
+  # Kylin 后端配置（自研推理引擎）
+  # ------------------------------------------------------------
+  kylin:
+    device_backend: "cpu"
+    operator_backend: "ggml"
     n_threads: 8
-    n_gpu_layers: 99      # 启用 Metal GPU 加速
-    n_seq_max: 64         # 增加序列数量支持更高并发
-    use_mmap: true
-    use_mlock: false
 
+  # ------------------------------------------------------------
+  # llama.cpp 后端配置（当前使用）
+  # 支持 GGUF 模型格式，高性能量化推理
+  # ------------------------------------------------------------
+  llama_cpp:
+    # 批处理大小（prompt 处理）
+    n_batch: 512
+    
+    # CPU 计算线程数
+    n_threads: 8
+    
+    # GPU 层数
+    # - 0:  仅使用 CPU
+    # - 99: 全部层在 GPU（Metal/CUDA）
+    n_gpu_layers: 99
+    
+    # 最大并发序列数
+    # 影响 KV cache 内存使用，建议根据 GPU 内存调整
+    n_seq_max: 2
+    
+    # 内存映射选项
+    use_mmap: true         # 使用内存映射加载模型
+    use_mlock: false       # 锁定内存
+
+  # ------------------------------------------------------------
+  # LibTorch 后端配置
+  # ------------------------------------------------------------
+  libtorch:
+    seq_len_candidates: [8, 16, 32, 64, 128, 256]
+    fallback_seq_len: 8
+
+# ============================================================
 # 动态批处理调谐器配置
+# ============================================================
 dynamic_batch_tuner:
-  enabled: true
+  enabled: false
   strategy: "static"
-  search_algorithm: "adaptive_step"
   fixed_batch_size: 16
-  min_batch_size: 32
-  max_batch_size: 96
+  min_batch_size: 1
+  max_batch_size: 64
   initial_batch_size: 16
   time_increase_threshold: 0.20
-  time_decrease_threshold: 0.10
   validation_interval: 60
   max_consecutive_time_increases: 4
-  auto_adjust_enabled: false
   probe_batch_count: 8
   validation_batch_count: 8
   adjustment_factor: 0.25
   exploration_interval: 200
 
+# ============================================================
 # 日志配置
+# ============================================================
 logging:
-  level: "info"   # 调试时使用info级别
+  level: "info"
   file: "logs/cllm_server.log"
   max_size_mb: 100
   max_files: 5

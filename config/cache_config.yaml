@@ -1,9 +1,0 @@
-# KV缓存配置
-cache:
-  default_max_size: 1000  # Increased from 10 to 1000
-  default_max_memory_mb: 8192  # Set explicit memory limit (8GB)
-  enable_lru: true
-  enable_memory_limit: true  # Enable memory limit for safety
-  enable_stats: true
-  eviction_threshold: 0.85  # Trigger eviction earlier
-  cleanup_interval: 5000  # Reduced cleanup frequency

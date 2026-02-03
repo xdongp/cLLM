@@ -1,0 +1,29 @@
+=== Initial System Resources ===
+Date: Tue Feb  3 14:17:12 CST 2026
+CPU: Apple M3
+Memory: 24 GB
+
+  PID  %CPU %MEM    RSS      VSZ
+32590   0.0  0.0   1936 410099008
+  PID  %CPU %MEM    RSS      VSZ
+32604  20.4  6.7 1691552 451875152
+Pre-test Tue Feb  3 14:17:20 CST 2026:
+  PID  %CPU %MEM    RSS
+32590   0.0  0.0   1936
+  PID  %CPU %MEM    RSS
+32604  20.0  6.7 1691552
+Pre-test 1024 Tue Feb  3 14:18:17 CST 2026:
+  PID  %CPU %MEM    RSS
+32590   0.0  0.0   1936
+  PID  %CPU %MEM    RSS
+32604  20.7  7.1 1775056
+Pre-test 2048 Tue Feb  3 14:21:36 CST 2026:
+  PID  %CPU %MEM    RSS
+32590   0.0  0.0   1936
+  PID  %CPU %MEM    RSS
+32604  20.3  7.1 1777920
+Pre-test 4096 Tue Feb  3 14:28:24 CST 2026:
+  PID  %CPU %MEM    RSS
+32590   0.0  0.0   1936
+  PID  %CPU %MEM    RSS
+32604  20.9  7.1 1781536
