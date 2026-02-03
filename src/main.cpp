@@ -30,11 +30,24 @@
 #include "cllm/common/config.h"
 #include "cllm/common/logger.h"
 #include "cllm/common/asio_handler.h"
+#include "cllm/http/response_builder.h"
+#include "cllm/common/json.h"
 
 // 全局变量用于信号处理
 static std::unique_ptr<cllm::Scheduler> g_scheduler;
 static std::unique_ptr<cllm::ModelExecutor> g_modelExecutor;
 static std::unique_ptr<cllm::TokenizerManager> g_tokenizerManager;
+
+// API Endpoint 路径常量（硬编码，简化配置）
+namespace ApiEndpoints {
+    constexpr const char* ROOT = "/";
+    constexpr const char* HEALTH = "/health";
+    constexpr const char* GENERATE = "/generate";
+    constexpr const char* GENERATE_STREAM = "/generate_stream";
+    constexpr const char* ENCODE = "/encode";
+    constexpr const char* BENCHMARK = "/benchmark";
+    constexpr const char* MODEL_INFO = "/model/info";
+}
 
 /**
  * @brief 信号处理函数
@@ -515,53 +528,72 @@ int main(int argc, char* argv[]) {
         CLLM_INFO("Setting up HTTP endpoints...");
         auto httpHandler = std::make_unique<cllm::HttpHandler>();
         
-        // 注册端点
+        // 根路径：显示所有可用 endpoints
+        httpHandler->get(ApiEndpoints::ROOT, [](const cllm::HttpRequest& req) {
+            nlohmann::json response;
+            response["name"] = "cLLM Server";
+            response["version"] = "1.0.0";
+            response["endpoints"] = {
+                {{"method", "GET"},  {"path", ApiEndpoints::ROOT},           {"description", "显示所有可用端点"}},
+                {{"method", "GET"},  {"path", ApiEndpoints::HEALTH},         {"description", "健康检查"}},
+                {{"method", "POST"}, {"path", ApiEndpoints::GENERATE},       {"description", "文本生成（非流式）"}},
+                {{"method", "POST"}, {"path", ApiEndpoints::GENERATE_STREAM},{"description", "文本生成（流式）"}},
+                {{"method", "POST"}, {"path", ApiEndpoints::ENCODE},         {"description", "文本编码（tokenize）"}},
+                {{"method", "POST"}, {"path", ApiEndpoints::BENCHMARK},      {"description", "性能基准测试"}},
+                {{"method", "GET"},  {"path", ApiEndpoints::MODEL_INFO},     {"description", "模型信息"}}
+            };
+            return cllm::ResponseBuilder::success(response);
+        });
+        
+        // 健康检查端点
         auto healthEndpoint = std::make_unique<cllm::HealthEndpoint>();
-        httpHandler->get(cllm::Config::instance().apiEndpointHealthPath(), [endpoint = healthEndpoint.get()](const cllm::HttpRequest& req) {
+        httpHandler->get(ApiEndpoints::HEALTH, [endpoint = healthEndpoint.get()](const cllm::HttpRequest& req) {
             return endpoint->handle(req);
         });
         
+        // 文本生成端点（非流式）
         auto generateEndpoint = std::make_unique<cllm::GenerateEndpoint>(
             g_scheduler.get(),
             tokenizer
         );
-        httpHandler->post(cllm::Config::instance().apiEndpointGeneratePath(), [endpoint = generateEndpoint.get()](const cllm::HttpRequest& req) {
+        httpHandler->post(ApiEndpoints::GENERATE, [endpoint = generateEndpoint.get()](const cllm::HttpRequest& req) {
             return endpoint->handle(req);
         });
         
         // 流式端点：使用真流式处理（边生成边发送）
-        httpHandler->postStreaming(cllm::Config::instance().apiEndpointGenerateStreamPath(), 
+        httpHandler->postStreaming(ApiEndpoints::GENERATE_STREAM, 
             [endpoint = generateEndpoint.get()](const cllm::HttpRequest& req, cllm::StreamingWriteCallback writeCallback) {
                 endpoint->handleStreamingCallback(req, writeCallback);
             });
         
+        // 文本编码端点
         auto encodeEndpoint = std::make_unique<cllm::EncodeEndpoint>(tokenizer);
-        httpHandler->post(cllm::Config::instance().apiEndpointEncodePath(), [endpoint = encodeEndpoint.get()](const cllm::HttpRequest& req) {
+        httpHandler->post(ApiEndpoints::ENCODE, [endpoint = encodeEndpoint.get()](const cllm::HttpRequest& req) {
             return endpoint->handle(req);
         });
         
-        // 🔥 优化：使用独立Scheduler模式（参考Stage 15），避免共享Scheduler的竞争
-        // 使用与Stage 15相同的配置：maxBatchSize=8, maxContextLength=2048
+        // 性能基准测试端点
         auto benchmarkEndpoint = std::make_unique<cllm::BenchmarkEndpoint>(
             g_modelExecutor.get(), tokenizer, 8, 2048);
-        httpHandler->post("/benchmark", [endpoint = benchmarkEndpoint.get()](const cllm::HttpRequest& req) {
+        httpHandler->post(ApiEndpoints::BENCHMARK, [endpoint = benchmarkEndpoint.get()](const cllm::HttpRequest& req) {
             return endpoint->handle(req);
         });
         
         // 模型信息端点
         auto modelInfoEndpoint = std::make_unique<cllm::ModelInfoEndpoint>(
             g_modelExecutor.get(), modelPath);
-        httpHandler->get("/model/info", [endpoint = modelInfoEndpoint.get()](const cllm::HttpRequest& req) {
+        httpHandler->get(ApiEndpoints::MODEL_INFO, [endpoint = modelInfoEndpoint.get()](const cllm::HttpRequest& req) {
             return endpoint->handle(req);
         });
         
         CLLM_INFO("Registered endpoints:");
-        CLLM_INFO("  - GET  %s", cllm::Config::instance().apiEndpointHealthPath().c_str());
-        CLLM_INFO("  - POST %s", cllm::Config::instance().apiEndpointGeneratePath().c_str());
-        CLLM_INFO("  - POST %s", cllm::Config::instance().apiEndpointGenerateStreamPath().c_str());
-        CLLM_INFO("  - POST %s", cllm::Config::instance().apiEndpointEncodePath().c_str());
-        CLLM_INFO("  - POST /benchmark");
-        CLLM_INFO("  - GET  /model/info");
+        CLLM_INFO("  - GET  %s", ApiEndpoints::ROOT);
+        CLLM_INFO("  - GET  %s", ApiEndpoints::HEALTH);
+        CLLM_INFO("  - POST %s", ApiEndpoints::GENERATE);
+        CLLM_INFO("  - POST %s", ApiEndpoints::GENERATE_STREAM);
+        CLLM_INFO("  - POST %s", ApiEndpoints::ENCODE);
+        CLLM_INFO("  - POST %s", ApiEndpoints::BENCHMARK);
+        CLLM_INFO("  - GET  %s", ApiEndpoints::MODEL_INFO);
         
         // 初始化并启动 HTTP 服务器（自研高性能服务器）
         CLLM_INFO("Initializing HTTP server...");
