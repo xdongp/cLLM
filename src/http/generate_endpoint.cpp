@@ -99,6 +99,7 @@ GenerateEndpoint::GenerateRequest GenerateEndpoint::parseRequest(const HttpReque
     JsonRequestParser::getFieldWithDefault(jsonBody, "max_tokens", req.maxTokens, cllm::Config::instance().apiDefaultMaxTokens());
     JsonRequestParser::getFieldWithDefault(jsonBody, "temperature", req.temperature, cllm::Config::instance().apiDefaultTemperature());
     JsonRequestParser::getFieldWithDefault(jsonBody, "top_p", req.topP, cllm::Config::instance().apiDefaultTopP());
+    JsonRequestParser::getFieldWithDefault(jsonBody, "repetition_penalty", req.repetitionPenalty, cllm::Config::instance().apiDefaultRepetitionPenalty());
     JsonRequestParser::getFieldWithDefault(jsonBody, "stream", req.stream, false);
     
     // 调试：打印解析后的参数（仅在 DEBUG 模式下）
@@ -150,6 +151,7 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
             requestState.temperature = req.temperature;
             requestState.topP = req.topP;
             requestState.topK = 0; // 使用默认值
+            requestState.repetitionPenalty = req.repetitionPenalty;
 
             // 从 tokenizer 注入 EOS，确保调度/批处理能正确停止
             requestState.eosTokenId = tokenizer_->getEosId();
@@ -391,6 +393,7 @@ HttpResponse GenerateEndpoint::handleStreaming(const GenerateRequest& req) {
         requestState.temperature = req.temperature;
         requestState.topP = req.topP;
         requestState.topK = 0;
+        requestState.repetitionPenalty = req.repetitionPenalty;
         requestState.eosTokenId = tokenizer_->getEosId();
         requestState.priority = 0;
         requestState.arrivalTime = 0;
@@ -575,6 +578,7 @@ void GenerateEndpoint::handleStreamingCallback(const HttpRequest& request, Strea
     requestState.temperature = req.temperature;
     requestState.topP = req.topP;
     requestState.topK = 0;
+    requestState.repetitionPenalty = req.repetitionPenalty;
     requestState.eosTokenId = tokenizer_->getEosId();
     requestState.priority = 0;
     requestState.isCompleted = false;

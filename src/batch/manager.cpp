@@ -356,8 +356,11 @@ void BatchManager::processBatchOutput(
         float temperature = batch[i].temperature;
         int topK = batch[i].topK;
         float topP = batch[i].topP;
+        float repetitionPenalty = batch[i].repetitionPenalty;
         
-        int nextToken = sampler_.sample(requestLogits, temperature, topK, topP);
+        // 使用带重复惩罚的采样方法
+        int nextToken = sampler_.sampleWithPenalty(requestLogits, batch[i].generatedTokens,
+                                                    temperature, topK, topP, repetitionPenalty);
         
         batch[i].generatedTokens.push_back(nextToken);
         

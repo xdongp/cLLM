@@ -47,7 +47,7 @@ cLLM项目的设计文档分为两个层次：
 #### 2.2.1 顶层设计文档
 - **[详细设计.md](../详细设计.md)**：cLLM C++重构的完整设计文档
   - 项目概述和目标
-  - 技术栈定义：C++20、LibTorch、Eigen3、sentencepiece等
+  - 技术栈定义：C++20、LibTorch、sentencepiece等
   - 系统架构设计
   - 核心组件详细设计：HTTP Server、Scheduler、Model Executor、Tokenizer、Sampler、KV Cache
   - 性能优化策略：内存管理（mimalloc+RAII）、并发优化、SIMD优化
@@ -85,7 +85,7 @@ cLLM项目的设计文档分为两个层次：
 | **编程语言** | C++ | 主语言 | C++20 |
 | **HTTP服务器** | 自定义实现 | 基于 Asio 的异步服务器 | - |
 | **深度学习** | LibTorch | PyTorch C++ API | v2.0+ |
-| **数值计算** | Eigen3 | 线性代数库 | v3.4+ |
+| **数值计算** | 优化内核 | 自实现矩阵运算 | - |
 | **JSON处理** | nlohmann/json | JSON序列化 | v3.11+ |
 | **异步框架** | Asio | 异步I/O | standalone |
 | **并行计算** | Intel TBB | 线程池和并行算法 | v2021+ |

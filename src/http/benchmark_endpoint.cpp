@@ -338,6 +338,7 @@ HttpResponse BenchmarkEndpoint::handle(const HttpRequest& request) {
                         requestState.temperature = params.temperature;
                         requestState.topP = 0.9f;
                         requestState.topK = 0;
+                        requestState.repetitionPenalty = 1.1f; // 默认轻微惩罚重复
                         requestState.eosTokenId = tokenizer_->getEosId();
                         requestState.priority = 0;
                         requestState.arrivalTime = 0;
@@ -474,6 +475,7 @@ BenchmarkEndpoint::RequestResult BenchmarkEndpoint::executeSingleRequestDirect(
         requestState.temperature = params.temperature;
         requestState.topP = 0.9f; // 使用默认值
         requestState.topK = 0; // 使用默认值
+        requestState.repetitionPenalty = 1.1f; // 默认轻微惩罚重复
         requestState.eosTokenId = tokenizer_->getEosId();
         requestState.priority = 0;
         requestState.arrivalTime = 0;

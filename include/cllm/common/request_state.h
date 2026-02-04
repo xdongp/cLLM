@@ -26,6 +26,7 @@ struct RequestState {
     float temperature = 0.7f;                   ///< 温度参数
     int topK = 50;                              ///< Top-K采样参数
     float topP = 0.9f;                          ///< Top-P采样参数
+    float repetitionPenalty = 1.0f;             ///< 重复惩罚参数 (1.0 = 不惩罚, >1.0 = 惩罚重复)
 
     // 停止条件（由上层根据 tokenizer/model 注入；-1 表示未知/不启用）
     int eosTokenId = -1;                        ///< EOS token id（生成遇到该 id 应停止）

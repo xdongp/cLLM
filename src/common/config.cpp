@@ -684,6 +684,17 @@ float Config::apiDefaultTopP() const {
     return defaults["top_p"].as<float>(0.9f);
 }
 
+float Config::apiDefaultRepetitionPenalty() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    const auto api = getMapChild(config_, "api");
+    const auto defaults = getMapChild(api, "defaults");
+    if (!defaults) {
+        return 1.1f;  // 默认轻微惩罚重复
+    }
+    return defaults["repetition_penalty"].as<float>(1.1f);
+}
+
 // API响应配置
 std::string Config::apiResponseContentTypeJson() const {
     std::lock_guard<std::mutex> lock(mutex_);

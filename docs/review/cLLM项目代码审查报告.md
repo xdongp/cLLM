@@ -4,7 +4,7 @@
 
 ### 1.1 项目基本信息
 - **项目名称**：cLLM (C++ Large Language Model Server)
-- **技术栈**：C++17, Drogon, LibTorch, SentencePiece, Eigen3
+- **技术栈**：C++17, Drogon, LibTorch, SentencePiece
 - **目标**：将 xLLM Python 版本重构为 C++ 实现，提升性能和资源利用率
 
 ### 1.2 设计文档符合性
@@ -88,7 +88,7 @@
 - **Drogon**：异步 Web 框架，支持协程
 - **LibTorch**：PyTorch C++ API，用于深度学习推理
 - **SentencePiece**：Google 分词库，用于文本分词
-- **Eigen3**：线性代数库，用于数值计算
+- **优化内核**：自实现的矩阵运算内核，用于数值计算
 - **yaml-cpp**：YAML 配置文件处理
 
 ## 5. 代码质量评估

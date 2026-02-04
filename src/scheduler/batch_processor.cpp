@@ -474,10 +474,14 @@ void SchedulerBatchProcessor::updateRequestStates(
         float temperature = batch[i].temperature;
         int topK = batch[i].topK;
         float topP = batch[i].topP;
+        float repetitionPenalty = batch[i].repetitionPenalty;
         
-        CLLM_DEBUG("Request %zu - Sampling with temp=%f, topK=%d, topP=%f", i, temperature, topK, topP);
+        CLLM_DEBUG("Request %zu - Sampling with temp=%f, topK=%d, topP=%f, repPenalty=%f", 
+                   i, temperature, topK, topP, repetitionPenalty);
         
-        int nextToken = sampler.sample(logits, temperature, topK, topP);
+        // 使用带重复惩罚的采样方法
+        int nextToken = sampler.sampleWithPenalty(logits, batch[i].generatedTokens,
+                                                   temperature, topK, topP, repetitionPenalty);
         
         CLLM_DEBUG("Request %zu - Sampled token: %d", i, nextToken);
         

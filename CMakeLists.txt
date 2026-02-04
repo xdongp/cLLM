@@ -13,8 +13,6 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_SOURCE_DIR}/third_party)
-include_directories(${CMAKE_SOURCE_DIR}/third_party/eigen)
-include_directories(/usr/include/eigen3)
 include_directories(${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include)
 include_directories(${CMAKE_SOURCE_DIR}/third_party/llama.cpp/include)
 

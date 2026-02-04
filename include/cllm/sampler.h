@@ -52,6 +52,19 @@ public:
     int sample(const FloatArray& logits, float temperature = 1.0f, int topK = -1, float topP = -1.0f);
     
     /**
+     * @brief 从logits分布中采样token（带重复惩罚）
+     * @param logits 模型输出的logits分布
+     * @param generatedTokens 已生成的token序列（用于重复惩罚）
+     * @param temperature 温度参数
+     * @param topK Top-K参数
+     * @param topP Top-P参数
+     * @param repetitionPenalty 重复惩罚参数（>1.0 惩罚重复，1.0 不惩罚）
+     * @return 采样得到的token ID
+     */
+    int sampleWithPenalty(const FloatArray& logits, const std::vector<int>& generatedTokens,
+                          float temperature, int topK, float topP, float repetitionPenalty);
+    
+    /**
      * @brief 批处理采样
      * @param logits 模型输出的logits分布，形状为(batchSize, vocabSize)
      * @param temperature 温度参数，默认1.0

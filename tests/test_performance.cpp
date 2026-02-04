@@ -150,7 +150,7 @@ int main() {
         
         // 输出性能优化建议
         std::cout << "\n--- Performance Optimization Notes ---" << std::endl;
-        std::cout << "- MatMul operations utilize Eigen library for optimized matrix multiplication" << std::endl;
+        std::cout << "- MatMul operations use optimized matrix multiplication kernels" << std::endl;
         std::cout << "- RMSNorm and Softmax kernels are optimized with SIMD instructions where possible" << std::endl;
         std::cout << "- Memory allocations are managed through FloatArray wrapper for efficiency" << std::endl;
         std::cout << "- KV caching reduces recomputation for autoregressive generation" << std::endl;

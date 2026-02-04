@@ -72,6 +72,76 @@ int Sampler::sample(const FloatArray& logits, float temperature, int topK, float
     return result;
 }
 
+int Sampler::sampleWithPenalty(const FloatArray& logits, const std::vector<int>& generatedTokens,
+                               float temperature, int topK, float topP, float repetitionPenalty) {
+    // 参数验证
+    if (logits.empty()) {
+        throw std::invalid_argument("logits cannot be empty");
+    }
+    if (temperature < 0.0f) {
+        throw std::invalid_argument("temperature must be non-negative");
+    }
+
+    // -1 表示"使用默认配置"
+    if (topK == -1) {
+        topK = config_.getTopK();
+    }
+    if (topP < 0.0f && topP > -1.0f) {
+        throw std::invalid_argument("topP must be -1.0(disabled) or in range [0.0, 1.0]");
+    }
+    if (topP == -1.0f) {
+        topP = config_.getTopP();
+    }
+    if (topP < -1.0f || topP > 1.0f) {
+        throw std::invalid_argument("topP must be in range [-1.0, 1.0]");
+    }
+
+    // 如果没有重复惩罚或没有已生成的 tokens，直接采样
+    if (repetitionPenalty <= 1.0f || generatedTokens.empty()) {
+        return sample(logits, temperature, topK, topP);
+    }
+
+    // 应用重复惩罚
+    FloatArray penalizedLogits = logits;
+    size_t vocabSize = logits.size();
+    
+    // 收集已生成的唯一 token（用于惩罚）
+    std::vector<bool> tokenSeen(vocabSize, false);
+    for (int token : generatedTokens) {
+        if (token >= 0 && static_cast<size_t>(token) < vocabSize) {
+            tokenSeen[token] = true;
+        }
+    }
+    
+    // 应用惩罚：对已生成的 token 的 logits 进行调整
+    // 如果 logit > 0，除以 penalty；如果 logit < 0，乘以 penalty
+    for (size_t i = 0; i < vocabSize; ++i) {
+        if (tokenSeen[i]) {
+            if (penalizedLogits[i] > 0) {
+                penalizedLogits[i] /= repetitionPenalty;
+            } else {
+                penalizedLogits[i] *= repetitionPenalty;
+            }
+        }
+    }
+
+    sampleCount_++;
+    int result = sampleSingle(penalizedLogits.data(), vocabSize, temperature, topK, topP);
+
+    // 更新统计信息
+    if (temperature <= config_.getGreedyThreshold()) {
+        stats_.incrementGreedySamples();
+    } else if (topK > 0) {
+        stats_.incrementTopKSamples();
+    } else if (topP > 0.0f && topP < 1.0f) {
+        stats_.incrementTopPSamples();
+    } else {
+        stats_.incrementTemperatureSamples();
+    }
+
+    return result;
+}
+
 std::vector<int> Sampler::sampleBatch(const FloatArray& logits, int batchSize, float temperature, int topK, float topP) {
     std::vector<int> result(batchSize);
     size_t vocabSize = logits.size() / batchSize;

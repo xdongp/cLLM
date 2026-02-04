@@ -415,7 +415,7 @@ namespace kernels {
 }
 ```
 
-**评估**: ✅ 所有内核均已实现，使用Eigen优化矩阵乘法。
+**评估**: ✅ 所有内核均已实现，使用优化的矩阵乘法内核。
 
 #### 5. MultiHeadAttention
 
@@ -656,32 +656,10 @@ private:
 #### 3. 缓存机制问题（🔴 高优先级）
 
 **问题描述**:
-[kernels.cpp](file:///d:\cLLM\src\kylin\kernels.cpp#L20)中的矩阵乘法虽然使用了Eigen，但没有充分利用缓存局部性。
-
-**代码位置**:
-```cpp
-void matmul(
-    const float* A,
-    const float* B,
-    float* C,
-    size_t M,
-    size_t N,
-    size_t K,
-    bool transposeA,
-    bool transposeB
-) {
-    using MatrixXfRM = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
-    
-    Eigen::Map<const MatrixXfRM> matA(A, transposeA ? K : M, transposeA ? M : K);
-    Eigen::Map<const MatrixXfRM> matB(B, transposeB ? N : K, transposeB ? K : N);
-    Eigen::Map<MatrixXfRM> matC(C, M, N);
-    
-    matC.noalias() = matA * matB;
-}
-```
+[kernels.cpp](file:///d:\cLLM\src\kylin\kernels.cpp#L20)中的矩阵乘法使用简单三重循环实现，可进一步优化缓存局部性。
 
 **性能影响**:
-- Eigen虽然自动优化，但对于特定大小的矩阵可能不是最优
+- 简单实现可能对于特定大小的矩阵不是最优
 - 缺少针对特定硬件的微调
 
 **建议优化**:
@@ -728,22 +706,9 @@ for (size_t b = 0; b < batch; ++b) {
 - 数据重排开销占推理时间的10-15%
 
 **建议优化**:
-1. 使用Eigen的reshape操作避免手动重排
+1. 使用优化的内存布局避免手动重排
 2. 考虑使用NHWC布局优化计算
 3. 实现原地操作减少内存拷贝
-
-**优化示例**:
-```cpp
-// 使用Eigen的Map和reshaping
-using Tensor4D = Eigen::Tensor<float, 4, Eigen::RowMajor>;
-
-Eigen::TensorMap<Tensor4D> q4dMap(q2d.data(), batch, numHeads_, seqLen, headDim_);
-Eigen::TensorMap<Tensor4D> k4dMap(k2d.data(), batch, numHeads_, seqLen, headDim_);
-Eigen::TensorMap<Tensor4D> v4dMap(v2d.data(), batch, numHeads_, seqLen, headDim_);
-
-// 使用Eigen的shuffle操作
-auto q4dShuffled = q4dMap.shuffle(Eigen::array<int, 4>{0, 2, 1, 3});
-```
 
 #### 5. 并行化问题（🟡 中优先级）
 
@@ -1254,7 +1219,7 @@ for (size_t i = 0; i < outerDim; ++i) {
 频繁的张量形状转换导致性能损失。
 
 **改进方案**:
-使用Eigen的reshape和shuffle操作避免手动重排。
+使用优化的内存布局和原地操作避免手动重排。
 
 **预期收益**:
 - 数据重排开销减少80-90%

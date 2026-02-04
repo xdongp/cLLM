@@ -62,11 +62,12 @@ private:
      * @brief 生成请求结构
      */
     struct GenerateRequest {
-        std::string prompt;     ///< 输入提示词
-        int maxTokens;          ///< 最大生成token数
-        float temperature;      ///< 温度参数
-        float topP;             ///< Top-P采样参数
-        bool stream;            ///< 是否使用流式输出
+        std::string prompt;          ///< 输入提示词
+        int maxTokens;               ///< 最大生成token数
+        float temperature;           ///< 温度参数
+        float topP;                  ///< Top-P采样参数
+        float repetitionPenalty;     ///< 重复惩罚参数
+        bool stream;                 ///< 是否使用流式输出
     };
     
     GenerateRequest parseRequest(const HttpRequest& request);  ///< 解析生成请求

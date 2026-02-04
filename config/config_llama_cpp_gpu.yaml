@@ -22,8 +22,8 @@ server:
 model:
   # GGUF 模型文件路径
   #path: "/Users/dannypan/PycharmProjects/cLLM/model/Qwen/qwen3-0.6b-q4_k_m.gguf"
-  #path: "/Users/dannypan/PycharmProjects/cLLM/model/Qwen/qwen3-1.7b-q4_k_m.gguf"
-  path: "/Users/dannypan/PycharmProjects/cLLM/model/DeepSeek/deepseek-r1-8b-q4_k_m.gguf"
+  path: "/Users/dannypan/PycharmProjects/cLLM/model/Qwen/qwen3-1.7b-q4_k_m.gguf"
+  #path: "/Users/dannypan/PycharmProjects/cLLM/model/DeepSeek/deepseek-r1-8b-q4_k_m.gguf"
   
   vocab_size: 151936       # 词表大小（由 GGUF 文件自动探测）
   max_context_length: 8192 # 最大上下文长度

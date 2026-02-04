@@ -141,6 +141,7 @@ public:
     int apiDefaultMaxTokens() const;
     float apiDefaultTemperature() const;
     float apiDefaultTopP() const;
+    float apiDefaultRepetitionPenalty() const;
     
     // API响应配置
     std::string apiResponseContentTypeJson() const;

@@ -296,7 +296,7 @@ package:
 	@if [ -f third_party/BS_thread_pool.hpp ]; then \
 		cp third_party/BS_thread_pool.hpp /tmp/cllm_package/cLLM/third_party/; \
 	fi
-	@echo "Note: googletest and eigen not included (not needed for production)"
+	@echo "Note: googletest not included (not needed for production)"
 	@echo "Creating tarball..."
 	@cd /tmp/cllm_package && tar -czf $(PACKAGE_NAME) cLLM
 	@mv /tmp/cllm_package/$(PACKAGE_NAME) $(PACKAGE_DIR)/

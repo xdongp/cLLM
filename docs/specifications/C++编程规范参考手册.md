@@ -537,7 +537,7 @@
 
 - **Drogon**: HTTP服务器框架
 - **LibTorch**: PyTorch C++ API
-- **Eigen3**: 线性代数库
+- **优化内核**: 自实现矩阵运算
 - **nlohmann/json**: JSON处理
 - **Asio**: 异步框架
 - **Intel TBB**: 并行计算

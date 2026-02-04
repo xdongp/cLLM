@@ -325,8 +325,8 @@ for (size_t pos = 0; pos < maxSeqLen_; ++pos) {
 
 **评估**: ✅ 已使用缓存，符合优化原则
 
-**问题2**: `kernels.cpp`中的`matmul`使用Eigen
-- **评估**: ✅ 使用Eigen库，自动SIMD优化，符合规范
+**问题2**: `kernels.cpp`中的`matmul`实现
+- **评估**: ✅ 使用优化的矩阵乘法内核，符合规范
 
 **问题3**: `matmul_q4_K_f32`未使用SIMD
 - **当前**: 标量实现

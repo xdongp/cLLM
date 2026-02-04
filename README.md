@@ -4,12 +4,13 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
-[![CMake](https://img.shields.io/badge/CMake-3.15+-green.svg)](https://cmake.org/)
+[![GCC](https://img.shields.io/badge/GCC-10+-green.svg)](https://gcc.gnu.org/)
+[![CMake](https://img.shields.io/badge/CMake-3.20+-green.svg)](https://cmake.org/)
 [![Status](https://img.shields.io/badge/status-active-success.svg)]()
 
 **高性能 C++ 大语言模型推理引擎**
 
-[快速开始](#-快速开始) • [文档](#-文档) • [架构](#-架构) • [贡献](#-贡献)
+[快速开始](#-快速开始) • [文档](#-文档) • [架构](#-架构) • [部署](#-部署指南) • [贡献](#-贡献)
 
 </div>
 
@@ -17,23 +18,26 @@
 
 ## 📖 项目简介
 
-cLLM 是一个基于 C++17 开发的高性能大语言模型推理引擎，从 Python 版本重构而来，专注于：
+cLLM 是一个基于 C++17 开发的高性能大语言模型推理引擎，专注于生产环境部署：
 
 - 🚀 **高性能**: 推理速度 20+ tokens/s，比 Python 版本提升 3-5 倍
 - 💾 **低内存**: 优化的内存管理和 KV 缓存策略
 - 🔄 **高并发**: 基于原生异步 HTTP 服务器，支持大规模并发请求
 - 🎯 **生产就绪**: 完整的 HTTP API、动态批处理、流式输出
+- 🖥️ **多后端**: 支持 llama.cpp (GGUF)、Kylin (SafeTensors)、LibTorch
 
 ---
 
 ## ✨ 核心特性
 
 ### 推理能力
-- ✅ LibTorch 后端（PyTorch C++ API）
-- ✅ HuggingFace Tokenizers 支持
-- ✅ 多种采样策略（Temperature, Top-K, Top-P, Repetition Penalty）
+- ✅ **llama.cpp 后端**（推荐）- GGUF 模型，Metal/CUDA 加速
+- ✅ **Kylin 后端** - 自研引擎，支持 HuggingFace SafeTensors
+- ✅ **LibTorch 后端** - PyTorch C++ API，TorchScript 模型
+- ✅ 多种采样策略（Temperature, Top-K, Top-P）
 - ✅ KV Cache 优化
 - ✅ 动态批处理（Dynamic Batching）
+- ✅ 真流式输出（TTFB < 0.1s）
 
 ### 服务能力
 - ✅ RESTful HTTP API
@@ -41,12 +45,14 @@ cLLM 是一个基于 C++17 开发的高性能大语言模型推理引擎，从 P
 - ✅ 健康检查端点
 - ✅ 请求队列管理
 - ✅ 异步处理框架
+- ✅ 模型热加载
 
-### 开发体验
-- ✅ 模块化设计，易于扩展
-- ✅ 完善的单元测试
-- ✅ 详细的文档系统
-- ✅ CodeBuddy AI 辅助开发
+### 部署支持
+- ✅ CentOS 7/8 一键部署脚本
+- ✅ Ubuntu/Debian 支持
+- ✅ macOS 开发环境
+- ✅ Docker 容器化
+- ✅ systemd 服务管理
 
 ---
 
@@ -54,28 +60,38 @@ cLLM 是一个基于 C++17 开发的高性能大语言模型推理引擎，从 P
 
 ### 前置条件
 
-- C++17 或更高版本编译器（GCC 7+, Clang 5+）
-- CMake 3.15+
-- LibTorch 1.9+
-- 其他依赖：Eigen3, nlohmann-json, spdlog
+| 组件 | 最低版本 | 推荐版本 | 说明 |
+|------|----------|----------|------|
+| C++ 标准 | C++17 | C++17 | 语言标准，必需支持 |
+| GCC | 10.0 | 10+ | CentOS 7 已验证可用 |
+| Clang | 12.0 | 14+ | macOS 推荐 |
+| CMake | 3.20 | 3.28+ | 必需 |
+| Python | 3.8 | 3.10+ | 用于构建工具 |
+
+**注意**：
+- **C++17** 是语言标准要求，需要编译器支持（GCC 7+ 已支持，但本项目采用GCC 10+已经编译成功 ）
+- **CentOS 7** 用户请使用 `devtoolset-10` 或更高版本（部署脚本会自动安装）
+- **macOS** 用户请使用 Xcode 12+ 或 Homebrew 安装的 Clang
+- CMake 3.20+ 是必需的，用于支持现代 CMake 特性
+
+**依赖库**：nlohmann-json, yaml-cpp, spdlog, sentencepiece
 
 ### 安装
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/YOUR_USERNAME/cLLM.git
+git clone https://github.com/xdongp/cLLM.git
 cd cLLM
 
 # 2. 安装依赖 (macOS)
-brew install cmake libtorch eigen nlohmann-json spdlog
+brew install cmake nlohmann-json yaml-cpp spdlog
 
 # 或 (Ubuntu)
-sudo apt-get install cmake libtorch-dev libeigen3-dev \
-    nlohmann-json3-dev libspdlog-dev
+sudo apt-get install cmake nlohmann-json3-dev libyaml-cpp-dev libspdlog-dev
 
 # 3. 编译项目
 mkdir build && cd build
-cmake ..
+cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 
 # 4. 运行测试
@@ -86,7 +102,7 @@ ctest --output-on-failure
 
 ```bash
 # 启动 HTTP 服务器
-./bin/cllm_server --config ../config/default.yaml
+./bin/cllm_server --config ../config/config_llama_cpp_cpu.yaml
 
 # 测试健康检查
 curl http://localhost:8080/health
@@ -101,7 +117,70 @@ curl -X POST http://localhost:8080/generate \
 
 ---
 
-## 📚 文档
+## �️ 部署指南
+
+### CentOS 7 生产部署（推荐）
+
+我们提供完整的一键部署脚本，支持 x86_64 和 ARM64 架构：
+
+```bash
+# 1. 下载部署脚本
+wget https://raw.githubusercontent.com/xdongp/cLLM/main/scripts/deploy_centos7.sh
+chmod +x deploy_centos7.sh
+
+# 2. CPU 模式部署
+sudo ./deploy_centos7.sh
+
+# 3. GPU 模式部署（需要 CUDA）
+sudo ./deploy_centos7.sh --gpu
+
+# 4. 本地源码部署
+sudo ./deploy_centos7.sh --local
+```
+
+**部署脚本功能**：
+- 自动安装 GCC 10/11、CMake 3.28+、Python 3.12
+- 安装所有依赖库（OpenBLAS、nlohmann-json、yaml-cpp、spdlog）
+- 编译 llama.cpp 和 cLLM
+- 创建 systemd 服务
+- 配置日志轮转
+
+### 部署选项
+
+| 选项 | 说明 |
+|------|------|
+| `--gpu` | 启用 GPU 模式（需要 CUDA） |
+| `--local` | 使用当前目录的源码 |
+| `--skip-deps` | 跳过依赖安装 |
+
+### 部署后配置
+
+```bash
+# 编辑配置文件
+sudo vim /opt/cllm/config/config_llama_cpp_cpu.yaml
+
+# 修改模型路径
+model:
+  path: "/opt/models/your-model.gguf"
+
+# 启动服务
+sudo systemctl start cllm
+sudo systemctl enable cllm
+
+# 查看状态
+sudo systemctl status cllm
+curl http://localhost:8080/health
+```
+
+### 其他部署方式
+
+- **CentOS 7 + GCC 11**: [scripts/deploy_centos7_gcc11.sh](scripts/deploy_centos7_gcc11.sh)
+- **Docker 部署**: 查看 [Docker 部署指南](docs/deployment/Docker部署指南.md)
+- **Linux 生产环境**: 查看 [Linux生产环境部署指南](docs/deployment/Linux生产环境部署指南.md)
+
+---
+
+## �📚 文档
 
 ### 入门指南
 - [快速开始](docs/guides/快速开始.md) - 5分钟上手
@@ -120,6 +199,11 @@ curl -X POST http://localhost:8080/generate \
 - [HTTP服务器模块设计](docs/modules/HTTP服务器模块设计.md) - Web 服务
 - [更多模块...](docs/modules/)
 
+### 部署文档
+- [Linux生产环境部署指南](docs/deployment/Linux生产环境部署指南.md)
+- [Docker部署指南](docs/deployment/Docker部署指南.md)
+- [性能优化指南](docs/deployment/性能优化指南.md)
+
 ### 开发规范
 - [C++编程规范](docs/specifications/C++编程规范_团队版.md) - 编码标准
 - [CodeBuddy使用指南](docs/guides/CodeBuddy使用指南.md) - AI 辅助开发
@@ -137,23 +221,34 @@ curl -X POST http://localhost:8080/generate \
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    HTTP Server Layer                     │
-│ (RESTful API Endpoints, Request Handling, Validation)    │
-└────────────────────┬────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────┐
+│     (RESTful API, Request Handling, Streaming)          │
+└────────────────────────┬────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────┐
 │                  Request Scheduler                       │
-│  (Request Management, Dynamic Batching, Execution)       │
-└────────────────────┬────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────┐
+│       (Dynamic Batching, Request Management)            │
+└────────────────────────┬────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────┐
 │                 Model Executor                           │
-│  (Model Loading, Inference, Quantization, Optimization)  │
-└────────────────────┬────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────┐
-│              Core Components Layer                       │
-│ Tokenizer | Sampler | KV Cache | Memory Management       │
+│         (Inference, KV Cache, Sampling)                 │
+└────────────────────────┬────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────┐
+│              Inference Engine                            │
+│   ┌──────────┬──────────┬──────────┐                    │
+│   │llama.cpp │  Kylin   │LibTorch  │                    │
+│   │ (GGUF)   │(SafeT.)  │(TorchS.) │                    │
+│   └──────────┴──────────┴──────────┘                    │
 └─────────────────────────────────────────────────────────┘
+```
+
+### 数据流
+
+```
+HTTP Request → Handler → Scheduler → BatchProcessor → ModelExecutor → InferenceEngine
+      ↑                                                                      │
+      └──────────────────── Streaming Response ←─────────────────────────────┘
 ```
 
 ### 核心模块
@@ -167,6 +262,14 @@ curl -X POST http://localhost:8080/generate \
 | **Sampler** | Token 采样策略 | `src/sampler/` |
 | **KV Cache** | 键值缓存管理 | `src/kv_cache/` |
 
+### 多后端架构
+
+| 后端 | 模型格式 | GPU 加速 | 适用场景 |
+|------|---------|---------|---------|
+| **llama.cpp** | GGUF | Metal/CUDA | 生产环境，量化模型 |
+| **Kylin** | SafeTensors | CPU/Metal | HuggingFace 模型 |
+| **LibTorch** | TorchScript | CUDA | PyTorch 模型 |
+
 **详细架构**: 查看 [cLLM详细设计](docs/architecture/cLLM详细设计.md)
 
 ---
@@ -175,15 +278,21 @@ curl -X POST http://localhost:8080/generate \
 
 ### HTTP 端点
 
-#### 1. 健康检查
-```bash
-curl http://localhost:18080/health
-```
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| GET | `/` | API 发现 |
+| GET | `/health` | 健康检查 |
+| POST | `/generate` | 文本生成（非流式） |
+| POST | `/generate_stream` | 文本生成（流式） |
+| POST | `/encode` | 文本编码 |
+| POST | `/benchmark` | 性能测试 |
+| GET | `/model/info` | 模型信息 |
 
-#### 2. 文本生成
+### 文本生成示例
+
 ```bash
-# 基本生成测试
-curl -X POST http://localhost:18080/generate \
+# 基本生成
+curl -X POST http://localhost:8080/generate \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "hello",
@@ -192,8 +301,8 @@ curl -X POST http://localhost:18080/generate \
     "top_p": 0.9
   }'
 
-# 中文生成测试
-curl -X POST http://localhost:18080/generate \
+# 中文生成
+curl -X POST http://localhost:8080/generate \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "你好",
@@ -201,52 +310,13 @@ curl -X POST http://localhost:18080/generate \
     "temperature": 0.7
   }'
 
-# 短文本生成（快速测试）
-curl -X POST http://localhost:18080/generate \
+# 流式生成
+curl -X POST http://localhost:8080/generate_stream \
   -H "Content-Type: application/json" \
   -d '{
-    "prompt": "hello",
-    "max_tokens": 10,
-    "temperature": 0.7
-  }'
-
-# 带响应时间测量的生成测试
-time curl -X POST http://localhost:18080/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "hello",
-    "max_tokens": 50,
-    "temperature": 0.7,
-    "top_p": 0.9
-  }'
-```
-
-#### 3. 流式生成
-```bash
-POST /v1/generate/stream
-Content-Type: application/json
-
-{
-  "prompt": "讲一个故事",
-  "max_tokens": 200,
-  "stream": true
-}
-```
-
-#### 4. Token 编码
-```bash
-# 文本编码测试
-curl -X POST http://localhost:18080/encode \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "hello world"
-  }'
-
-# 中文编码测试
-curl -X POST http://localhost:18080/encode \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "你好世界"
+    "prompt": "讲一个故事",
+    "max_tokens": 200,
+    "stream": true
   }'
 ```
 
@@ -273,7 +343,15 @@ cLLM/
 ├── examples/               # 示例代码
 ├── docs/                   # 文档
 ├── config/                 # 配置文件
-└── scripts/                # 工具脚本
+│   ├── config_llama_cpp_cpu.yaml
+│   ├── config_llama_cpp_gpu.yaml
+│   ├── config_kylin_cpu.yaml
+│   └── config_kylin_gpu.yaml
+├── scripts/                # 工具脚本
+│   ├── deploy_centos7.sh
+│   └── deploy_centos7_gcc11.sh
+└── third_party/            # 第三方库
+    └── llama.cpp/         # llama.cpp 源码
 ```
 
 ### 添加新功能
@@ -334,22 +412,24 @@ ctest --output-on-failure
 ./bin/integrated_test
 ```
 
-### 测试覆盖率
+### 基准测试
 
 ```bash
-# 生成覆盖率报告
-cmake -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON ..
-make
-make coverage
+# 使用内置 benchmark 端点
+curl -X POST http://localhost:8080/benchmark \
+  -H "Content-Type: application/json" \
+  -d '{
+    "requests": 100,
+    "concurrency": 10,
+    "max_tokens": 50
+  }'
 ```
-
-**测试文档**: 查看 [测试指南](docs/tests/)
 
 ---
 
 ## 📊 性能
 
-### 基准测试
+### 基准测试结果
 
 | 指标 | Python 版本 | C++ 版本 | 提升 |
 |------|------------|----------|------|
@@ -362,9 +442,31 @@ make coverage
 
 - ✅ KV Cache 复用
 - ✅ 动态批处理（Batch Size: 1-32）
-- ✅ 异步 I/O（原生 HTTP 服务器）
+- ✅ 异步 I/O（基于 epoll/kqueue）
 - ✅ 零拷贝内存管理
-- ✅ LibTorch JIT 优化
+- ✅ GGUF 量化支持（Q4_K_M、Q5_K_M）
+
+---
+
+## 📋 技术栈
+
+### 核心依赖
+
+| 库 | 版本 | 用途 |
+|----|------|------|
+| **llama.cpp** | latest | GGUF 模型推理 |
+| **nlohmann-json** | 3.11+ | JSON 处理 |
+| **yaml-cpp** | 0.8+ | YAML 配置 |
+| **spdlog** | 1.12+ | 日志系统 |
+| **OpenBLAS** | 0.3+ | CPU 加速（可选） |
+
+### 开发工具
+
+- **构建**: CMake 3.15+
+- **测试**: Google Test
+- **CI/CD**: GitHub Actions
+- **文档**: Markdown
+- **代码质量**: clang-format, clang-tidy
 
 ---
 
@@ -398,30 +500,6 @@ chore: 构建/工具链更新
 
 ---
 
-## 📋 技术栈
-
-### 核心依赖
-
-| 库 | 版本 | 用途 |
-|----|------|------|
-| **LibTorch** | 1.9+ | 深度学习推理 |
-| **原生 HTTP** | - | HTTP 服务器 (基于 epoll/kqueue) |
-| **Eigen3** | 3.3+ | 线性代数 |
-| **nlohmann-json** | 3.2+ | JSON 处理 |
-| **spdlog** | 1.8+ | 日志系统 |
-| **Asio** | 1.18+ | 异步 I/O |
-| **yaml-cpp** | 0.6+ | YAML 配置 |
-
-### 开发工具
-
-- **构建**: CMake 3.15+
-- **测试**: Google Test + Google Mock
-- **CI/CD**: GitHub Actions
-- **文档**: Markdown
-- **代码质量**: clang-format, clang-tidy
-
----
-
 ## 📜 许可证
 
 本项目采用 [MIT License](LICENSE) 开源协议。
@@ -437,32 +515,5 @@ chore: 构建/工具链更新
 ## 🔗 相关链接
 
 - **文档**: [docs/](docs/)
-- **问题反馈**: [Issues](https://github.com/YOUR_USERNAME/cLLM/issues)
-- **讨论**: [Discussions](https://github.com/YOUR_USERNAME/cLLM/discussions)
-
----
-
-## 📞 联系方式
-
-- **Email**: xdongp@gmail.com
-- **GitHub**: [@xdongp](https://github.com/xdongp)
-
----
-
-## 🎉 致谢
-
-感谢以下开源项目：
-
-- [PyTorch](https://pytorch.org/) - 深度学习框架
-- [HuggingFace](https://huggingface.co/) - Tokenizers 库
-- [nlohmann-json](https://github.com/nlohmann/json) - JSON 库
-
----
-
-<div align="center">
-
-**⭐ 如果觉得有帮助，请给个 Star！**
-
-Made with ❤️ by cLLM Team
-
-</div>
+- **问题反馈**: [Issues](https://github.com/xdongp/cLLM/issues)
+- **部署脚本**: [scripts/](scripts/)
