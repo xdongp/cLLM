@@ -1,4 +1,4 @@
-.PHONY: all build build-debug clean rebuild test integration-test test-all test-tokenizer run start start-gpu start-cpu start-bg stop status tail-logs setup-env check-env help
+.PHONY: all build build-debug clean rebuild test integration-test test-all test-tokenizer run start start-gpu start-cpu start-bg stop status tail-logs setup-env check-env help package
 
 # 激活虚拟环境
 SHELL := /bin/bash
@@ -229,31 +229,155 @@ help:
 	@echo "cLLM Makefile Help"
 	@echo "========================================"
 	@echo "";
-	@echo "Build targets:"
-	@echo "  make build          - Build the project (Release mode)"
-	@echo "  make build-debug    - Build the project (Debug mode)"
-	@echo "  make clean          - Clean build files"
-	@echo "  make rebuild        - Rebuild the project"
+	@echo "Build targets:";
+	@echo "  make build          - Build the project (Release mode)";
+	@echo "  make build-debug    - Build the project (Debug mode)";
+	@echo "  make clean          - Clean build files";
+	@echo "  make rebuild        - Rebuild the project";
 	@echo "";
-	@echo "Server targets:"
-	@echo "  make start          - Start server (GPU mode)"
-	@echo "  make start-gpu      - Start server (GPU mode)"
-	@echo "  make start-cpu      - Start server (CPU mode)"
-	@echo "  make start-bg       - Start server in background"
-	@echo "  make stop           - Stop server"
-	@echo "  make status         - Check server status"
-	@echo "  make tail-logs      - View server logs"
+	@echo "Server targets:";
+	@echo "  make start          - Start server (GPU mode)";
+	@echo "  make start-gpu      - Start server (GPU mode)";
+	@echo "  make start-cpu      - Start server (CPU mode)";
+	@echo "  make start-bg       - Start server in background";
+	@echo "  make stop           - Stop server";
+	@echo "  make status         - Check server status";
+	@echo "  make tail-logs      - View server logs";
 	@echo "";
-	@echo "Test targets:"
-	@echo "  make test           - Run unit tests"
-	@echo "  make integration-test - Run integration tests"
-	@echo "  make test-all       - Run all tests"
-	@echo "  make test-tokenizer - Run tokenizer tests"
+	@echo "Test targets:";
+	@echo "  make test           - Run unit tests";
+	@echo "  make integration-test - Run integration tests";
+	@echo "  make test-all       - Run all tests";
+	@echo "  make test-tokenizer - Run tokenizer tests";
 	@echo "";
-	@echo "Environment targets:"
-	@echo "  make setup-env      - Setup development environment"
-	@echo "  make check-env      - Check build environment"
+	@echo "Environment targets:";
+	@echo "  make setup-env      - Setup development environment";
+	@echo "  make check-env      - Check build environment";
 	@echo "";
-	@echo "Other targets:"
-	@echo "  make help           - Show this help message"
+	@echo "Install targets:";
+	@echo "  make install        - Install to system (prefix=/usr/local)";
+	@echo "  make uninstall      - Remove from system";
 	@echo "";
+	@echo "Other targets:";
+	@echo "  make help           - Show this help message";
+	@echo "  make package        - Package source code to package/ directory";
+	@echo "";
+
+# ==============================================================================
+# 打包源码
+# ==============================================================================
+
+# 打包版本和目录
+VERSION = $(shell date +%Y%m%d_%H%M%S)
+PACKAGE_NAME = cllm-$(VERSION).tar.gz
+PACKAGE_DIR = package
+
+package:
+	@echo "========================================"
+	@echo "Packaging cLLM source code"
+	@echo "========================================"
+	@echo ""
+	@mkdir -p $(PACKAGE_DIR)
+	@rm -rf /tmp/cllm_package
+	@mkdir -p /tmp/cllm_package/cLLM
+	@echo "Copying source files..."
+	@cp CMakeLists.txt /tmp/cllm_package/cLLM/
+	@cp -r include /tmp/cllm_package/cLLM/
+	@cp -r src /tmp/cllm_package/cLLM/
+	@cp -r config /tmp/cllm_package/cLLM/
+	@cp -r scripts /tmp/cllm_package/cLLM/
+	@cp Makefile /tmp/cllm_package/cLLM/
+	@cp README.md /tmp/cllm_package/cLLM/ 2>/dev/null || true
+	@echo "Copying third_party..."
+	@mkdir -p /tmp/cllm_package/cLLM/third_party
+	@if [ -d third_party/llama.cpp ]; then \
+		rsync -a --exclude='build' --exclude='.git' third_party/llama.cpp /tmp/cllm_package/cLLM/third_party/; \
+	fi
+	@if [ -f third_party/BS_thread_pool.hpp ]; then \
+		cp third_party/BS_thread_pool.hpp /tmp/cllm_package/cLLM/third_party/; \
+	fi
+	@echo "Note: googletest and eigen not included (not needed for production)"
+	@echo "Creating tarball..."
+	@cd /tmp/cllm_package && tar -czf $(PACKAGE_NAME) cLLM
+	@mv /tmp/cllm_package/$(PACKAGE_NAME) $(PACKAGE_DIR)/
+	@rm -rf /tmp/cllm_package
+	@echo ""
+	@echo "========================================"
+	@echo "Package created: $(PACKAGE_DIR)/$(PACKAGE_NAME)"
+	@echo "Size: $$(du -h $(PACKAGE_DIR)/$(PACKAGE_NAME) | cut -f1)"
+	@echo "========================================"
+
+# ==============================================================================
+# 安装到系统
+# ==============================================================================
+
+# 安装配置
+INSTALL_PREFIX ?= /usr/local
+INSTALL_BINDIR ?= $(INSTALL_PREFIX)/bin
+INSTALL_SYSCONFDIR ?= $(INSTALL_PREFIX)/etc/cllm
+INSTALL_DATADIR ?= $(INSTALL_PREFIX)/share/cllm
+INSTALL_LOGDIR ?= /var/log/cllm
+
+install: build
+	@echo "========================================"
+	@echo "Installing cLLM to system"
+	@echo "========================================"
+	@echo ""
+	@echo "Installation prefix: $(INSTALL_PREFIX)"
+	@echo "Binary directory: $(INSTALL_BINDIR)"
+	@echo "Config directory: $(INSTALL_SYSCONFDIR)"
+	@echo ""
+	
+	@echo "Creating directories..."
+	@mkdir -p $(INSTALL_BINDIR)
+	@mkdir -p $(INSTALL_SYSCONFDIR)
+	@mkdir -p $(INSTALL_DATADIR)
+	@mkdir -p $(INSTALL_LOGDIR) 2>/dev/null || true
+	@mkdir -p $(BUILD_DIR)/lib 2>/dev/null || true
+	
+	@echo "Installing binary..."
+	@cp $(BUILD_DIR)/bin/cllm_server $(INSTALL_BINDIR)/
+	@chmod +x $(INSTALL_BINDIR)/cllm_server
+	
+	@echo "Installing libraries..."
+	@find $(BUILD_DIR) -name "*.so*" -exec cp {} $(BUILD_DIR)/lib/ \; 2>/dev/null || true
+	@cp -r $(BUILD_DIR)/lib/* $(INSTALL_PREFIX)/lib/ 2>/dev/null || true
+	@ldconfig 2>/dev/null || true
+	
+	@echo "Installing configuration files..."
+	@cp config/*.yaml $(INSTALL_SYSCONFDIR)/
+	@chmod 644 $(INSTALL_SYSCONFDIR)/*.yaml
+	
+	@echo ""
+	@echo "========================================"
+	@echo "Installation completed!"
+	@echo "========================================"
+	@echo ""
+	@echo "Binary: $(INSTALL_BINDIR)/cllm_server"
+	@echo "Config: $(INSTALL_SYSCONFDIR)/"
+	@echo ""
+	@echo "To start the server:"
+	@echo "  $(INSTALL_BINDIR)/cllm_server --config $(INSTALL_SYSCONFDIR)/config_llama_cpp_cpu.yaml"
+	@echo ""
+	@echo "Or copy a config file to /etc/cllm/config.yaml for default:"
+	@echo "  cp $(INSTALL_SYSCONFDIR)/config_llama_cpp_cpu.yaml /etc/cllm/config.yaml"
+	@echo ""
+
+uninstall:
+	@echo "========================================"
+	@echo "Uninstalling cLLM from system"
+	@echo "========================================"
+	@echo ""
+	@echo "Removing binary..."
+	@rm -f $(INSTALL_BINDIR)/cllm_server
+	@echo "Removing libraries..."
+	@rm -f $(INSTALL_PREFIX)/lib/libcllm_* 2>/dev/null || true
+	@rm -f $(INSTALL_PREFIX)/lib/libggml_* 2>/dev/null || true
+	@rm -f $(INSTALL_PREFIX)/lib/libllama.* 2>/dev/null || true
+	@echo "Removing configuration files..."
+	@rm -rf $(INSTALL_SYSCONFDIR)/
+	@echo ""
+	@echo "Uninstallation completed!"
+	@echo ""
+
+help:

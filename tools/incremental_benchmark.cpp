@@ -1156,7 +1156,7 @@ static void run_stage_test(const BenchParams& params, int stage) {
         std::cout << "Stage 7 (ModelExecutor + BatchProcessor + SchedulerBatchProcessor + Scheduler + GenerateEndpoint + HttpHandler): " << throughput << " tokens/sec" << std::endl;
         
     } else if (stage == 8) {
-        // Stage 8: ModelExecutor + BatchProcessor + SchedulerBatchProcessor + Scheduler + GenerateEndpoint + HttpHandler + DrogonServer
+        // Stage 8: ModelExecutor + BatchProcessor + SchedulerBatchProcessor + Scheduler + GenerateEndpoint + HttpHandler + HttpServer
         // 🔥 优化：对于单请求场景，直接使用BatchProcessor（类似Stage 4-7），避免上层组件的复杂逻辑
         ModelExecutor executor(params.model_path, "", true, false, "llama_cpp", &modelConfig);
         executor.loadModel();
@@ -1165,7 +1165,7 @@ static void run_stage_test(const BenchParams& params, int stage) {
         TokenizerManager tokenizerManager("", &executor);
         ITokenizer* tokenizer = tokenizerManager.getTokenizer();
         
-        // 创建Scheduler和GenerateEndpoint（用于HttpHandler和DrogonServer）
+        // 创建Scheduler和GenerateEndpoint（用于HttpHandler和HttpServer）
         Scheduler scheduler(&executor, 8, 2048);
         scheduler.start();
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1176,8 +1176,8 @@ static void run_stage_test(const BenchParams& params, int stage) {
             return generateEndpoint.handle(request);
         });
         
-        // 注意：DrogonServer需要实际的HTTP服务器，在benchmark中我们模拟其行为
-        // 实际上DrogonServer::handleRequest()会调用HttpHandler::handleRequest()
+        // 注意：HttpServer需要实际的HTTP服务器，在benchmark中我们模拟其行为
+        // 实际上HttpServer会调用HttpHandler::handleRequest()
         
         std::mutex executorMutex;
         
@@ -1201,8 +1201,8 @@ static void run_stage_test(const BenchParams& params, int stage) {
                 std::vector<int> generatedTokens;
                 
                 // 🔥 关键优化：对于单请求场景，直接使用BatchProcessor（已优化，性能105+ t/s）
-                // 而不是使用DrogonServer + HttpHandler + GenerateEndpoint + Scheduler（会循环50次，性能只有50 t/s）
-                // 这样可以绕过DrogonServer和上层组件的循环开销，直接利用BatchProcessor的优化
+                // 而不是使用HttpServer + HttpHandler + GenerateEndpoint + Scheduler（会循环50次，性能只有50 t/s）
+                // 这样可以绕过HttpServer和上层组件的循环开销，直接利用BatchProcessor的优化
                 
                 // 处理 prompt
                 if (!promptTokens.empty()) {
@@ -1282,7 +1282,7 @@ static void run_stage_test(const BenchParams& params, int stage) {
         size_t totalGenTokens = totalTokens.load();
         throughput = totalTime > 0 ? (totalGenTokens / totalTime) : 0.0;
         
-        std::cout << "Stage 8 (ModelExecutor + BatchProcessor + SchedulerBatchProcessor + Scheduler + GenerateEndpoint + HttpHandler + DrogonServer): " << throughput << " tokens/sec" << std::endl;
+        std::cout << "Stage 8 (ModelExecutor + BatchProcessor + SchedulerBatchProcessor + Scheduler + GenerateEndpoint + HttpHandler + HttpServer): " << throughput << " tokens/sec" << std::endl;
         
     } else if (stage == 9) {
         // Stage 9: 完整HTTP请求处理流程（模拟真实HTTP请求）
@@ -1441,8 +1441,8 @@ static void run_stage_test(const BenchParams& params, int stage) {
             return encodeEndpoint.handle(request);
         });
         
-        // 初始化DrogonServer（但不实际启动HTTP服务器，避免端口冲突）
-        // DrogonServer::init("127.0.0.1", 8080, &httpHandler);
+        // 初始化HttpServer（但不实际启动HTTP服务器，避免端口冲突）
+        // HttpServer::init("127.0.0.1", 8080, &httpHandler);
         // 注意：在实际测试中，我们不启动HTTP服务器，而是直接使用BatchProcessor
         
         std::mutex executorMutex;

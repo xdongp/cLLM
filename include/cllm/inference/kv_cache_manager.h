@@ -15,6 +15,7 @@
 #include <list>
 #include <unordered_map>
 #include <mutex>
+#include <functional>
 #include <cstddef>
 #include <chrono>
 

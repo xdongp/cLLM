@@ -1,5 +1,5 @@
 #include <iostream>
-#include <cllm/http/drogon_server.h>
+#include <cllm/http/http_server.h>
 #include <cllm/http/handler.h>
 #include <cllm/http/health_endpoint.h>
 #include <thread>
@@ -149,8 +149,8 @@ int main() {
         return response;
     });
 
-    // 初始化并启动Drogon服务器
-    DrogonServer::init("0.0.0.0", 8080, &handler);
+    // 初始化并启动HTTP服务器
+    HttpServer::init("0.0.0.0", 8080, &handler);
     
     std::cout << "Server starting on 0.0.0.0:8080..." << std::endl;
     std::cout << "Available endpoints:" << std::endl;
@@ -160,7 +160,7 @@ int main() {
     std::cout << "  POST   /encode    - Text encoding" << std::endl;
     
     // 启动服务器
-    DrogonServer::start();
+    HttpServer::start();
     
     std::cout << "Server started successfully!" << std::endl;
     std::cout << "Press Ctrl+C to stop the server..." << std::endl;

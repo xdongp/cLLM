@@ -2,8 +2,11 @@
 
 本文档详细介绍如何在 Linux 生产环境（Ubuntu/CentOS）上部署 cLLM 服务，支持 **GPU 模式** 和 **纯 CPU 模式**。
 
-> **生产环境说明**：本指南仅涵盖 **GGUF 模型 + llama.cpp 后端** 的部署，这是当前推荐的生产配置。
-> 其他后端（Kylin、LibTorch）为实验性功能，暂不支持生产部署。
+> **生产环境说明**：
+> - 本指南仅涵盖 **GGUF 模型 + llama.cpp 后端** 的部署，这是唯一推荐的生产配置
+> - 使用 **GGUF 内置 Tokenizer**，无需额外的 tokenizer 文件
+> - 禁用 tokenizers-cpp 和 LibTorch，简化依赖和部署流程
+> - 其他后端（Kylin、LibTorch）为实验性功能，仅供开发测试
 
 ## 部署模式选择
 
@@ -59,7 +62,6 @@
 | CUDA | >= 11.8（推荐 12.x） | 必需 |
 | GCC | >= 9.0（推荐 11.x） | 必需 |
 | CMake | >= 3.18 | 必需 |
-| Rust | >= 1.70 | Tokenizer 方案 A 需要 |
 
 **CPU 模式**：
 | 组件 | 版本要求 | 说明 |
@@ -68,7 +70,6 @@
 | GCC | >= 9.0（推荐 11.x） | 必需 |
 | CMake | >= 3.18 | 必需 |
 | OpenBLAS | 最新版 | 推荐，加速矩阵运算 |
-| Rust | >= 1.70 | Tokenizer 方案 A 需要 |
 
 ### 1.3 GPU 显存要求（GPU 模式）
 
@@ -341,48 +342,7 @@ nvidia-smi --query-gpu=compute_cap --format=csv
 -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89"  # 兼容多种消费级 GPU
 ```
 
-### 4.3 编译 tokenizers-cpp（二选一）
-
-cLLM 支持两种 Tokenizer 方案，根据需求选择：
-
-| 方案 | 依赖 | Tokenizer 来源 | 推荐场景 |
-|------|------|----------------|----------|
-| **方案 A** | 需要编译 tokenizers-cpp | `tokenizer.json` 文件 | 推荐，更精确 |
-| **方案 B** | 无额外依赖 | GGUF 模型内置 | 简化部署 |
-
-#### 方案 A：使用 tokenizers-cpp（推荐）
-
-```bash
-cd third_party/tokenizers-cpp
-
-# 安装 Rust（如果没有）
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-# 编译
-mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-
-cd ../../..
-```
-
-选择此方案后，需要下载 `tokenizer.json`（见第 5 节）。
-
-#### 方案 B：使用 GGUF 内置 Tokenizer（简化）
-
-跳过 tokenizers-cpp 编译，直接使用 GGUF 模型内置的 tokenizer。
-
-编译 cLLM 时禁用 tokenizers-cpp：
-```bash
-cmake .. -DUSE_TOKENIZERS_CPP=OFF -DCMAKE_BUILD_TYPE=Release
-```
-
-选择此方案后，**不需要下载** `tokenizer.json`，模型目录只需 GGUF 文件。
-
-> **注意**：方案 B 的 tokenizer 精度略低于方案 A，但对于大多数场景足够使用。
-
-### 4.4 编译 cLLM
+### 4.3 编译 cLLM
 
 #### GPU 模式
 
@@ -391,7 +351,8 @@ mkdir -p build && cd build
 
 cmake .. \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89"
+    -DUSE_TOKENIZERS_CPP=OFF \
+    -DUSE_LIBTORCH=OFF
 
 make -j$(nproc)
 ./bin/cllm_server --help
@@ -403,13 +364,24 @@ make -j$(nproc)
 mkdir -p build && cd build
 
 cmake .. \
-    -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_BUILD_TYPE=Release \
+    -DUSE_TOKENIZERS_CPP=OFF \
+    -DUSE_LIBTORCH=OFF
 
 make -j$(nproc)
 ./bin/cllm_server --help
 ```
 
-> **注意**：cLLM 本身不需要 CUDA，CUDA 依赖在 llama.cpp 编译时处理。
+**编译选项说明**：
+
+| 选项 | 值 | 说明 |
+|------|-----|------|
+| `USE_TOKENIZERS_CPP` | OFF | 禁用 tokenizers-cpp，使用 GGUF 内置 tokenizer |
+| `USE_LIBTORCH` | OFF | 禁用 LibTorch 后端（实验性功能） |
+
+> **注意**：
+> - cLLM 本身不需要 CUDA，CUDA 依赖在 llama.cpp 编译时处理
+> - 生产环境只使用 llama.cpp 后端，Kylin 和 LibTorch 后端仅供开发测试
 
 ---
 
@@ -434,33 +406,16 @@ wget -P /opt/models/qwen2.5-7b \
     https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf
 ```
 
-### 5.2 下载 Tokenizer 文件（方案 A 需要）
+### 5.2 模型文件结构
 
-> **重要**：仅当使用 **方案 A（tokenizers-cpp）** 时需要下载。方案 B 跳过此步骤。
+生产环境使用 GGUF 内置 Tokenizer，模型目录只需 GGUF 文件：
 
-```bash
-# 下载 tokenizer.json（HuggingFace tokenizers 需要）
-huggingface-cli download \
-    Qwen/Qwen2.5-7B-Instruct \
-    tokenizer.json tokenizer_config.json \
-    --local-dir /opt/models/qwen2.5-7b
-```
-
-### 5.3 模型文件结构
-
-**方案 A（tokenizers-cpp）**：
-```
-/opt/models/qwen2.5-7b/
-├── qwen2.5-7b-instruct-q4_k_m.gguf    # GGUF 模型文件（必需）
-├── tokenizer.json                      # HuggingFace tokenizer（必需）
-└── tokenizer_config.json               # tokenizer 配置（可选）
-```
-
-**方案 B（GGUF 内置）**：
 ```
 /opt/models/qwen2.5-7b/
 └── qwen2.5-7b-instruct-q4_k_m.gguf    # GGUF 模型文件（仅需此文件）
 ```
+
+> **说明**：GGUF 模型已内置完整的 tokenizer 信息，无需额外下载 `tokenizer.json`。
 
 ---
 
@@ -474,6 +429,8 @@ huggingface-cli download \
 
 ```yaml
 # cLLM 生产环境配置 - GPU 模式
+# 后端: llama.cpp (GGUF)
+# Tokenizer: GGUF 内置
 
 server:
   host: "0.0.0.0"
@@ -487,7 +444,7 @@ model:
   default_max_tokens: 2048
 
 backend:
-  type: "llama_cpp"
+  type: "llama_cpp"         # 🔥 生产环境唯一推荐后端
   
   llama_cpp:
     n_batch: 2048          # GPU 可以设置更大
@@ -499,9 +456,9 @@ backend:
     use_mlock: true
     flash_attn: true       # Flash Attention（GPU）
 
-tokenizer:
-  type: "huggingface"
-  path: "/opt/models/qwen2.5-7b/tokenizer.json"
+# Tokenizer 使用 GGUF 内置，无需额外配置
+# tokenizer:
+#   type: "gguf"           # 自动从 GGUF 模型读取
 
 scheduler:
   max_batch_size: 8
@@ -523,6 +480,8 @@ logging:
 
 ```yaml
 # cLLM 生产环境配置 - CPU 模式
+# 后端: llama.cpp (GGUF)
+# Tokenizer: GGUF 内置
 
 server:
   host: "0.0.0.0"
@@ -536,7 +495,7 @@ model:
   default_max_tokens: 1024
 
 backend:
-  type: "llama_cpp"
+  type: "llama_cpp"         # 🔥 生产环境唯一推荐后端
   
   llama_cpp:
     n_batch: 512           # CPU 模式建议较小值
@@ -547,9 +506,9 @@ backend:
     use_mmap: true
     use_mlock: false       # CPU 模式可关闭
 
-tokenizer:
-  type: "huggingface"
-  path: "/opt/models/qwen2.5-3b/tokenizer.json"
+# Tokenizer 使用 GGUF 内置，无需额外配置
+# tokenizer:
+#   type: "gguf"           # 自动从 GGUF 模型读取
 
 scheduler:
   max_batch_size: 2        # CPU 模式建议减小
@@ -1013,6 +972,47 @@ echo "4. 启动服务: systemctl start cllm"
 
 ---
 
-*文档版本: 1.1*  
-*最后更新: 2026-02-03*  
-*支持后端: llama.cpp (GGUF)*
+## 附录 C: 生产环境架构说明
+
+### 推荐配置
+
+| 组件 | 生产环境配置 | 说明 |
+|------|-------------|------|
+| **Backend** | llama.cpp | 唯一推荐的生产后端 |
+| **Tokenizer** | GGUF 内置 | 无需额外依赖 |
+| **模型格式** | GGUF (量化) | 推荐 Q4_K_M 或 Q4_K_S |
+
+### 禁用的组件
+
+| 组件 | CMake 选项 | 说明 |
+|------|-----------|------|
+| tokenizers-cpp | `-DUSE_TOKENIZERS_CPP=OFF` | 使用 GGUF 内置 tokenizer |
+| LibTorch | `-DUSE_LIBTORCH=OFF` | 实验性功能，生产不使用 |
+| Kylin Backend | 默认不启用 | 实验性自研后端 |
+
+### 最小依赖清单
+
+```bash
+# 必需依赖
+- GCC >= 9.0
+- CMake >= 3.18
+- nlohmann-json
+- yaml-cpp
+- spdlog
+- SentencePiece (llama.cpp 依赖)
+
+# GPU 模式额外依赖
+- NVIDIA 驱动 >= 525.x
+- CUDA >= 11.8
+
+# 可选依赖（加速）
+- OpenBLAS (CPU BLAS 加速)
+- OpenMP (并行计算)
+```
+
+---
+
+*文档版本: 2.0*  
+*最后更新: 2026-02-04*  
+*支持后端: llama.cpp (GGUF)*  
+*Tokenizer: GGUF 内置*

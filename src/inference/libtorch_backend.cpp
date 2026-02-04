@@ -9,7 +9,11 @@
  * - 支持 CPU/GPU 自动选择
  * - 内置量化支持（int8/fp16）
  * - MKL-DNN/oneDNN 优化
+ * 
+ * 注意：此文件仅在 CLLM_USE_LIBTORCH 定义时编译
  */
+
+#ifdef CLLM_USE_LIBTORCH
 
 #include "cllm/inference/libtorch_backend.h"
 #include "cllm/common/logger.h"
@@ -567,3 +571,5 @@ bool LibTorchBackend::loadFromModelWeights(const model::ModelWeights& weights) {
 
 } // namespace inference
 } // namespace cllm
+
+#endif // CLLM_USE_LIBTORCH

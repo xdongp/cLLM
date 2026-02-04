@@ -21,7 +21,7 @@ cLLM 是一个基于 C++17 开发的高性能大语言模型推理引擎，从 P
 
 - 🚀 **高性能**: 推理速度 20+ tokens/s，比 Python 版本提升 3-5 倍
 - 💾 **低内存**: 优化的内存管理和 KV 缓存策略
-- 🔄 **高并发**: 基于 Drogon 异步框架，支持大规模并发请求
+- 🔄 **高并发**: 基于原生异步 HTTP 服务器，支持大规模并发请求
 - 🎯 **生产就绪**: 完整的 HTTP API、动态批处理、流式输出
 
 ---
@@ -57,7 +57,7 @@ cLLM 是一个基于 C++17 开发的高性能大语言模型推理引擎，从 P
 - C++17 或更高版本编译器（GCC 7+, Clang 5+）
 - CMake 3.15+
 - LibTorch 1.9+
-- 其他依赖：Drogon, Eigen3, nlohmann-json, spdlog
+- 其他依赖：Eigen3, nlohmann-json, spdlog
 
 ### 安装
 
@@ -67,11 +67,11 @@ git clone https://github.com/YOUR_USERNAME/cLLM.git
 cd cLLM
 
 # 2. 安装依赖 (macOS)
-brew install cmake libtorch eigen nlohmann-json spdlog drogon
+brew install cmake libtorch eigen nlohmann-json spdlog
 
 # 或 (Ubuntu)
 sudo apt-get install cmake libtorch-dev libeigen3-dev \
-    nlohmann-json3-dev libspdlog-dev libdrogon-dev
+    nlohmann-json3-dev libspdlog-dev
 
 # 3. 编译项目
 mkdir build && cd build
@@ -362,7 +362,7 @@ make coverage
 
 - ✅ KV Cache 复用
 - ✅ 动态批处理（Batch Size: 1-32）
-- ✅ 异步 I/O（Drogon + Asio）
+- ✅ 异步 I/O（原生 HTTP 服务器）
 - ✅ 零拷贝内存管理
 - ✅ LibTorch JIT 优化
 
@@ -405,7 +405,7 @@ chore: 构建/工具链更新
 | 库 | 版本 | 用途 |
 |----|------|------|
 | **LibTorch** | 1.9+ | 深度学习推理 |
-| **Drogon** | 1.7+ | HTTP 服务器 |
+| **原生 HTTP** | - | HTTP 服务器 (基于 epoll/kqueue) |
 | **Eigen3** | 3.3+ | 线性代数 |
 | **nlohmann-json** | 3.2+ | JSON 处理 |
 | **spdlog** | 1.8+ | 日志系统 |
@@ -454,7 +454,6 @@ chore: 构建/工具链更新
 感谢以下开源项目：
 
 - [PyTorch](https://pytorch.org/) - 深度学习框架
-- [Drogon](https://github.com/drogonframework/drogon) - C++ Web 框架
 - [HuggingFace](https://huggingface.co/) - Tokenizers 库
 - [nlohmann-json](https://github.com/nlohmann/json) - JSON 库
 

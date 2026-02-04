@@ -17,7 +17,7 @@
 #include <atomic>
 #include <iostream>
 
-#include "cllm/http/drogon_server.h"
+#include "cllm/http/http_server.h"
 #include "cllm/http/handler.h"
 #include "cllm/http/health_endpoint.h"
 #include "cllm/http/generate_endpoint.h"
@@ -170,11 +170,11 @@ protected:
                 });
                 
                 // 初始化并启动服务器
-                DrogonServer::init("127.0.0.1", port_, httpHandler_.get());
+                HttpServer::init("127.0.0.1", port_, httpHandler_.get());
                 
                 // 在单独的线程中启动服务器
                 serverThread_ = std::thread([]() {
-                    DrogonServer::start();
+                    HttpServer::start();
                 });
                 
                 // 等待服务器启动
@@ -201,7 +201,7 @@ protected:
         }
         
         // 停止服务器
-        DrogonServer::stop();
+        HttpServer::stop();
         
         // 等待服务器线程结束
         if (serverThread_.joinable()) {

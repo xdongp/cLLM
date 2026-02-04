@@ -118,10 +118,6 @@ dependencies:
     - name: sentencepiece
       purpose: SentencePiece分词器
       
-    - name: Drogon
-      purpose: HTTP服务器框架
-      cmake_option: USE_DROGON
-      
 coding_standards:
   # 命名规范
   naming:

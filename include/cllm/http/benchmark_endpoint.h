@@ -8,6 +8,7 @@
 #ifndef CLLM_BENCHMARK_ENDPOINT_H
 #define CLLM_BENCHMARK_ENDPOINT_H
 
+#include <memory>
 #include "cllm/http/api_endpoint.h"
 #include "cllm/http/request.h"
 #include "cllm/http/response.h"

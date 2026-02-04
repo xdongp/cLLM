@@ -3,8 +3,12 @@
  * @brief LibTorch 推理后端实现（使用 PyTorch C++ API）
  * 
  * 参考文档：LibTorch后端设计.md
+ * 
+ * 注意：此后端需要编译时启用 USE_LIBTORCH 选项
  */
 #pragma once
+
+#ifdef CLLM_USE_LIBTORCH
 
 #include "cllm/inference/backend_interface.h"
 #include "cllm/kylin/core/tensor.h"
@@ -160,3 +164,5 @@ private:
 
 } // namespace inference
 } // namespace cllm
+
+#endif // CLLM_USE_LIBTORCH

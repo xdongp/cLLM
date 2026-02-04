@@ -1,9 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 project(cllm VERSION 1.0.0 LANGUAGES C CXX)
 
-# Find Drogon (temporarily commented out for testing)
-# find_package(Drogon REQUIRED)
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -17,11 +14,13 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_SOURCE_DIR}/third_party)
 include_directories(${CMAKE_SOURCE_DIR}/third_party/eigen)
+include_directories(/usr/include/eigen3)
 include_directories(${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include)
 include_directories(${CMAKE_SOURCE_DIR}/third_party/llama.cpp/include)
 
 option(BUILD_TESTS "Build tests" OFF)
 option(BUILD_EXAMPLES "Build examples" ON)
+option(USE_LIBTORCH "Enable LibTorch backend (experimental, requires PyTorch C++ API)" OFF)
 
 find_package(Threads REQUIRED)
 
@@ -63,12 +62,27 @@ endif()
 # Find spdlog
 find_package(spdlog REQUIRED)
 
-# Find LibTorch (PyTorch C++ API)
-set(TORCH_PATH "${CMAKE_SOURCE_DIR}/third_party/libtorch")
-list(APPEND CMAKE_PREFIX_PATH "${TORCH_PATH}")
-find_package(Torch REQUIRED)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
-message(STATUS "Found LibTorch: ${TORCH_LIBRARIES}")
+# Find LibTorch (PyTorch C++ API) - Optional
+if(USE_LIBTORCH)
+    set(TORCH_PATH "${CMAKE_SOURCE_DIR}/third_party/libtorch")
+    list(APPEND CMAKE_PREFIX_PATH "${TORCH_PATH}")
+    find_package(Torch QUIET)
+    if(Torch_FOUND)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
+        add_compile_definitions(CLLM_USE_LIBTORCH)
+        message(STATUS "✅ Found LibTorch: ${TORCH_LIBRARIES}")
+        set(LIBTORCH_FOUND TRUE)
+    else()
+        message(WARNING "⚠️  LibTorch not found, LibTorchBackend will not be available")
+        message(STATUS "   Download LibTorch from: https://pytorch.org/get-started/locally/")
+        message(STATUS "   Extract to: ${TORCH_PATH}")
+        set(LIBTORCH_FOUND FALSE)
+        set(USE_LIBTORCH OFF)
+    endif()
+else()
+    message(STATUS "ℹ️  LibTorch backend disabled (USE_LIBTORCH=OFF)")
+    set(LIBTORCH_FOUND FALSE)
+endif()
 
 # Find llama.cpp
 set(LLAMA_CPP_BUILD_DIR "${CMAKE_SOURCE_DIR}/third_party/llama.cpp/build")
@@ -191,11 +205,7 @@ if(NOT SentencePiece_FOUND)
     endif()
 endif()
 
-find_package(Drogon REQUIRED)
-
-add_subdirectory(third_party)
-add_subdirectory(src/CTokenizer)
-
+# bs_thread_pool 在 third_party/CMakeLists.txt 中定义，但我们在生产环境跳过
 # CTokenizer sources are now available via CTOKENIZER_SOURCES variable
 
 add_library(cllm_core
@@ -258,7 +268,6 @@ add_library(cllm_core
     src/inference/inference_engine.cpp
     src/inference/backend_factory.cpp
     src/inference/kylin_backend.cpp
-    src/inference/libtorch_backend.cpp
     src/inference/llama_cpp_backend.cpp
     src/inference/kv_cache_manager.cpp
     src/scheduler/scheduler.cpp
@@ -298,16 +307,23 @@ add_library(cllm_core
     ${CTOKENIZER_SOURCES}
 )
 
-target_link_libraries(cllm_core PRIVATE
+target_link_libraries(cllm_core PUBLIC
     Threads::Threads
-    bs_thread_pool
     spdlog::spdlog
+)
+target_link_libraries(cllm_core PRIVATE
     yaml-cpp::yaml-cpp
-    "${TORCH_LIBRARIES}"
     ${SentencePiece_LIBRARIES}
     ${TOKENIZERS_LIBRARIES}  # ✅ Add tokenizers-cpp
-    Drogon::Drogon
 )
+
+# Conditionally add LibTorch backend
+if(LIBTORCH_FOUND)
+    target_sources(cllm_core PRIVATE src/inference/libtorch_backend.cpp)
+    target_link_libraries(cllm_core PRIVATE "${TORCH_LIBRARIES}")
+    target_compile_definitions(cllm_core PRIVATE CLLM_USE_LIBTORCH)
+    message(STATUS "✅ Linked LibTorch library")
+endif()
 
 # Apple Accelerate framework for BLAS
 if(APPLE)
@@ -633,7 +649,6 @@ add_executable(cllm_server src/main.cpp)
 target_link_libraries(cllm_server
     cllm_core
     Threads::Threads
-    Drogon::Drogon
 )
 
 # 添加直接性能测试程序（参考 llama-bench）
@@ -668,5 +683,68 @@ endif()
 # if(LLAMA_CPP_FOUND)
 #     target_compile_definitions(kylin_stage_test PRIVATE CLLM_USE_LLAMA_CPP)
 # endif()
+
+# =============================================================================
+# CPack 配置 - 跨平台打包
+# =============================================================================
+include(InstallRequiredSystemLibraries)
+set(CPACK_PACKAGE_NAME "cLLM")
+set(CPACK_PACKAGE_VENDOR "cLLM Team")
+set(CPACK_PACKAGE_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+set(CPACK_PACKAGE_VERSION_MINOR ${PROJECT_VERSION_MINOR})
+set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "cLLM - High-performance LLM Inference Framework")
+
+# Tar 包排除文件
+set(CPACK_TAR_EXCLUDE_FROM_SOURCE_LIST "/build/;/\\\\.git/;*.o;*.a;*.dylib;*.so;*.log;*.md;*.DS_Store")
+set(CPACK_SOURCE_TAR_EXCLUDE_FROM_SOURCE_LIST "/build/;/\\\\.git/;*.o;*.a;*.dylib;*.so;*.log;*.md;*.DS_Store")
+
+# 源文件打包生成器
+set(CPACK_SOURCE_GENERATOR "TGZ")
+
+# 二进制打包生成器（根据平台自动选择）
+if(WIN32)
+    set(CPACK_GENERATOR "ZIP")
+elseif(APPLE)
+    set(CPACK_GENERATOR "TGZ")
+else()
+    set(CPACK_GENERATOR "TGZ")
+endif()
+
+# 安装规则
+install(TARGETS cllm_core cllm_server direct_benchmark
+        RUNTIME DESTINATION bin
+        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION lib)
+
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/config/
+        DESTINATION etc/cLLM
+        FILES_MATCHING PATTERN "*.yaml")
+
+install(FILES ${CMAKE_SOURCE_DIR}/README.md
+        DESTINATION .)
+
+# 自定义打包目标（解决 macOS 扩展属性问题）
+add_custom_target(package-linux
+    COMMAND ${CMAKE_COMMAND} -E env COPYFILE_DISABLE=1
+    ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/package
+    COMMAND make install DESTDIR=${CMAKE_BINARY_DIR}/package
+    COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_BINARY_DIR}/package/usr/local
+        gtar --no-xattrs -czvf ${CMAKE_BINARY_DIR}/cLLM-${PROJECT_VERSION}-Darwin-linux-compatible.tar.gz .
+    COMMAND ${CMAKE_COMMAND} -E echo "Package created: ${CMAKE_BINARY_DIR}/cLLM-${PROJECT_VERSION}-Darwin-linux-compatible.tar.gz"
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Creating Linux-compatible package without extended attributes"
+)
+
+include(CPack)
+
+# 使用说明：
+# macOS 打包到 Linux 兼容：
+#   make package-linux
+# 
+# 或者手动：
+#   make install DESTDIR=/tmp/cLLM-install
+#   cd /tmp/cLLM-install/usr/local && gtar --no-xattrs -czf cLLM-1.0.0-Darwin-linux-compatible.tar.gz .
+# =============================================================================
 
 

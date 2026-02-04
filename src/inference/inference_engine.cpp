@@ -5,7 +5,9 @@
 
 #include "cllm/inference/inference_engine.h"
 #include "cllm/inference/kylin_backend.h"
+#ifdef CLLM_USE_LIBTORCH
 #include "cllm/inference/libtorch_backend.h"
+#endif
 #ifdef CLLM_USE_LLAMA_CPP
 #include "cllm/inference/llama_cpp_backend.h"
 #endif
@@ -41,8 +43,13 @@ InferenceEngine::InferenceEngine(
             throw std::runtime_error("GGUF model detected but llama.cpp backend is not available in this build");
 #endif
         } else if (useLibTorch) {
+#ifdef CLLM_USE_LIBTORCH
             backendType = "libtorch";
             CLLM_INFO("[InferenceEngine] Using LibTorch backend");
+#else
+            throw std::runtime_error("LibTorch backend requested but not available in this build. "
+                                     "Rebuild with -DUSE_LIBTORCH=ON to enable.");
+#endif
         } else {
             backendType = "kylin";
             CLLM_INFO("[InferenceEngine] Using Kylin (麒麟) backend");

@@ -16,7 +16,7 @@
 #include <memory>
 
 // 条件包含 LibTorch 头文件
-#ifdef ENABLE_LIBTORCH_BACKEND
+#ifdef CLLM_USE_LIBTORCH
 #include <torch/torch.h>
 #endif
 
@@ -142,7 +142,7 @@ public:
      * @param device The device to load the tensors onto (default: CPU)
      * @return A map of weight names to torch::Tensor objects
      */
-    #ifdef ENABLE_LIBTORCH_BACKEND
+    #ifdef CLLM_USE_LIBTORCH
     virtual std::map<std::string, torch::Tensor> loadToTorchTensorDict(
         torch::Device device = torch::kCPU
     ) {
@@ -179,7 +179,7 @@ public:
         
         return tensorDict;
     }
-    #endif
+    #endif // CLLM_USE_LIBTORCH
 };
 
 /**

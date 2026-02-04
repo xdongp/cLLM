@@ -5,7 +5,9 @@
 
 #include "cllm/inference/backend_interface.h"
 #include "cllm/inference/kylin_backend.h"
+#ifdef CLLM_USE_LIBTORCH
 #include "cllm/inference/libtorch_backend.h"
+#endif
 #include "cllm/kylin/gguf/operator_interface.h"
 #include "cllm/common/config.h"
 #ifdef CLLM_USE_LLAMA_CPP
@@ -41,7 +43,14 @@ std::unique_ptr<IBackend> BackendFactory::createBackend(
     CLLM_INFO("[BackendFactory] Creating backend: %s", backendType.c_str());
     
     if (backendType == "libtorch" || backendType == "LibTorch") {
+#ifdef CLLM_USE_LIBTORCH
         return std::make_unique<LibTorchBackend>(modelPath, config);
+#else
+        throw std::runtime_error(
+            "BackendFactory::createBackend: LibTorch backend not available in this build. "
+            "Rebuild with -DUSE_LIBTORCH=ON to enable."
+        );
+#endif
     } else if (backendType == "kylin" || backendType == "Kylin") {
         // 从配置读取算子后端类型
         std::string opBackendStr = Config::instance().backendKylinOperatorBackend();

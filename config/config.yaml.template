@@ -53,45 +53,15 @@ http:
 
 # ============================================================
 # API 端点配置
-# ============================================================
-api:
-  endpoints:
-    health:
-      name: "health"
-      path: "/health"
-      method: "GET"
-    generate:
-      name: "generate"
-      path: "/generate"
-      method: "POST"
-    generate_stream:
-      name: "generate_stream"
-      path: "/generate_stream"
-      method: "POST"
-    encode:
-      name: "encode"
-      path: "/encode"
-      method: "POST"
-
-  response:
-    content_type:
-      json: "application/json"
-      stream: "text/event-stream"
-    headers:
-      cache_control: "no-cache"
-      connection: "keep-alive"
-
-  defaults:
-    prompt: ""
-    max_tokens: 100
-    temperature: 0.7
-    top_p: 0.9
-
-  timeouts:
-    min: 60.0              # 最小超时（秒）
-    max: 600.0             # 最大超时（秒）
-    token_factor: 10.0     # 每 token 超时系数
-
+# [已废弃] API 端点已硬编码，无需在配置文件中配置
+# 硬编码端点:
+#   - GET  /              显示所有可用端点
+#   - GET  /health       健康检查
+#   - POST /generate      文本生成（非流式）
+#   - POST /generate_stream  文本生成（流式）
+#   - POST /encode       Token 编码
+#   - POST /benchmark    性能基准测试
+#   - GET  /model/info  模型信息
 # ============================================================
 # 调度器配置
 # ============================================================
