@@ -171,7 +171,7 @@ private:
     // ========== 核心组件 ==========
     
     /// Transformer 模型实例
-    kylin::TransformerModel model_;
+    std::unique_ptr<kylin::TransformerModel> model_;
     
     /// 模型加载器（仅在有真实权重时创建）
     std::unique_ptr<IModelLoader> loader_;

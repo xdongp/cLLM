@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <cmath>
 #include <filesystem>
+#include <memory>
 
 namespace cllm {
 namespace inference {
@@ -66,7 +67,7 @@ KylinBackend::KylinBackend(
     , internalConfig_(config)
     , initialized_(false)
     , modelPath_(modelPath)
-    , model_(config)
+    , model_(std::make_unique<kylin::TransformerModel>(config))
     , operatorBackendType_(operatorBackend)
     , deviceBackendType_(kylin::BackendType::CPU)
     , useGGMLDirect_(false)
@@ -816,12 +817,12 @@ void KylinBackend::bindWeightsToModel() {
     }
 
     // 重建模型（使用当前配置）
-    model_ = kylin::TransformerModel(internalConfig_);
+    model_ = std::make_unique<kylin::TransformerModel>(internalConfig_);
 
     // 绑定 Embedding 和 LM Head
-    model_.setEmbeddingWeight(embedding_);
+    model_->setEmbeddingWeight(embedding_);
     CLLM_INFO("[KylinBackend] Binding LM head...");
-    model_.setLmHeadWeight(lmHead_);
+    model_->setLmHeadWeight(lmHead_);
     CLLM_INFO("[KylinBackend] LM head bound");
 
     // 绑定每层权重
@@ -830,8 +831,8 @@ void KylinBackend::bindWeightsToModel() {
         // 检查是否有 Q/K 归一化权重
         kylin::Tensor attnQNorm = attnQNorm_[layer].shape().empty() ? kylin::Tensor() : attnQNorm_[layer];
         kylin::Tensor attnKNorm = attnKNorm_[layer].shape().empty() ? kylin::Tensor() : attnKNorm_[layer];
-        
-        model_.setBlockWeights(
+
+        model_->setBlockWeights(
             layer,
             wq_[layer],
             wk_[layer],
@@ -849,7 +850,7 @@ void KylinBackend::bindWeightsToModel() {
     }
 
     // 绑定 Final Norm
-    model_.setFinalNormWeight(finalNormWeight_);
+    model_->setFinalNormWeight(finalNormWeight_);
 
     CLLM_INFO("[KylinBackend] Weights bound to model successfully");
 }
@@ -940,7 +941,10 @@ kylin::Tensor KylinBackend::forward(const std::vector<int> &inputIds) {
     }
     
     // ========== TransformerModel 模式 ==========
-    return model_.forward(inputIds);
+    if (model_) {
+        return model_->forward(inputIds);
+    }
+    throw std::runtime_error("KylinBackend::forward: model not initialized");
 }
 
 kylin::Tensor KylinBackend::forwardBatch(

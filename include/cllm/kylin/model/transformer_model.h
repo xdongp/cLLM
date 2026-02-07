@@ -1,39 +1,94 @@
 /**
  * @file transformer_model.h
- * @brief 简化版 Transformer 模型（MVP，用于自研推理引擎）
+ * @brief Transformer 模型统一接口
+ * 
+ * 为了保持兼容性，此类扩展了 HFTransformerModel 的功能
+ * 添加了 setEmbeddingWeight, setLmHeadWeight, setBlockWeights 等方法
  */
+
 #pragma once
 
+#include "cllm/kylin/hf/transformer.h"
 #include "cllm/kylin/core/tensor.h"
-#include "cllm/kylin/model/transformer_block.h"
 #include "cllm/model/config.h"
-
-#include <vector>
 
 namespace cllm {
 namespace kylin {
 
 /**
- * @brief 简化版 Transformer Model
- *
- * 负责：
- * - embedding 查表
- * - N 层 TransformerBlock 前向
- * - 最终 RMSNorm + lm_head 投影到 vocab
+ * @brief Transformer 模型类
+ * 
+ * 继承自 HFTransformerModel，添加了权重设置接口
+ * 用于支持 KylinBackend 的动态权重绑定
  */
-class TransformerModel {
+class TransformerModel : public HFTransformerModel {
 public:
+    /**
+     * @brief 默认构造函数
+     */
+    TransformerModel();
+    
+    /**
+     * @brief 构造函数
+     * @param config 模型配置
+     */
     explicit TransformerModel(const ModelConfig& config);
-
-    const ModelConfig& getConfig() const { return config_; }
-
-    /// 设置 embedding 权重（[vocabSize, hiddenSize]）
+    
+    /**
+     * @brief 从模型目录加载（委托给父类）
+     * @param modelDir 模型目录
+     * @param device 设备类型
+     * @param quantType 量化类型
+     */
+    TransformerModel(const std::string& modelDir, 
+                     DeviceType device = DeviceType::CPU,
+                     QuantType quantType = QuantType::FP32);
+    
+    ~TransformerModel() = default;
+    
+    // 允许移动
+    TransformerModel(TransformerModel&&) = default;
+    TransformerModel& operator=(TransformerModel&&) = default;
+    
+    // 禁止拷贝
+    TransformerModel(const TransformerModel&) = delete;
+    TransformerModel& operator=(const TransformerModel&) = delete;
+    
+    // ========== 权重设置接口 ==========
+    
+    /**
+     * @brief 设置 Embedding 权重
+     * @param embedding 权重张量 [vocabSize, hiddenSize]
+     */
     void setEmbeddingWeight(const Tensor& embedding);
-
-    /// 设置 lm_head 权重（[hiddenSize, vocabSize]）
+    
+    /**
+     * @brief 设置 LM Head 权重
+     * @param lmHead 权重张量 [hiddenSize, vocabSize]
+     */
     void setLmHeadWeight(const Tensor& lmHead);
-
-    /// 设置某一层 Block 的权重
+    
+    /**
+     * @brief 设置 Final Norm 权重
+     * @param weight 权重张量 [hiddenSize]
+     */
+    void setFinalNormWeight(const Tensor& weight);
+    
+    /**
+     * @brief 设置 Transformer Block 权重
+     * @param layerIndex 层索引
+     * @param wq Q 投影权重
+     * @param wk K 投影权重
+     * @param wv V 投影权重
+     * @param wo O 投影权重
+     * @param wGate Gate 投影权重
+     * @param wUp Up 投影权重
+     * @param wDown Down 投影权重
+     * @param norm1 第一层归一化权重
+     * @param norm2 第二层归一化权重
+     * @param qNorm Q 归一化权重（可选）
+     * @param kNorm K 归一化权重（可选）
+     */
     void setBlockWeights(
         size_t layerIndex,
         const Tensor& wq,
@@ -43,30 +98,29 @@ public:
         const Tensor& wGate,
         const Tensor& wUp,
         const Tensor& wDown,
-        const Tensor& norm1Weight,
-        const Tensor& norm2Weight,
-        const Tensor& attnQNormWeight = Tensor(),  // 可选：Q的独立归一化权重
-        const Tensor& attnKNormWeight = Tensor()   // 可选：K的独立归一化权重
+        const Tensor& norm1,
+        const Tensor& norm2,
+        const Tensor& qNorm = Tensor(),
+        const Tensor& kNorm = Tensor()
     );
-
-    /// 设置最终 RMSNorm 的权重
-    void setFinalNormWeight(const Tensor& normWeight);
-
-    /// 前向传播：输入 token id 序列，输出 logits
-    /// 输出形状：[seq_len, vocabSize]
-    Tensor forward(const std::vector<int>& inputIds) const;
-
-private:
-    ModelConfig config_;
-
-    std::vector<TransformerBlock> layers_;
-
-    Tensor embedding_;     // [vocab, hidden]
-    Tensor lmHead_;        // [hidden, vocab]
-    Tensor finalNormWeight_; // [hidden]
-
-    float rmsEps_;
+    
+    // ========== 前向推理接口 ==========
+    
+    /**
+     * @brief 前向推理（返回 Tensor 类型）
+     * @param inputIds 输入 token IDs
+     * @return 输出 logits 张量
+     */
+    Tensor forward(const std::vector<int>& inputIds);
+    
+    /**
+     * @brief 前向推理（单 token）
+     * @param tokenId 输入 token ID
+     * @param position 位置
+     * @return 输出 logits 张量
+     */
+    Tensor forward(int tokenId, int position);
 };
 
-}  // namespace kylin
-}  // namespace cllm
+} // namespace kylin
+} // namespace cllm

@@ -199,6 +199,15 @@ public:
     bool isUsingGPU() const { return useGPU_; }
     
 private:
+    // 初始化方法
+    void initializeRoPE();
+    void initializeKVCache();
+    void initializeBuffers();
+    void initializeGPUBackend();
+    void initializeKVCachePool();
+    void initializeWorkBufferPool();
+    void preconvertWeightsForQuantType();
+    
     // 加载权重
     bool loadWeights();
     
