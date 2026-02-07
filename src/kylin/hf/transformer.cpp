@@ -237,7 +237,12 @@ HFTransformerModel::HFTransformerModel(const std::string& modelDir, DeviceType d
              kMaxConcurrentRequests);
 }
 
-HFTransformerModel::~HFTransformerModel() = default;
+HFTransformerModel::~HFTransformerModel() {
+    // 关闭后端
+    if (backend_) {
+        backend_->shutdown();
+    }
+}
 
 bool HFTransformerModel::loadWeights() {
     // 加载嵌入层
