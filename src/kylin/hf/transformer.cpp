@@ -53,10 +53,10 @@ HFTransformerModel::HFTransformerModel(const std::string& modelDir, DeviceType d
     }
     
     // 创建新的统一后端接口（实验性）
-    // TODO: 完成后端迁移后，使用 backend_ 替代原有的 CPU/GPU 分支逻辑
     backend_ = BackendFactory::create(device);
     if (backend_) {
         CLLM_INFO("[HFTransformer] Backend created: %s", backend_->getName().c_str());
+        // 初始化后端（将在加载权重后完成）
     }
     
     // 加载配置
@@ -82,6 +82,15 @@ HFTransformerModel::HFTransformerModel(const std::string& modelDir, DeviceType d
     if (!loadWeights()) {
         CLLM_ERROR("[HFTransformer] Failed to load weights");
         return;
+    }
+    
+    // 初始化新的后端接口（实验性）
+    if (backend_) {
+        backend_->initialize(config_);
+        // TODO: 转换并加载权重到后端
+        // ModelWeights weights = convertToModelWeights();
+        // backend_->loadWeights(weights);
+        CLLM_INFO("[HFTransformer] Backend initialized");
     }
     
     // 预计算 RoPE 频率
