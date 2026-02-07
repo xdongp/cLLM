@@ -36,6 +36,7 @@ public:
     virtual int getEosId() const = 0;
     virtual int getPadId() const = 0;
     virtual int getUnkId() const = 0;
+    virtual bool isSpecialToken(int tokenId) const = 0;
     
     virtual ModelType getModelType() const = 0;
 };

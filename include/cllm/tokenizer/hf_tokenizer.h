@@ -34,12 +34,12 @@ public:
     int getEosId() const override;
     int getPadId() const override;
     int getUnkId() const override;
+    bool isSpecialToken(int tokenId) const override;
     
     ModelType getModelType() const override;
     
     // HF特有功能
     std::vector<std::string> tokenize(const std::string& text);
-    bool isSpecialToken(int tokenId) const;
 
 private:
     void loadConfig(const std::string& modelPath);

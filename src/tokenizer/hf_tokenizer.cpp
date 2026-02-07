@@ -145,7 +145,7 @@ void HFTokenizer::loadConfig(const std::string& modelPath) {
         try {
             auto config = nlohmann::json::parse(f);
             
-            // 读取特殊Token IDs
+            // 读取特殊Token IDs (数字格式: *_token_id)
             if (config.contains("bos_token_id")) {
                 bosId_ = config["bos_token_id"].get<int>();
                 if (bosId_ > maxSpecialTokenId_) maxSpecialTokenId_ = bosId_;
@@ -165,17 +165,53 @@ void HFTokenizer::loadConfig(const std::string& modelPath) {
                 if (unkId_ > maxSpecialTokenId_) maxSpecialTokenId_ = unkId_;
             }
             
+            // 读取特殊Token字符串 (字符串格式: *_token)，并从 added_tokens_decoder 获取ID
+            auto getTokenIdFromString = [&](const nlohmann::json& configObj, const std::string& tokenField) -> int {
+                if (!configObj.contains(tokenField)) return -1;
+                const auto& tokenJson = configObj[tokenField];
+                if (tokenJson.is_null()) return -1;
+                std::string tokenStr = tokenJson.get<std::string>();
+                
+                // 在 added_tokens_decoder 中查找
+                if (configObj.contains("added_tokens_decoder")) {
+                    for (auto& [key, value] : configObj["added_tokens_decoder"].items()) {
+                        if (value.contains("content")) {
+                            std::string content = value["content"].get<std::string>();
+                            if (content == tokenStr) {
+                                return std::stoi(key);
+                            }
+                        }
+                    }
+                }
+                return -1;
+            };
+            
+            // 尝试从字符串格式获取 ID
+            if (bosId_ < 0) bosId_ = getTokenIdFromString(config, "bos_token");
+            if (eosId_ < 0) eosId_ = getTokenIdFromString(config, "eos_token");
+            if (padId_ < 0) padId_ = getTokenIdFromString(config, "pad_token");
+            
+            // 更新 maxSpecialTokenId_
+            if (bosId_ > maxSpecialTokenId_) maxSpecialTokenId_ = bosId_;
+            if (eosId_ > maxSpecialTokenId_) maxSpecialTokenId_ = eosId_;
+            if (padId_ > maxSpecialTokenId_) maxSpecialTokenId_ = padId_;
+            
             // 读取added_tokens_decoder (完整的特殊Token列表)
             if (config.contains("added_tokens_decoder")) {
+                int specialCount = 0;
                 auto tokens = config["added_tokens_decoder"];
                 for (auto& [key, value] : tokens.items()) {
                     int tokenId = std::stoi(key);
                     specialTokenIds_.insert(tokenId);
                     if (tokenId > maxSpecialTokenId_) maxSpecialTokenId_ = tokenId;
+                    specialCount++;
                 }
+                CLLM_INFO("Loaded %d special tokens from added_tokens_decoder", specialCount);
             }
             
             CLLM_INFO("Loaded config from: %s", configPath.c_str());
+            CLLM_INFO("  Final: BOS=%d, EOS=%d, PAD=%d, maxSpecial=%d", 
+                     bosId_, eosId_, padId_, maxSpecialTokenId_);
             break;
             
         } catch (const std::exception& e) {

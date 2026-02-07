@@ -191,6 +191,12 @@ int NativeTokenizer::getBosId() const { return bosId_; }
 int NativeTokenizer::getEosId() const { return eosId_; }
 int NativeTokenizer::getPadId() const { return padId_; }
 int NativeTokenizer::getUnkId() const { return unkId_; }
+
+bool NativeTokenizer::isSpecialToken(int tokenId) const {
+    return tokenId == bosId_ || tokenId == eosId_ || 
+           tokenId == padId_ || tokenId == unkId_;
+}
+
 ModelType NativeTokenizer::getModelType() const { return modelType_; }
 
 } // namespace cllm

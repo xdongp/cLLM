@@ -609,6 +609,10 @@ int GGUFTokenizer::getUnkId() const {
     return unkTokenId_;
 }
 
+bool GGUFTokenizer::isSpecialToken(int tokenId) const {
+    return specialTokenIds_.count(tokenId) > 0;
+}
+
 ModelType GGUFTokenizer::getModelType() const {
     return modelType_;
 }

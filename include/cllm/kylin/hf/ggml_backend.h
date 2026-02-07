@@ -14,6 +14,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <mutex>
 
 // GGML 头文件
 #include "ggml.h"
@@ -73,9 +74,24 @@ public:
     /**
      * @brief 执行完整的 forward（单 token）
      * 
-     * 在 GPU 上执行整个 forward pass，比单次 matmul 更高效
+     * 默认使用 GPU 计算图，可通过环境变量 CLLM_USE_CPU_FALLBACK=1 切换到 CPU
      */
     std::vector<float> forward(int tokenId, int position);
+
+    /**
+     * @brief CPU 回退路径（完整 Transformer 计算）
+     */
+    std::vector<float> forwardCPU(int tokenId, int position);
+
+    /**
+     * @brief GPU 加速路径（GGML 计算图）
+     */
+    std::vector<float> forwardGPU(int tokenId, int position);
+
+    /**
+     * @brief 构建完整的 GGML 计算图
+     */
+    void buildFullGraph(int position);
 
     /**
      * @brief 最小可用 GGML 计算图（Embedding + LM Head）
@@ -83,7 +99,43 @@ public:
      * 用于学习/验证 GGML 计算图执行流程
      */
     std::vector<float> forwardGraphMinimal(int tokenId, int position);
+
+    /**
+     * @brief 中间层输出结构
+     */
+    struct LayerOutput {
+        std::vector<float> afterInputNorm;      // Input RMSNorm 后
+        std::vector<float> afterQKV;            // QKV Projection 后
+        std::vector<float> afterAttention;      // Attention 后
+        std::vector<float> afterPostNorm;       // Post Attention RMSNorm 后
+        std::vector<float> afterFFN;            // FFN 后
+    };
+
+    /**
+     * @brief 前向推理并导出中间层结果（用于调试）
+     *
+     * @param tokenId 输入 token ID
+     * @param position 位置
+     * @param layerOutputs 每层中间结果输出（可选）
+     * @param embeddingOutput Embedding 层输出（可选）
+     * @param finalNormOutput Final RMSNorm 输出（可选）
+     * @return logits
+     */
+    std::vector<float> forwardWithDebug(int tokenId, int position,
+                                        std::vector<LayerOutput>* layerOutputs = nullptr,
+                                        std::vector<float>* embeddingOutput = nullptr,
+                                        std::vector<float>* finalNormOutput = nullptr);
     
+    /**
+     * @brief 批量执行 forward（GPU 加速）
+     * 
+     * @param tokenIds 批量 token ID 列表
+     * @param positions 对应的位置列表
+     * @return 批量 logits 结果
+     */
+    std::vector<std::vector<float>> forwardBatch(const std::vector<int>& tokenIds, 
+                                                const std::vector<int>& positions);
+
     /**
      * @brief 检查 GPU 是否可用
      */
@@ -119,11 +171,37 @@ private:
     std::vector<ggml_tensor*> graphVCacheLayers_;
     std::vector<ggml_tensor*> graphKCacheUpdLayers_;
     std::vector<ggml_tensor*> graphVCacheUpdLayers_;
+    std::vector<ggml_tensor*> graphKCurLayers_;  // Current K for each layer
+    std::vector<ggml_tensor*> graphVCurLayers_;  // Current V for each layer
+    ggml_tensor* graphQAfterRoPE_ = nullptr;     // RoPE后的Q (用于调试)
+    ggml_tensor* graphKAfterRoPE_ = nullptr;     // RoPE后的K (用于调试)
+    ggml_tensor* graphQBeforeRoPE_ = nullptr;    // RoPE前的Q (用于调试)
+    ggml_tensor* graphKBeforeRoPE_ = nullptr;    // RoPE前的K (用于调试)
+    ggml_tensor* graphQAfterRoPELayer1_ = nullptr;     // Layer 1 RoPE后的Q (用于调试)
+    ggml_tensor* graphKAfterRoPELayer1_ = nullptr;     // Layer 1 RoPE后的K (用于调试)
+    ggml_tensor* graphQBeforeRoPELayer1_ = nullptr;    // Layer 1 RoPE前的Q (用于调试)
+    ggml_tensor* graphKBeforeRoPELayer1_ = nullptr;    // Layer 1 RoPE前的K (用于调试)
+    ggml_tensor* graphQProj_ = nullptr;          // Q投影后的Q (用于调试)
+    ggml_tensor* graphKProj_ = nullptr;          // K投影后的K (用于调试)
+    ggml_tensor* graphQProjLayer1_ = nullptr;    // Layer 1 Q投影后的Q (用于调试)
+    ggml_tensor* graphKProjLayer1_ = nullptr;    // Layer 1 K投影后的K (用于调试)
+    ggml_tensor* graphNormOutput_ = nullptr;     // RMS Norm后的输出 (用于调试)
+    ggml_tensor* graphNormInput_ = nullptr;      // RMS Norm前的输入 (用于调试)
+    ggml_tensor* graphNormWeighted_ = nullptr;   // RMS Norm乘以权重后的输出 (用于调试)
+    ggml_tensor* graphEmbedding_ = nullptr;      // Embedding输出 (用于调试)
+    ggml_tensor* graphLayer0Output_ = nullptr;   // Layer 0 最终输出 (用于调试)
+    ggml_tensor* graphAttnOutput_ = nullptr;     // Attention 输出 (用于调试)
+    ggml_tensor* graphAttnInput_ = nullptr;      // Attention 输入 (用于调试)
+    ggml_tensor* graphNormOutputLayer1_ = nullptr;     // Layer 1 RMS Norm后的输出 (用于调试)
+    ggml_tensor* graphNormInputLayer1_ = nullptr;      // Layer 1 RMS Norm前的输入 (用于调试)
+    ggml_tensor* graphNormWeightedLayer1_ = nullptr;   // Layer 1 RMS Norm乘以权重后的输出 (用于调试)
+    std::vector<ggml_tensor*> graphNormWeightedAllLayers_;  // 所有层的 RMS Norm 后输出
     int graphBuiltPosition_ = -1;
     int graphBuiltStage_ = 0;
     
     // 权重张量（指向 GPU 内存）
-    ggml_tensor* embedTokens_ = nullptr;
+    ggml_tensor* embedTokens_ = nullptr;     // [hiddenSize, vocabSize] 用于矩阵乘法
+    ggml_tensor* embedTokensLookup_ = nullptr;  // [vocabSize, hiddenSize] 用于 ggml_get_rows
     ggml_tensor* finalNorm_ = nullptr;
     ggml_tensor* lmHead_ = nullptr;
     
@@ -174,7 +252,10 @@ private:
 
     // GGML 计算图阶段（0=关闭, 1=Embedding+LMHead, 2=+RMSNorm+FFN, 3=+Attention, 4=+KV Cache, 5=多层, 6=调度器, 7=持久化, 8=混合调度）
     int graphStage_ = 0;
-    
+
+    // 线程安全保护（防止并发访问导致双重释放）
+    mutable std::mutex graphMutex_;
+
 public:
     /**
      * @brief 重置 KV Cache

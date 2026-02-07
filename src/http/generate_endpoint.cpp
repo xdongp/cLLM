@@ -262,23 +262,38 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
                 #endif
                 
                 if (!result.generatedTokens.empty()) {
-                    #ifdef CLLM_DEBUG_MODE
-                    CLLM_DEBUG("Generated tokens: [");
+                    // 打印生成的 tokens（非 DEBUG 模式也打印，用于诊断）
+                    std::stringstream tokenStr;
+                    tokenStr << "Generated tokens: [";
                     size_t showCount = std::min(result.generatedTokens.size(), (size_t)10);
-                    std::stringstream generatedTokens;
                     for (size_t i = 0; i < showCount; ++i) {
-                        generatedTokens << " " << result.generatedTokens[i];
+                        if (i > 0) tokenStr << ", ";
+                        tokenStr << result.generatedTokens[i];
                     }
                     if (result.generatedTokens.size() > showCount) {
-                        generatedTokens << " ...";
+                        tokenStr << " ...";
                     }
-                    generatedTokens << " ]";
-                    CLLM_DEBUG("%s", generatedTokens.str().c_str());
-                    #endif
+                    tokenStr << "]";
+                    CLLM_INFO("%s", tokenStr.str().c_str());
+
+                    // 详细打印前10个token及其名称
+                    CLLM_INFO("=== Token Detail Analysis ===");
+                    for (size_t i = 0; i < std::min(result.generatedTokens.size(), (size_t)10); ++i) {
+                        int tokenId = result.generatedTokens[i];
+                        std::string tokenName = tokenizer_->idToToken(tokenId);
+                        bool isSpecial = tokenizer_->isSpecialToken(tokenId);
+                        CLLM_INFO("  Token[%zu]: ID=%d, Name='%s', Special=%s",
+                                 i, tokenId, tokenName.c_str(), isSpecial ? "YES" : "NO");
+                    }
+                    if (result.generatedTokens.size() > 10) {
+                        CLLM_INFO("  ... and %zu more tokens", result.generatedTokens.size() - 10);
+                    }
+                    CLLM_INFO("=== End Token Analysis ===");
 
                     // 解码前：按 EOS 截断，避免 EOS 后继续采样导致"乱码"
                     std::vector<int> toDecode = result.generatedTokens;
                     const int eosId = tokenizer_->getEosId();
+                    CLLM_INFO("EOS token ID: %d", eosId);
                     if (eosId >= 0) {
                         for (size_t k = 0; k < toDecode.size(); ++k) {
                             if (toDecode[k] == eosId) {
@@ -289,17 +304,15 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
                     }
 
                     generatedTokenCount = toDecode.size();
+                    CLLM_INFO("Tokens to decode: %zu", generatedTokenCount);
 
                     try {
                         generatedText = tokenizer_->decode(toDecode, true);
+                        CLLM_INFO("Decoded text length: %zu, content: [%s]", generatedText.length(), generatedText.c_str());
                         if (!UnicodeUtils::isValidUtf8(generatedText)) {
                             CLLM_WARN("Decoded text contains invalid UTF-8, sanitizing");
                             generatedText = sanitizeUtf8(generatedText);
                         }
-                        #ifdef CLLM_DEBUG_MODE
-                        CLLM_DEBUG("Decoded text: [%s]", generatedText.c_str());
-                        CLLM_DEBUG("Decoded text length: %zu", generatedText.length());
-                        #endif
                     } catch (const std::exception& e) {
                         CLLM_ERROR("Exception during tokenizer decode: %s", e.what());
                         generatedText = "[Decode Error: " + std::string(e.what()) + "]";

@@ -89,6 +89,20 @@ public:
     );
     
     /**
+     * @brief 批量前向推理（GPU 加速版本，适用于单 token 批处理）
+     * 
+     * @param tokenIds 批量 token IDs
+     * @param positions 对应的位置
+     * @param requestIds 对应的请求 ID
+     * @return 每个请求的 logits
+     */
+    std::vector<std::vector<float>> forwardBatchGPU(
+        const std::vector<int>& tokenIds,
+        const std::vector<int>& positions,
+        const std::vector<size_t>& requestIds
+    );
+    
+    /**
      * @brief 重置 KV Cache（全局）
      */
     void resetKVCache();
@@ -117,9 +131,72 @@ public:
     int vocabSize() const { return config_.vocabSize; }
     
     /**
+     * @brief 获取指定请求的 KV Cache 当前长度
+     * 
+     * @param requestId 请求 ID
+     * @return 当前 KV Cache 长度，如果请求不存在则返回 -1
+     */
+    int getKVCacheCurrentLength(size_t requestId) const;
+    
+    /**
      * @brief 获取隐藏层维度
      */
     int hiddenSize() const { return config_.hiddenSize; }
+    
+    /**
+     * @brief 中间层输出结构（用于调试对比）
+     */
+    struct LayerDebugOutput {
+        int layerIdx;
+        std::vector<float> inputNormOutput;
+        std::vector<float> qkvOutput;
+        std::vector<float> attentionOutput;
+        std::vector<float> postNormOutput;
+        std::vector<float> ffnOutput;
+    };
+    
+    /**
+     * @brief CPU 前向推理并导出中间结果（用于调试对比）
+     * 
+     * @param inputIds 输入 token IDs
+     * @param layerOutputs 每层中间结果输出
+     * @param embeddingOutput Embedding 层输出
+     * @param finalNormOutput Final RMSNorm 输出
+     * @return logits [vocab_size]
+     */
+    std::vector<float> forwardWithDebugCPU(
+        const std::vector<int32_t>& inputIds,
+        std::vector<LayerDebugOutput>& layerOutputs,
+        std::vector<float>& embeddingOutput,
+        std::vector<float>& finalNormOutput
+    );
+    
+    /**
+     * @brief GPU 前向推理并导出中间结果（用于调试对比）
+     * 
+     * @param inputIds 输入 token IDs
+     * @param layerOutputs 每层中间结果输出
+     * @param embeddingOutput Embedding 层输出
+     * @param finalNormOutput Final RMSNorm 输出
+     * @return logits [vocab_size]
+     */
+    std::vector<float> forwardWithDebugGPU(
+        const std::vector<int32_t>& inputIds,
+        std::vector<GGMLGPUBackend::LayerOutput>& layerOutputs,
+        std::vector<float>& embeddingOutput,
+        std::vector<float>& finalNormOutput
+    );
+    
+    /**
+     * @brief 获取 GPU 后端指针（用于直接访问 GPU 功能）
+     * @return GPU 后端指针，如果未初始化则返回 nullptr
+     */
+    GGMLGPUBackend* getGPUBackend() const { return gpuBackend_.get(); }
+    
+    /**
+     * @brief 检查是否使用 GPU
+     */
+    bool isUsingGPU() const { return useGPU_; }
     
 private:
     // 加载权重

@@ -30,7 +30,7 @@ model:
   # 量化类型：fp32 | fp16 | int8 | q4_k_m | q8_0
   # - Kylin 后端支持: fp32, fp16, int8
   # - llama.cpp 后端由 GGUF 文件决定，此配置仅用于记录
-  quantization: "int8"
+  quantization: "fp32"
 
 # ============================================================
 # HTTP 配置

@@ -1,0 +1,415 @@
+{
+  "timestamp": "2026-02-06T13:43:36.537741",
+  "model_path": "model/Qwen/Qwen3-0.6B",
+  "cpu_port": 18080,
+  "gpu_port": 8080,
+  "test_cases": [
+    {
+      "prompt": "hello",
+      "cpu_output": "Class = \"Hello,",
+      "gpu_output": " great⇃ repbuttonHorizontal",
+      "cpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "66f0d31bb98fb8d80bf2a2ce20edd20f",
+          "max_tokens": 5,
+          "response_time": 0.6245731711387634,
+          "text": "Class = \"Hello,",
+          "tokens_per_second": 8.005467414855957
+        },
+        "success": true
+      },
+      "gpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "06a6742d76bba1a306f61f1b15c081d5",
+          "max_tokens": 5,
+          "response_time": 0.30378037691116333,
+          "text": " great⇃ repbuttonHorizontal",
+          "tokens_per_second": 16.459259033203125
+        },
+        "success": true
+      },
+      "cpu_quality": {
+        "quality_score": 0.9,
+        "has_gibberish": false,
+        "length": 15,
+        "word_count": 3,
+        "unique_words": 3,
+        "non_ascii_ratio": 0.0,
+        "special_char_ratio": 0.2
+      },
+      "gpu_quality": {
+        "quality_score": 0.962962962962963,
+        "has_gibberish": false,
+        "length": 27,
+        "word_count": 2,
+        "unique_words": 2,
+        "non_ascii_ratio": 0.037037037037037035,
+        "special_char_ratio": 0.037037037037037035
+      },
+      "cpu_tokens": 5,
+      "gpu_tokens": 5,
+      "cpu_time": 0.6245731711387634,
+      "gpu_time": 0.30378037691116333,
+      "has_issue": false
+    },
+    {
+      "prompt": "hi",
+      "cpu_output": "rtle and a dog are",
+      "gpu_output": ".setMinimum defStyleopyright悛 level",
+      "cpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "a3e122b6bfdcef8c58199b39849becda",
+          "max_tokens": 5,
+          "response_time": 0.25543394684791565,
+          "text": "rtle and a dog are",
+          "tokens_per_second": 19.57453155517578
+        },
+        "success": true
+      },
+      "gpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "44918311cbcf3983947aceac983769ff",
+          "max_tokens": 5,
+          "response_time": 0.23748521506786346,
+          "text": ".setMinimum defStyleopyright悛 level",
+          "tokens_per_second": 21.05394172668457
+        },
+        "success": true
+      },
+      "cpu_quality": {
+        "quality_score": 1.0,
+        "has_gibberish": false,
+        "length": 18,
+        "word_count": 5,
+        "unique_words": 5,
+        "non_ascii_ratio": 0.0,
+        "special_char_ratio": 0.0
+      },
+      "gpu_quality": {
+        "quality_score": 0.9714285714285714,
+        "has_gibberish": false,
+        "length": 35,
+        "word_count": 3,
+        "unique_words": 3,
+        "non_ascii_ratio": 0.02857142857142857,
+        "special_char_ratio": 0.02857142857142857
+      },
+      "cpu_tokens": 5,
+      "gpu_tokens": 5,
+      "cpu_time": 0.25543394684791565,
+      "gpu_time": 0.23748521506786346,
+      "has_issue": false
+    },
+    {
+      "prompt": "你好",
+      "cpu_output": "Question，我是一个客户",
+      "gpu_output": "のご实在是BACK-Kusiness",
+      "cpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "57ac9cd38cb7f0a4b2bea543df4ebab5",
+          "max_tokens": 5,
+          "response_time": 0.251781165599823,
+          "text": "Question，我是一个客户",
+          "tokens_per_second": 19.8585147857666
+        },
+        "success": true
+      },
+      "gpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "a132994b9d39892a2123beae96e4490d",
+          "max_tokens": 5,
+          "response_time": 0.2314852923154831,
+          "text": "のご实在是BACK-Kusiness",
+          "tokens_per_second": 21.59964370727539
+        },
+        "success": true
+      },
+      "cpu_quality": {
+        "quality_score": 0.7333333333333334,
+        "has_gibberish": false,
+        "length": 15,
+        "word_count": 1,
+        "unique_words": 1,
+        "non_ascii_ratio": 0.4666666666666667,
+        "special_char_ratio": 0.06666666666666667
+      },
+      "gpu_quality": {
+        "quality_score": 0.8333333333333333,
+        "has_gibberish": false,
+        "length": 18,
+        "word_count": 1,
+        "unique_words": 1,
+        "non_ascii_ratio": 0.2777777777777778,
+        "special_char_ratio": 0.05555555555555555
+      },
+      "cpu_tokens": 5,
+      "gpu_tokens": 5,
+      "cpu_time": 0.251781165599823,
+      "gpu_time": 0.2314852923154831,
+      "has_issue": false
+    },
+    {
+      "prompt": "what is",
+      "cpu_output": " the effect of a high",
+      "gpu_output": " theious price.lt afforded",
+      "cpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "c9ab6cf4e243d5267fa250c64fbc43b3",
+          "max_tokens": 5,
+          "response_time": 0.2902103662490845,
+          "text": " the effect of a high",
+          "tokens_per_second": 17.2288818359375
+        },
+        "success": true
+      },
+      "gpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "ecdb862b1dd3f964f975061d0eb77bc8",
+          "max_tokens": 5,
+          "response_time": 0.4327249526977539,
+          "text": " theious price.lt afforded",
+          "tokens_per_second": 11.554683685302734
+        },
+        "success": true
+      },
+      "cpu_quality": {
+        "quality_score": 1.0,
+        "has_gibberish": false,
+        "length": 21,
+        "word_count": 5,
+        "unique_words": 5,
+        "non_ascii_ratio": 0.0,
+        "special_char_ratio": 0.0
+      },
+      "gpu_quality": {
+        "quality_score": 0.9807692307692307,
+        "has_gibberish": false,
+        "length": 26,
+        "word_count": 3,
+        "unique_words": 3,
+        "non_ascii_ratio": 0.0,
+        "special_char_ratio": 0.038461538461538464
+      },
+      "cpu_tokens": 5,
+      "gpu_tokens": 5,
+      "cpu_time": 0.2902103662490845,
+      "gpu_time": 0.4327249526977539,
+      "has_issue": false
+    },
+    {
+      "prompt": "1+1=",
+      "cpu_output": "2\n1+1",
+      "gpu_output": "2缛ائف Brushes put",
+      "cpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "abf48d68f5d1562f0ff931dd45dc502a",
+          "max_tokens": 5,
+          "response_time": 0.3699251413345337,
+          "text": "2\n1+1",
+          "tokens_per_second": 13.516247749328613
+        },
+        "success": true
+      },
+      "gpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "5b1f1aceb65346587e0597d8ba7df51a",
+          "max_tokens": 5,
+          "response_time": 0.25848326086997986,
+          "text": "2缛ائف Brushes put",
+          "tokens_per_second": 19.343612670898438
+        },
+        "success": true
+      },
+      "cpu_quality": {
+        "quality_score": 0.9,
+        "has_gibberish": false,
+        "length": 5,
+        "word_count": 2,
+        "unique_words": 2,
+        "non_ascii_ratio": 0.0,
+        "special_char_ratio": 0.2
+      },
+      "gpu_quality": {
+        "quality_score": 0.8823529411764706,
+        "has_gibberish": false,
+        "length": 17,
+        "word_count": 3,
+        "unique_words": 3,
+        "non_ascii_ratio": 0.23529411764705882,
+        "special_char_ratio": 0.0
+      },
+      "cpu_tokens": 5,
+      "gpu_tokens": 5,
+      "cpu_time": 0.3699251413345337,
+      "gpu_time": 0.25848326086997986,
+      "has_issue": false
+    },
+    {
+      "prompt": "The capital of China is",
+      "cpu_output": " Beijing, and the capital",
+      "gpu_output": " Beijingference.R сто\",\"",
+      "cpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "b89e341da2fc564722f07c6a860c3a6d",
+          "max_tokens": 5,
+          "response_time": 0.4178634583950043,
+          "text": " Beijing, and the capital",
+          "tokens_per_second": 11.965631484985352
+        },
+        "success": true
+      },
+      "gpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "5a64d9d1a6da93b5a629fa0dca51c9c2",
+          "max_tokens": 5,
+          "response_time": 0.2874589264392853,
+          "text": " Beijingference.R сто\",\"",
+          "tokens_per_second": 17.393789291381836
+        },
+        "success": true
+      },
+      "cpu_quality": {
+        "quality_score": 0.98,
+        "has_gibberish": false,
+        "length": 25,
+        "word_count": 4,
+        "unique_words": 4,
+        "non_ascii_ratio": 0.0,
+        "special_char_ratio": 0.04
+      },
+      "gpu_quality": {
+        "quality_score": 0.8541666666666667,
+        "has_gibberish": false,
+        "length": 24,
+        "word_count": 2,
+        "unique_words": 2,
+        "non_ascii_ratio": 0.125,
+        "special_char_ratio": 0.16666666666666666
+      },
+      "cpu_tokens": 5,
+      "gpu_tokens": 5,
+      "cpu_time": 0.4178634583950043,
+      "gpu_time": 0.2874589264392853,
+      "has_issue": false
+    },
+    {
+      "prompt": "Python is a programming language",
+      "cpu_output": " that has been designed for",
+      "gpu_output": " that Isדלק put сто",
+      "cpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "2716ec80e90e7bd72e624579d4e41e5a",
+          "max_tokens": 5,
+          "response_time": 0.41813018918037415,
+          "text": " that has been designed for",
+          "tokens_per_second": 11.957998275756836
+        },
+        "success": true
+      },
+      "gpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "245d431bd959243ad24490854a857e31",
+          "max_tokens": 5,
+          "response_time": 0.292911171913147,
+          "text": " that Isדלק put сто",
+          "tokens_per_second": 17.07002067565918
+        },
+        "success": true
+      },
+      "cpu_quality": {
+        "quality_score": 1.0,
+        "has_gibberish": false,
+        "length": 27,
+        "word_count": 5,
+        "unique_words": 5,
+        "non_ascii_ratio": 0.0,
+        "special_char_ratio": 0.0
+      },
+      "gpu_quality": {
+        "quality_score": 0.8421052631578947,
+        "has_gibberish": false,
+        "length": 19,
+        "word_count": 4,
+        "unique_words": 4,
+        "non_ascii_ratio": 0.3157894736842105,
+        "special_char_ratio": 0.0
+      },
+      "cpu_tokens": 5,
+      "gpu_tokens": 5,
+      "cpu_time": 0.41813018918037415,
+      "gpu_time": 0.292911171913147,
+      "has_issue": false
+    },
+    {
+      "prompt": "Today is a sunny day",
+      "cpu_output": ", and the weather forecast",
+      "gpu_output": ", script сто than PASS",
+      "cpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "79c77104b94baa5ad65b0888e0ce8dbf",
+          "max_tokens": 5,
+          "response_time": 0.41683876514434814,
+          "text": ", and the weather forecast",
+          "tokens_per_second": 11.99504566192627
+        },
+        "success": true
+      },
+      "gpu_response": {
+        "data": {
+          "generated_tokens": 5,
+          "id": "1c315a4a5797b80d6b14568cdc209599",
+          "max_tokens": 5,
+          "response_time": 0.27379029989242554,
+          "text": ", script сто than PASS",
+          "tokens_per_second": 18.26215171813965
+        },
+        "success": true
+      },
+      "cpu_quality": {
+        "quality_score": 0.9807692307692307,
+        "has_gibberish": false,
+        "length": 26,
+        "word_count": 5,
+        "unique_words": 5,
+        "non_ascii_ratio": 0.0,
+        "special_char_ratio": 0.038461538461538464
+      },
+      "gpu_quality": {
+        "quality_score": 0.9090909090909091,
+        "has_gibberish": false,
+        "length": 22,
+        "word_count": 5,
+        "unique_words": 5,
+        "non_ascii_ratio": 0.13636363636363635,
+        "special_char_ratio": 0.045454545454545456
+      },
+      "cpu_tokens": 5,
+      "gpu_tokens": 5,
+      "cpu_time": 0.41683876514434814,
+      "gpu_time": 0.27379029989242554,
+      "has_issue": false
+    }
+  ],
+  "summary": {
+    "total_tests": 8,
+    "gpu_gibberish_count": 0,
+    "average_cpu_quality": 0.9367628205128206,
+    "average_gpu_quality": 0.9045262348232549,
+    "success_rate": 100.0
+  }
+}

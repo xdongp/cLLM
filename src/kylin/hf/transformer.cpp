@@ -125,11 +125,22 @@ HFTransformerModel::HFTransformerModel(const std::string& modelDir, DeviceType d
     qkNormBuffer_.resize(headDim);
     
     // 预转换权重到目标精度（消除运行时转换开销）
+    // 注意：如果使用 GPU，需要 FP32 权重用于上传，即使 CPU 使用 FP16/INT8
     if (usePreconvertedWeights_) {
         if (quantType_ == QuantType::FP16) {
             convertWeightsToFP16();
+            // GPU 需要 FP32 权重，所以还要预转换一份（避免 FP16->FP32 精度损失）
+            if (gpuBackend_ && deviceType_ == DeviceType::Metal) {
+                CLLM_INFO("[HFTransformer] GPU mode with FP16: also preconverting to FP32 for GPU upload");
+                preconvertWeights();
+            }
         } else if (quantType_ == QuantType::INT8) {
             convertWeightsToINT8();
+            // GPU 需要 FP32 权重，所以还要预转换一份
+            if (gpuBackend_ && deviceType_ == DeviceType::Metal) {
+                CLLM_INFO("[HFTransformer] GPU mode with INT8: also preconverting to FP32 for GPU upload");
+                preconvertWeights();
+            }
         } else {
             preconvertWeights();  // 默认转为 FP32
         }
@@ -138,17 +149,24 @@ HFTransformerModel::HFTransformerModel(const std::string& modelDir, DeviceType d
     // 初始化 GPU 后端并上传权重
     if (gpuBackend_ && deviceType_ == DeviceType::Metal) {
         if (gpuBackend_->initialize(config_)) {
-            // 准备层权重
+            // 准备层权重 - 直接使用 layersF32_ 中的 FP32 权重
+            // 注意：在 FP16/INT8 模式下，convertWeightsToFP16/INT8() 已经创建了 layersF32_
             std::vector<LayerWeightsGPU> layerWeights(config_.numHiddenLayers);
             for (int i = 0; i < config_.numHiddenLayers; ++i) {
                 layerWeights[i].inputLayernorm = layersF32_[i].inputLayernorm.data();
+                layerWeights[i].postAttentionLayernorm = layersF32_[i].postAttentionLayernorm.data();
+                layerWeights[i].qNorm = layersF32_[i].qNorm.empty() ? nullptr : layersF32_[i].qNorm.data();
+                layerWeights[i].kNorm = layersF32_[i].kNorm.empty() ? nullptr : layersF32_[i].kNorm.data();
+                
+                // 直接使用 layersF32_ 中的 FP32 权重（无论是 FP16/INT8/FP32 模式都已准备好）
+                // 注意：INT8 模式下如果没有调用 preconvertWeights()，这些指针可能为空！
+                if (layersF32_[i].qProj.empty()) {
+                    CLLM_ERROR("[HFTransformer] Layer %d qProj is empty! Cannot upload to GPU.", i);
+                }
                 layerWeights[i].qProj = layersF32_[i].qProj.data();
                 layerWeights[i].kProj = layersF32_[i].kProj.data();
                 layerWeights[i].vProj = layersF32_[i].vProj.data();
                 layerWeights[i].oProj = layersF32_[i].oProj.data();
-                layerWeights[i].qNorm = layersF32_[i].qNorm.empty() ? nullptr : layersF32_[i].qNorm.data();
-                layerWeights[i].kNorm = layersF32_[i].kNorm.empty() ? nullptr : layersF32_[i].kNorm.data();
-                layerWeights[i].postAttentionLayernorm = layersF32_[i].postAttentionLayernorm.data();
                 layerWeights[i].gateProj = layersF32_[i].gateProj.data();
                 layerWeights[i].upProj = layersF32_[i].upProj.data();
                 layerWeights[i].downProj = layersF32_[i].downProj.data();
@@ -166,6 +184,8 @@ HFTransformerModel::HFTransformerModel(const std::string& modelDir, DeviceType d
                 CLLM_WARN("[HFTransformer] Failed to upload weights to GPU, using CPU");
                 useGPU_ = false;
             }
+            
+            // 临时缓冲区会在函数结束时自动释放
         } else {
             CLLM_WARN("[HFTransformer] GPU backend initialization failed, using CPU");
             useGPU_ = false;
@@ -428,12 +448,20 @@ void HFTransformerModel::convertWeightsToFP16() {
     convertBF16toFP16(embedTokens_, embedTokensFP16_.data(), embedSize);
     CLLM_DEBUG("[HFTransformer] Converted embed_tokens to FP16: %zu elements", embedSize);
     
+    // 同时创建 FP32 版本用于 GPU 上传
+    embedTokensF32_.resize(embedSize);
+    quant_kernels::convert_fp16_to_f32(embedTokensFP16_.data(), embedTokensF32_.data(), embedSize);
+    
     // 转换 LM Head
     if (!config_.tieWordEmbeddings) {
         lmHeadWeightFP16_.resize(embedSize);
         convertBF16toFP16(lmHeadWeight_, lmHeadWeightFP16_.data(), embedSize);
+        // 同时创建 FP32 版本用于 GPU 上传
+        lmHeadWeightF32_.resize(embedSize);
+        quant_kernels::convert_fp16_to_f32(lmHeadWeightFP16_.data(), lmHeadWeightF32_.data(), embedSize);
     } else {
         lmHeadWeightFP16_ = embedTokensFP16_;
+        lmHeadWeightF32_ = embedTokensF32_;  // 共享相同的 FP32 数据
     }
     
     // 转换最终 norm（norm 权重保持 FP32 精度，因为很小）
@@ -466,19 +494,37 @@ void HFTransformerModel::convertWeightsToFP16() {
             ggml_kernels::convert_bf16_to_f32(src.kNorm, dstF32.kNorm.data(), headDim);
         }
         
-        // 大权重矩阵使用 FP16
+        // 大权重矩阵使用 FP16，但同时保留 FP32 版本供 GPU 上传使用
         // Q/K/V/O projections
-        dst16.qProj.resize(qSize * hiddenSize);
-        convertBF16toFP16(src.qProj, dst16.qProj.data(), qSize * hiddenSize);
+        size_t qProjSize = static_cast<size_t>(qSize) * hiddenSize;
+        size_t kvProjSize = static_cast<size_t>(kvSize) * hiddenSize;
+        size_t oProjSize = static_cast<size_t>(hiddenSize) * qSize;
         
-        dst16.kProj.resize(kvSize * hiddenSize);
-        convertBF16toFP16(src.kProj, dst16.kProj.data(), kvSize * hiddenSize);
+        // FP16 版本（用于 CPU 推理）
+        dst16.qProj.resize(qProjSize);
+        convertBF16toFP16(src.qProj, dst16.qProj.data(), qProjSize);
         
-        dst16.vProj.resize(kvSize * hiddenSize);
-        convertBF16toFP16(src.vProj, dst16.vProj.data(), kvSize * hiddenSize);
+        dst16.kProj.resize(kvProjSize);
+        convertBF16toFP16(src.kProj, dst16.kProj.data(), kvProjSize);
         
-        dst16.oProj.resize(hiddenSize * qSize);
-        convertBF16toFP16(src.oProj, dst16.oProj.data(), hiddenSize * qSize);
+        dst16.vProj.resize(kvProjSize);
+        convertBF16toFP16(src.vProj, dst16.vProj.data(), kvProjSize);
+        
+        dst16.oProj.resize(oProjSize);
+        convertBF16toFP16(src.oProj, dst16.oProj.data(), oProjSize);
+        
+        // FP32 版本（用于 GPU 上传）
+        dstF32.qProj.resize(qProjSize);
+        quant_kernels::convert_fp16_to_f32(dst16.qProj.data(), dstF32.qProj.data(), qProjSize);
+        
+        dstF32.kProj.resize(kvProjSize);
+        quant_kernels::convert_fp16_to_f32(dst16.kProj.data(), dstF32.kProj.data(), kvProjSize);
+        
+        dstF32.vProj.resize(kvProjSize);
+        quant_kernels::convert_fp16_to_f32(dst16.vProj.data(), dstF32.vProj.data(), kvProjSize);
+        
+        dstF32.oProj.resize(oProjSize);
+        quant_kernels::convert_fp16_to_f32(dst16.oProj.data(), dstF32.oProj.data(), oProjSize);
         
         // 融合 QKV（FP16）
         dst16.qkvProj.resize((qSize + 2 * kvSize) * hiddenSize);
@@ -492,15 +538,28 @@ void HFTransformerModel::convertWeightsToFP16() {
                     dst16.vProj.data(),
                     static_cast<size_t>(kvSize) * hiddenSize * sizeof(uint16_t));
         
-        // FFN projections (FP16)
-        dst16.gateProj.resize(intermediateSize * hiddenSize);
-        convertBF16toFP16(src.gateProj, dst16.gateProj.data(), intermediateSize * hiddenSize);
+        // FFN projections (FP16 + FP32)
+        size_t ffnSize = static_cast<size_t>(intermediateSize) * hiddenSize;
+        size_t downProjSize = static_cast<size_t>(hiddenSize) * intermediateSize;
         
-        dst16.upProj.resize(intermediateSize * hiddenSize);
-        convertBF16toFP16(src.upProj, dst16.upProj.data(), intermediateSize * hiddenSize);
+        dst16.gateProj.resize(ffnSize);
+        convertBF16toFP16(src.gateProj, dst16.gateProj.data(), ffnSize);
         
-        dst16.downProj.resize(hiddenSize * intermediateSize);
-        convertBF16toFP16(src.downProj, dst16.downProj.data(), hiddenSize * intermediateSize);
+        dst16.upProj.resize(ffnSize);
+        convertBF16toFP16(src.upProj, dst16.upProj.data(), ffnSize);
+        
+        dst16.downProj.resize(downProjSize);
+        convertBF16toFP16(src.downProj, dst16.downProj.data(), downProjSize);
+        
+        // FP32 版本（用于 GPU 上传）
+        dstF32.gateProj.resize(ffnSize);
+        quant_kernels::convert_fp16_to_f32(dst16.gateProj.data(), dstF32.gateProj.data(), ffnSize);
+        
+        dstF32.upProj.resize(ffnSize);
+        quant_kernels::convert_fp16_to_f32(dst16.upProj.data(), dstF32.upProj.data(), ffnSize);
+        
+        dstF32.downProj.resize(downProjSize);
+        quant_kernels::convert_fp16_to_f32(dst16.downProj.data(), dstF32.downProj.data(), downProjSize);
         
         // 融合 Gate/Up（FP16）
         dst16.gateUpProj.resize(static_cast<size_t>(intermediateSize) * hiddenSize * 2);
@@ -697,24 +756,19 @@ std::vector<float> HFTransformerModel::forward(const std::vector<int32_t>& input
     int seqLen = static_cast<int>(inputIds.size());
     int startPos = kvCacheLen_;
     
-    CLLM_DEBUG("[HFTransformer] Forward: seq_len=%d, start_pos=%d, token_id=%d, GPU=%s", 
-               seqLen, startPos, inputIds.empty() ? -1 : inputIds[0],
+    int actualTokenId = inputIds.empty() ? -1 : inputIds.back();
+    CLLM_DEBUG("[HFTransformer] Forward: seq_len=%d, start_pos=%d, token_id=%d (last), first_token=%d, GPU=%s", 
+               seqLen, startPos, actualTokenId, inputIds.empty() ? -1 : inputIds[0],
                useGPU_ ? "true" : "false");
     
-    // GPU forward 暂时禁用 - CPU BLAS 已经很快
-    // 真正的 GPU 加速需要使用 GGML 计算图，但 API 复杂
-    // 当前 CPU 实现约 25 tok/s，已达到目标
-    // if (useGPU_ && gpuBackend_ && seqLen == 1) {
-    //     auto logits = gpuBackend_->forward(inputIds[0], startPos);
-    //     if (!logits.empty()) {
-    //         kvCacheLen_ = startPos + 1;
-    //         return logits;
-    //     }
-    // }
-    
-    // 目前只支持单 token 推理
-    if (seqLen != 1) {
-        CLLM_WARN("[HFTransformer] Currently only supports single token inference");
+    // GPU forward 已启用 - Flash Attention 形状问题已修复
+    // 在生成模式下，我们总是只处理最后一个 token，因为之前的 token 已经在 KV Cache 中
+    if (useGPU_ && gpuBackend_) {
+        auto logits = gpuBackend_->forward(inputIds.back(), startPos);
+        if (!logits.empty()) {
+            kvCacheLen_ = startPos + 1;
+            return logits;
+        }
     }
     
     // CPU Forward 路径
@@ -729,8 +783,15 @@ std::vector<float> HFTransformerModel::forward(const std::vector<int32_t>& input
             if (hiddenStates_[i] > maxVal) maxVal = hiddenStates_[i];
             sum += hiddenStates_[i];
         }
-        CLLM_DEBUG("[HFTransformer] Embedding stats: min=%.4f, max=%.4f, mean=%.4f", 
-                   minVal, maxVal, sum / config_.hiddenSize);
+        int debugTokenId = inputIds.empty() ? -1 : inputIds.back();
+        CLLM_INFO("[LAYER_DEBUG] Embedding: token_id=%d (last), min=%.6f, max=%.6f, mean=%.6f, device=%s",
+                   debugTokenId, minVal, maxVal, sum / config_.hiddenSize,
+                   useGPU_ ? "GPU" : "CPU");
+        
+        // 输出前 10 个 embedding 值用于对比
+        CLLM_INFO("[LAYER_DEBUG] Embedding first 10 values: [%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f]",
+                   hiddenStates_[0], hiddenStates_[1], hiddenStates_[2], hiddenStates_[3], hiddenStates_[4],
+                   hiddenStates_[5], hiddenStates_[6], hiddenStates_[7], hiddenStates_[8], hiddenStates_[9]);
     }
     
     // 保存残差（使用 memcpy 更快）
@@ -739,21 +800,108 @@ std::vector<float> HFTransformerModel::forward(const std::vector<int32_t>& input
     // Transformer 层
     for (int i = 0; i < config_.numHiddenLayers; ++i) {
         // 1. RMS Norm (input_layernorm)
-        const float* normWeight = usePreconvertedWeights_ 
+        const float* normWeight = usePreconvertedWeights_
             ? layersF32_[i].inputLayernorm.data()
             : (bf16ToF32Array(layers_[i].inputLayernorm, normWeightBuffer_.data(), config_.hiddenSize),
                normWeightBuffer_.data());
-        rmsNorm(hiddenStates_.data(), normWeight, normOutput_.data(), 
+
+        // DEBUG: 打印 Layer 0 和 Layer 1 的 RMS Norm 前输入
+        if ((i == 0 || i == 1) && (startPos == 0 || startPos == 1)) {
+            CLLM_INFO("[CPU DEBUG] Layer %d Before RMS Norm (pos=%d) - Input first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      i, startPos, hiddenStates_[0], hiddenStates_[1], hiddenStates_[2], hiddenStates_[3], hiddenStates_[4]);
+        }
+
+        // DEBUG: 计算并打印 RMS Norm 后的输出（未乘以权重）
+        if ((i == 0 || i == 1) && (startPos == 0 || startPos == 1)) {
+            float sumSq = 0.0f;
+            for (int j = 0; j < config_.hiddenSize; ++j) {
+                sumSq += hiddenStates_[j] * hiddenStates_[j];
+            }
+            float scale = 1.0f / std::sqrt(sumSq / config_.hiddenSize + config_.rmsNormEps);
+            CLLM_INFO("[CPU DEBUG] Layer %d RMS Norm scale (pos=%d, inv_rms): %.6f", i, startPos, scale);
+            CLLM_INFO("[CPU DEBUG] Layer %d After RMS Norm (pos=%d, before weight mul) - Output first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      i, startPos, hiddenStates_[0] * scale, hiddenStates_[1] * scale, hiddenStates_[2] * scale,
+                      hiddenStates_[3] * scale, hiddenStates_[4] * scale);
+        }
+
+        rmsNorm(hiddenStates_.data(), normWeight, normOutput_.data(),
                 config_.hiddenSize, config_.rmsNormEps);
-        
+
+        // DEBUG: 打印 Layer 0 和 Layer 1 的 RMS Norm 后输出（乘以权重后）
+        if ((i == 0 || i == 1) && (startPos == 0 || startPos == 1)) {
+            CLLM_INFO("[CPU DEBUG] Layer %d After RMS Norm (pos=%d, after weight mul) - Output first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      i, startPos, normOutput_[0], normOutput_[1], normOutput_[2], normOutput_[3], normOutput_[4]);
+        }
+
+        // DEBUG: 保存所有层的 RMS Norm 后输出统计信息
+        if (startPos == 0) {
+            float minVal = normOutput_[0], maxVal = normOutput_[0];
+            double sum = 0;
+            for (int j = 0; j < config_.hiddenSize; ++j) {
+                if (normOutput_[j] < minVal) minVal = normOutput_[j];
+                if (normOutput_[j] > maxVal) maxVal = normOutput_[j];
+                sum += normOutput_[j];
+            }
+            float mean = sum / config_.hiddenSize;
+            CLLM_INFO("[CPU Layer %2d] RMS Norm Stats: min=%.6f, max=%.6f, mean=%.6f, first5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      i, minVal, maxVal, mean, normOutput_[0], normOutput_[1], normOutput_[2], normOutput_[3], normOutput_[4]);
+        }
+
         // 2. Self-Attention
+        // DEBUG: 打印 Layer 0 和 Layer 1 的 Attention 输入 (position 0 和 1)
+        if ((i == 0 || i == 1) && (startPos == 0 || startPos == 1)) {
+            CLLM_INFO("[CPU DEBUG] Layer %d Attention Input (pos=%d) - Input first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      i, startPos, normOutput_[0], normOutput_[1], normOutput_[2], normOutput_[3], normOutput_[4]);
+        }
+        
         attention(i, normOutput_.data(), attnOutput_.data(), seqLen, startPos);
-        
+
+        // DEBUG: 打印 Layer 0 和 Layer 1 的 Attention 输出 (position 0 和 1)
+        if ((i == 0 || i == 1) && (startPos == 0 || startPos == 1)) {
+            CLLM_INFO("[CPU DEBUG] Layer %d Attention Output (pos=%d) - Output first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      i, startPos, attnOutput_[0], attnOutput_[1], attnOutput_[2], attnOutput_[3], attnOutput_[4]);
+        }
+
+        // DEBUG: Attention 输出统计
+        if (startPos == 0) {
+            float minVal = attnOutput_[0], maxVal = attnOutput_[0];
+            double sum = 0;
+            for (int j = 0; j < config_.hiddenSize; ++j) {
+                if (attnOutput_[j] < minVal) minVal = attnOutput_[j];
+                if (attnOutput_[j] > maxVal) maxVal = attnOutput_[j];
+                sum += attnOutput_[j];
+            }
+            float mean = sum / config_.hiddenSize;
+            CLLM_INFO("[CPU Layer %2d] Attention Output Stats: min=%.6f, max=%.6f, mean=%.6f, first5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      i, minVal, maxVal, mean, attnOutput_[0], attnOutput_[1], attnOutput_[2], attnOutput_[3], attnOutput_[4]);
+        }
+
         // 3. Residual Add（使用 SIMD 优化）
-        ggml_kernels::vector_add(residual_.data(), attnOutput_.data(), 
+        ggml_kernels::vector_add(residual_.data(), attnOutput_.data(),
                                  hiddenStates_.data(), config_.hiddenSize);
-        memcpy(residual_.data(), hiddenStates_.data(), config_.hiddenSize * sizeof(float));
         
+        // DEBUG: 打印 Layer 0 和 Layer 1 的 Residual + Attention Output (position 0 和 1)
+        if ((i == 0 || i == 1) && (startPos == 0 || startPos == 1)) {
+            CLLM_INFO("[CPU DEBUG] Layer %d After Residual+Attention (pos=%d) - Output first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      i, startPos, hiddenStates_[0], hiddenStates_[1], hiddenStates_[2], hiddenStates_[3], hiddenStates_[4]);
+        }
+        
+        memcpy(residual_.data(), hiddenStates_.data(), config_.hiddenSize * sizeof(float));
+
+        // DEBUG: 第一次残差连接后统计
+        if (startPos == 0) {
+            float minVal = hiddenStates_[0], maxVal = hiddenStates_[0];
+            double sum = 0;
+            for (int j = 0; j < config_.hiddenSize; ++j) {
+                if (hiddenStates_[j] < minVal) minVal = hiddenStates_[j];
+                if (hiddenStates_[j] > maxVal) maxVal = hiddenStates_[j];
+                sum += hiddenStates_[j];
+            }
+            float mean = sum / config_.hiddenSize;
+            CLLM_INFO("[CPU Layer %2d] After 1st Residual Stats: min=%.6f, max=%.6f, mean=%.6f, first5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      i, minVal, maxVal, mean, hiddenStates_[0], hiddenStates_[1], hiddenStates_[2], hiddenStates_[3], hiddenStates_[4]);
+        }
+
         // 4. RMS Norm (post_attention_layernorm)
         const float* postNormWeight = usePreconvertedWeights_
             ? layersF32_[i].postAttentionLayernorm.data()
@@ -761,16 +909,72 @@ std::vector<float> HFTransformerModel::forward(const std::vector<int32_t>& input
                normWeightBuffer_.data());
         rmsNorm(hiddenStates_.data(), postNormWeight, normOutput_.data(),
                 config_.hiddenSize, config_.rmsNormEps);
-        
+
+        // DEBUG: Post-Attention RMS Norm 后统计
+        if (startPos == 0) {
+            float minVal = normOutput_[0], maxVal = normOutput_[0];
+            double sum = 0;
+            for (int j = 0; j < config_.hiddenSize; ++j) {
+                if (normOutput_[j] < minVal) minVal = normOutput_[j];
+                if (normOutput_[j] > maxVal) maxVal = normOutput_[j];
+                sum += normOutput_[j];
+            }
+            float mean = sum / config_.hiddenSize;
+            CLLM_INFO("[CPU Layer %2d] Post-Attention RMS Norm Stats: min=%.6f, max=%.6f, mean=%.6f, first5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      i, minVal, maxVal, mean, normOutput_[0], normOutput_[1], normOutput_[2], normOutput_[3], normOutput_[4]);
+        }
+
         // 5. FFN
         ffn(i, normOutput_.data(), ffnOutput_.data());
-        
+
+        // DEBUG: FFN 输出统计
+        if (startPos == 0) {
+            float minVal = ffnOutput_[0], maxVal = ffnOutput_[0];
+            double sum = 0;
+            for (int j = 0; j < config_.hiddenSize; ++j) {
+                if (ffnOutput_[j] < minVal) minVal = ffnOutput_[j];
+                if (ffnOutput_[j] > maxVal) maxVal = ffnOutput_[j];
+                sum += ffnOutput_[j];
+            }
+            float mean = sum / config_.hiddenSize;
+            CLLM_INFO("[CPU Layer %2d] FFN Output Stats: min=%.6f, max=%.6f, mean=%.6f, first5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      i, minVal, maxVal, mean, ffnOutput_[0], ffnOutput_[1], ffnOutput_[2], ffnOutput_[3], ffnOutput_[4]);
+        }
+
         // 6. Residual Add
         ggml_kernels::vector_add(residual_.data(), ffnOutput_.data(),
                                  hiddenStates_.data(), config_.hiddenSize);
         memcpy(residual_.data(), hiddenStates_.data(), config_.hiddenSize * sizeof(float));
+
+        // DEBUG: 第二次残差连接后统计（层输出）
+        if (startPos == 0 || startPos == 1) {
+            float minVal = hiddenStates_[0], maxVal = hiddenStates_[0];
+            double sum = 0;
+            for (int j = 0; j < config_.hiddenSize; ++j) {
+                if (hiddenStates_[j] < minVal) minVal = hiddenStates_[j];
+                if (hiddenStates_[j] > maxVal) maxVal = hiddenStates_[j];
+                sum += hiddenStates_[j];
+            }
+            float mean = sum / config_.hiddenSize;
+            CLLM_INFO("[CPU Layer %2d] Layer Output Stats (pos=%d, after 2nd residual): min=%.6f, max=%.6f, mean=%.6f, first5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      i, startPos, minVal, maxVal, mean, hiddenStates_[0], hiddenStates_[1], hiddenStates_[2], hiddenStates_[3], hiddenStates_[4]);
+        }
     }
     
+    // DEBUG: 最终隐藏状态统计（所有层之后）
+    if (startPos == 0) {
+        float minVal = hiddenStates_[0], maxVal = hiddenStates_[0];
+        double sum = 0;
+        for (int j = 0; j < config_.hiddenSize; ++j) {
+            if (hiddenStates_[j] < minVal) minVal = hiddenStates_[j];
+            if (hiddenStates_[j] > maxVal) maxVal = hiddenStates_[j];
+            sum += hiddenStates_[j];
+        }
+        float mean = sum / config_.hiddenSize;
+        CLLM_INFO("[CPU FINAL] Hidden States after all layers: min=%.6f, max=%.6f, mean=%.6f, first5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  minVal, maxVal, mean, hiddenStates_[0], hiddenStates_[1], hiddenStates_[2], hiddenStates_[3], hiddenStates_[4]);
+    }
+
     // Final RMS Norm
     const float* finalNormW = usePreconvertedWeights_
         ? finalNormWeightF32_.data()
@@ -778,14 +982,42 @@ std::vector<float> HFTransformerModel::forward(const std::vector<int32_t>& input
            normWeightBuffer_.data());
     rmsNorm(hiddenStates_.data(), finalNormW, normOutput_.data(),
             config_.hiddenSize, config_.rmsNormEps);
-    
+
+    // DEBUG: Final RMS Norm 后统计
+    if (startPos == 0) {
+        float minVal = normOutput_[0], maxVal = normOutput_[0];
+        double sum = 0;
+        for (int j = 0; j < config_.hiddenSize; ++j) {
+            if (normOutput_[j] < minVal) minVal = normOutput_[j];
+            if (normOutput_[j] > maxVal) maxVal = normOutput_[j];
+            sum += normOutput_[j];
+        }
+        float mean = sum / config_.hiddenSize;
+        CLLM_INFO("[CPU FINAL] After Final RMS Norm: min=%.6f, max=%.6f, mean=%.6f, first5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  minVal, maxVal, mean, normOutput_[0], normOutput_[1], normOutput_[2], normOutput_[3], normOutput_[4]);
+    }
+
     // LM Head
     std::vector<float> logits(config_.vocabSize);
     lmHead(normOutput_.data(), logits.data());
-    
+
+    // DEBUG: Logits 统计
+    if (startPos == 0) {
+        float minVal = logits[0], maxVal = logits[0];
+        double sum = 0;
+        for (int j = 0; j < config_.vocabSize; ++j) {
+            if (logits[j] < minVal) minVal = logits[j];
+            if (logits[j] > maxVal) maxVal = logits[j];
+            sum += logits[j];
+        }
+        float mean = sum / config_.vocabSize;
+        CLLM_INFO("[CPU FINAL] Logits: min=%.6f, max=%.6f, mean=%.6f, first5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  minVal, maxVal, mean, logits[0], logits[1], logits[2], logits[3], logits[4]);
+    }
+
     // 更新 KV Cache 长度
     kvCacheLen_ += seqLen;
-    
+
     return logits;
 }
 
@@ -885,6 +1117,39 @@ void HFTransformerModel::attention(int layerIdx, const float* input,
         matmulBF16(layerBF16.vProj, input, v, kvSize, config_.hiddenSize);
     }
     
+    // Debug: Q/K/V 投影后的统计
+    if (layerIdx == 0 || layerIdx == config_.numHiddenLayers - 1) {
+        float qMin = q[0], qMax = q[0], qSum = 0;
+        float kMin = k[0], kMax = k[0], kSum = 0;
+        float vMin = v[0], vMax = v[0], vSum = 0;
+        
+        for (int i = 0; i < qSize; ++i) {
+            if (q[i] < qMin) qMin = q[i];
+            if (q[i] > qMax) qMax = q[i];
+            qSum += q[i];
+        }
+        
+        for (int i = 0; i < kvSize; ++i) {
+            if (k[i] < kMin) kMin = k[i];
+            if (k[i] > kMax) kMax = k[i];
+            kSum += k[i];
+            if (v[i] < vMin) vMin = v[i];
+            if (v[i] > vMax) vMax = v[i];
+            vSum += v[i];
+        }
+        
+        CLLM_INFO("[LAYER_DEBUG] Layer %d QKV Projection: Q[min=%.6f,max=%.6f,mean=%.6f], K[min=%.6f,max=%.6f,mean=%.6f], V[min=%.6f,max=%.6f,mean=%.6f]",
+                   layerIdx, qMin, qMax, qSum / qSize, kMin, kMax, kSum / kvSize, vMin, vMax, vSum / kvSize);
+    }
+    
+    // DEBUG: 打印 Layer 0 和 Layer 1 的 Q/K Projection 前5个值 (position 0 和 1)
+    if ((layerIdx == 0 || layerIdx == 1) && (startPos == 0 || startPos == 1)) {
+        CLLM_INFO("[CPU DEBUG] Layer %d After Q/K Projection (pos=%d) - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layerIdx, startPos, q[0], q[1], q[2], q[3], q[4]);
+        CLLM_INFO("[CPU DEBUG] Layer %d After Q/K Projection (pos=%d) - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layerIdx, startPos, k[0], k[1], k[2], k[3], k[4]);
+    }
+    
     // Q/K Norm (Qwen3 特有) - 使用预分配缓冲区
     bool hasQKNorm = usePreconvertedWeights_ 
         ? !layersF32_[layerIdx].qNorm.empty()
@@ -928,13 +1193,56 @@ void HFTransformerModel::attention(int layerIdx, const float* input,
         }
     }
     
+    // DEBUG: 打印 RoPE 前的 Q/K 值 (position 0 和 1 都打印)
+    if ((layerIdx == 0 || layerIdx == 1) && (startPos == 0 || startPos == 1)) {
+        CLLM_INFO("[CPU DEBUG] Layer %d Before RoPE (pos=%d) - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layerIdx, startPos, q[0], q[1], q[2], q[3], q[4]);
+        CLLM_INFO("[CPU DEBUG] Layer %d Before RoPE (pos=%d) - Q halfDim=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layerIdx, startPos, q[headDim/2], q[headDim/2+1], q[headDim/2+2], q[headDim/2+3], q[headDim/2+4]);
+        CLLM_INFO("[CPU DEBUG] Layer %d Before RoPE (pos=%d) - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layerIdx, startPos, k[0], k[1], k[2], k[3], k[4]);
+        CLLM_INFO("[CPU DEBUG] Layer %d Before RoPE (pos=%d) - K halfDim=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layerIdx, startPos, k[headDim/2], k[headDim/2+1], k[headDim/2+2], k[headDim/2+3], k[headDim/2+4]);
+    }
+
     // RoPE
     applyRoPE(q, k, headDim, nHeads, nKVHeads, seqLen, startPos);
+
+    // DEBUG: 打印 RoPE 后的 Q/K 值 (position 0 和 1 都打印)
+    if ((layerIdx == 0 || layerIdx == 1) && (startPos == 0 || startPos == 1)) {
+        CLLM_INFO("[CPU DEBUG] Layer %d After RoPE (pos=%d) - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layerIdx, startPos, q[0], q[1], q[2], q[3], q[4]);
+        CLLM_INFO("[CPU DEBUG] Layer %d After RoPE (pos=%d) - Q halfDim=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layerIdx, startPos, q[headDim/2], q[headDim/2+1], q[headDim/2+2], q[headDim/2+3], q[headDim/2+4]);
+        CLLM_INFO("[CPU DEBUG] Layer %d After RoPE (pos=%d) - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layerIdx, startPos, k[0], k[1], k[2], k[3], k[4]);
+        CLLM_INFO("[CPU DEBUG] Layer %d After RoPE (pos=%d) - K halfDim=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layerIdx, startPos, k[headDim/2], k[headDim/2+1], k[headDim/2+2], k[headDim/2+3], k[headDim/2+4]);
+    }
     
     // 存储 K, V 到 cache（使用 memcpy 更快）
     const int cacheOffset = layerIdx * kMaxSeqLen * nKVHeads * headDim + startPos * nKVHeads * headDim;
     memcpy(kCache_.data() + cacheOffset, k, kvSize * sizeof(float));
     memcpy(vCache_.data() + cacheOffset, v, kvSize * sizeof(float));
+    
+    // DEBUG: 打印 KV Cache 统计信息
+    if ((layerIdx == 0 || layerIdx == 1) && startPos < 3) {
+        float kMin = k[0], kMax = k[0];
+        float vMin = v[0], vMax = v[0];
+        double kSum = 0, vSum = 0;
+        for (int i = 0; i < kvSize; ++i) {
+            if (k[i] < kMin) kMin = k[i];
+            if (k[i] > kMax) kMax = k[i];
+            if (v[i] < vMin) vMin = v[i];
+            if (v[i] > vMax) vMax = v[i];
+            kSum += k[i];
+            vSum += v[i];
+        }
+        CLLM_INFO("[CPU KV DEBUG] Layer %d position %d - K: min=%.6f, max=%.6f, mean=%.6f, first5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layerIdx, startPos, kMin, kMax, kSum / kvSize, k[0], k[1], k[2], k[3], k[4]);
+        CLLM_INFO("[CPU KV DEBUG] Layer %d position %d - V: min=%.6f, max=%.6f, mean=%.6f, first5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layerIdx, startPos, vMin, vMax, vSum / kvSize, v[0], v[1], v[2], v[3], v[4]);
+    }
     
     // Attention 计算
     const float scale = 1.0f / std::sqrt(static_cast<float>(headDim));
@@ -1072,6 +1380,18 @@ void HFTransformerModel::attention(int layerIdx, const float* input,
     } else {
         matmulBF16(layerBF16.oProj, attnOut, output, config_.hiddenSize, qSize);
     }
+    
+    // Debug: Attention 输出统计
+    if (layerIdx == 0 || layerIdx == config_.numHiddenLayers - 1) {
+        float outMin = output[0], outMax = output[0], outSum = 0;
+        for (int i = 0; i < config_.hiddenSize; ++i) {
+            if (output[i] < outMin) outMin = output[i];
+            if (output[i] > outMax) outMax = output[i];
+            outSum += output[i];
+        }
+        CLLM_INFO("[LAYER_DEBUG] Layer %d Attention Output: min=%.6f, max=%.6f, mean=%.6f",
+                   layerIdx, outMin, outMax, outSum / config_.hiddenSize);
+    }
 }
 
 void HFTransformerModel::ffn(int layerIdx, const float* input, float* output) {
@@ -1146,6 +1466,18 @@ void HFTransformerModel::ffn(int layerIdx, const float* input, float* output) {
     } else {
         matmulBF16(layers_[layerIdx].downProj, gate, output, hiddenSize, intermediateSize);
     }
+    
+    // Debug: FFN 输出统计
+    if (layerIdx == 0 || layerIdx == config_.numHiddenLayers - 1) {
+        float outMin = output[0], outMax = output[0], outSum = 0;
+        for (int i = 0; i < config_.hiddenSize; ++i) {
+            if (output[i] < outMin) outMin = output[i];
+            if (output[i] > outMax) outMax = output[i];
+            outSum += output[i];
+        }
+        CLLM_INFO("[LAYER_DEBUG] Layer %d FFN Output: min=%.6f, max=%.6f, mean=%.6f",
+                   layerIdx, outMin, outMax, outSum / config_.hiddenSize);
+    }
 }
 
 void HFTransformerModel::lmHead(const float* input, float* output) {
@@ -1162,6 +1494,41 @@ void HFTransformerModel::lmHead(const float* input, float* output) {
     } else {
         matmulBF16(lmHeadWeight_, input, output, config_.vocabSize, config_.hiddenSize);
     }
+    
+    // DEBUG: 检查 logits 统计
+    {
+        float minVal = output[0], maxVal = output[0];
+        double sum = 0;
+        size_t nanCount = 0, infCount = 0;
+        
+        for (size_t i = 0; i < static_cast<size_t>(config_.vocabSize); ++i) {
+            float v = output[i];
+            if (std::isnan(v)) { nanCount++; continue; }
+            if (std::isinf(v)) { infCount++; continue; }
+            if (v < minVal) minVal = v;
+            if (v > maxVal) maxVal = v;
+            sum += v;
+        }
+        
+        CLLM_DEBUG("[HFTransformer] LM Head logits: vocab=%d, min=%.4f, max=%.4f, mean=%.4f, NaN=%zu, Inf=%zu",
+                   config_.vocabSize, minVal, maxVal, sum / config_.vocabSize, nanCount, infCount);
+        
+        // 检查关键 token 的 logit
+        CLLM_DEBUG("  Key tokens: EOS(151645)=%.4f, BOS(151643)=%.4f, <|im_end|>=%.4f",
+                   output[151645], output[151643], output[151645]);
+        
+        // 找到 top 5 tokens
+        std::vector<std::pair<float, int>> topTokens;
+        for (int i = 0; i < config_.vocabSize && i < 200000; ++i) {
+            topTokens.push_back({output[i], i});
+        }
+        std::partial_sort(topTokens.begin(), topTokens.begin() + std::min(5, (int)topTokens.size()),
+                          topTokens.end(), std::greater<>());
+        CLLM_DEBUG("  Top 5 tokens: ");
+        for (int i = 0; i < std::min(5, (int)topTokens.size()); ++i) {
+            CLLM_DEBUG("    [%d]: logit=%.4f", topTokens[i].second, topTokens[i].first);
+        }
+    }
 }
 
 void HFTransformerModel::applyRoPE(float* q, float* k, int headDim, 
@@ -1174,30 +1541,69 @@ void HFTransformerModel::applyRoPE(float* q, float* k, int headDim,
         const float* cosPtr = ropeFreqsCos_.data() + actualPos * halfDim;
         const float* sinPtr = ropeFreqsSin_.data() + actualPos * halfDim;
         
-        // Q 头
+        // DEBUG: 打印 Position 1 的 RoPE 频率值和计算过程
+        if (actualPos == 1 && nHeads > 0) {
+            CLLM_INFO("[CPU DEBUG] Position 1 RoPE params: headDim=%d, halfDim=%d", headDim, halfDim);
+            CLLM_INFO("[CPU DEBUG] Position 1 RoPE freqs - cos[0..4]=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      cosPtr[0], cosPtr[1], cosPtr[2], cosPtr[3], cosPtr[4]);
+            CLLM_INFO("[CPU DEBUG] Position 1 RoPE freqs - sin[0..4]=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      sinPtr[0], sinPtr[1], sinPtr[2], sinPtr[3], sinPtr[4]);
+            
+            // DEBUG: 手动计算 i=0 的 RoPE 结果
+            float* head = q;
+            float x0 = head[0];
+            float x1 = head[halfDim];
+            float newX0 = x0 * cosPtr[0] - x1 * sinPtr[0];
+            float newX1 = x0 * sinPtr[0] + x1 * cosPtr[0];
+            CLLM_INFO("[CPU DEBUG] Position 1 RoPE manual calc i=0: x0=%.6f, x1=%.6f (head[%d]), cos=%.6f, sin=%.6f",
+                      x0, x1, halfDim, cosPtr[0], sinPtr[0]);
+            CLLM_INFO("[CPU DEBUG] Position 1 RoPE manual calc i=0: newX0=%.6f, newX1=%.6f",
+                      newX0, newX1);
+        }
+        
+        // Q 头 - 与 GGML 的 RoPE 实现保持一致
+        // GGML 使用 i0 = 0, 2, 4, ... 作为频率索引
+        // 每个元素 i 使用频率索引 i0 = 2*i，即 cosPtr[i] 对应频率 2*i/headDim
         for (int h = 0; h < nHeads; ++h) {
             float* head = q + h * headDim;
-            for (int i = 0; i < halfDim; i += 2) {
-                // 展开循环，减少循环开销
-                float x0_0 = head[i], x1_0 = head[i + halfDim];
-                float x0_1 = head[i+1], x1_1 = head[i+1 + halfDim];
-                head[i] = x0_0 * cosPtr[i] - x1_0 * sinPtr[i];
-                head[i + halfDim] = x0_0 * sinPtr[i] + x1_0 * cosPtr[i];
-                head[i+1] = x0_1 * cosPtr[i+1] - x1_1 * sinPtr[i+1];
-                head[i+1 + halfDim] = x0_1 * sinPtr[i+1] + x1_1 * cosPtr[i+1];
+            // DEBUG: 打印第一个 head 的指针和值
+            if (actualPos == 1 && h == 0) {
+                CLLM_INFO("[CPU DEBUG] Position 1 RoPE loop h=0: head=%p, q=%p, head[0]=%.6f, head[64]=%.6f",
+                          (void*)head, (void*)q, head[0], head[64]);
+            }
+            for (int i = 0; i < halfDim; ++i) {
+                // 频率索引：GGML 使用 i0 = 2*i，所以 freqIdx = i
+                const int freqIdx = i;
+                float x0 = head[i];
+                float x1 = head[i + halfDim];
+                float newX0 = x0 * cosPtr[freqIdx] - x1 * sinPtr[freqIdx];
+                float newX1 = x0 * sinPtr[freqIdx] + x1 * cosPtr[freqIdx];
+                // DEBUG: 打印 i=0 的计算过程
+                if (actualPos == 1 && h == 0 && i == 0) {
+                    CLLM_INFO("[CPU DEBUG] Position 1 RoPE loop h=0 i=0: x0=%.6f, x1=%.6f, newX0=%.6f, newX1=%.6f",
+                              x0, x1, newX0, newX1);
+                }
+                head[i] = newX0;
+                head[i + halfDim] = newX1;
+                // DEBUG: 打印 i=0 的赋值结果
+                if (actualPos == 1 && h == 0 && i == 0) {
+                    CLLM_INFO("[CPU DEBUG] Position 1 RoPE loop h=0 i=0 after: head[0]=%.6f, head[64]=%.6f",
+                              head[0], head[64]);
+                }
             }
         }
         
         // K 头
         for (int h = 0; h < nKVHeads; ++h) {
             float* head = k + h * headDim;
-            for (int i = 0; i < halfDim; i += 2) {
-                float x0_0 = head[i], x1_0 = head[i + halfDim];
-                float x0_1 = head[i+1], x1_1 = head[i+1 + halfDim];
-                head[i] = x0_0 * cosPtr[i] - x1_0 * sinPtr[i];
-                head[i + halfDim] = x0_0 * sinPtr[i] + x1_0 * cosPtr[i];
-                head[i+1] = x0_1 * cosPtr[i+1] - x1_1 * sinPtr[i+1];
-                head[i+1 + halfDim] = x0_1 * sinPtr[i+1] + x1_1 * cosPtr[i+1];
+            for (int i = 0; i < halfDim; ++i) {
+                const int freqIdx = i;
+                float x0 = head[i];
+                float x1 = head[i + halfDim];
+                float newX0 = x0 * cosPtr[freqIdx] - x1 * sinPtr[freqIdx];
+                float newX1 = x0 * sinPtr[freqIdx] + x1 * cosPtr[freqIdx];
+                head[i] = newX0;
+                head[i + halfDim] = newX1;
             }
         }
     }
@@ -1629,6 +2035,267 @@ int HFTransformerModel::getAvailableKVSlots() const {
 
 int HFTransformerModel::getUsedKVSlots() const {
     return kvCachePool_ ? kvCachePool_->usedSlots() : 0;
+}
+
+int HFTransformerModel::getKVCacheCurrentLength(size_t requestId) const {
+    if (!kvCachePool_) {
+        return -1;
+    }
+    
+    KVCacheSlot* slot = kvCachePool_->get(requestId);
+    if (!slot) {
+        return -1;  // 请求不存在
+    }
+    
+    return slot->currentLen;
+}
+
+std::vector<std::vector<float>> HFTransformerModel::forwardBatchGPU(
+    const std::vector<int>& tokenIds,
+    const std::vector<int>& positions,
+    const std::vector<size_t>& requestIds) {
+    
+    if (!loaded_) {
+        CLLM_ERROR("[HFTransformer] Model not loaded");
+        return {};
+    }
+    
+    if (tokenIds.size() != positions.size() || tokenIds.size() != requestIds.size()) {
+        CLLM_ERROR("[HFTransformer] Input sizes mismatch");
+        return {};
+    }
+    
+    const size_t batchSize = tokenIds.size();
+    if (batchSize == 0) {
+        return {};
+    }
+    
+    // 检查是否可以使用 GPU 后端进行批处理
+    if (useGPU_ && gpuBackend_) {
+        CLLM_DEBUG("[HFTransformer] Using GPU accelerated batch processing for %zu requests", batchSize);
+        
+        // 使用 GPU 后端的批处理功能
+        auto gpuResults = gpuBackend_->forwardBatch(tokenIds, positions);
+        
+        // 验证结果大小
+        if (gpuResults.size() != batchSize) {
+            CLLM_ERROR("[HFTransformer] GPU batch results size mismatch");
+            return {};
+        }
+        
+        return gpuResults;
+    } else {
+        CLLM_DEBUG("[HFTransformer] GPU not available, falling back to CPU batch processing");
+        
+        // 如果 GPU 不可用，使用 CPU 批处理
+        std::vector<std::vector<float>> results(batchSize);
+        
+        #pragma omp parallel for schedule(dynamic) if(batchSize > 1)
+        for (size_t i = 0; i < batchSize; ++i) {
+            results[i] = forwardWithRequestId({tokenIds[i]}, requestIds[i]);
+        }
+        
+        return results;
+    }
+}
+
+// ============================================================================
+// 调试功能：CPU 前向推理并导出中间结果
+// ============================================================================
+std::vector<float> HFTransformerModel::forwardWithDebugCPU(
+    const std::vector<int32_t>& inputIds,
+    std::vector<LayerDebugOutput>& layerOutputs,
+    std::vector<float>& embeddingOutput,
+    std::vector<float>& finalNormOutput
+) {
+    if (!loaded_) {
+        CLLM_ERROR("[HFTransformer] Model not loaded");
+        return {};
+    }
+    
+    int seqLen = static_cast<int>(inputIds.size());
+    int startPos = kvCacheLen_;
+    
+    CLLM_INFO("[DEBUG_CPU] Starting forward with debug, seqLen=%d, startPos=%d", seqLen, startPos);
+    
+    // 清空输出容器
+    layerOutputs.clear();
+    layerOutputs.reserve(config_.numHiddenLayers);
+    
+    // Embedding
+    embedding(inputIds, hiddenStates_);
+    embeddingOutput = hiddenStates_;  // 保存 Embedding 输出
+    
+    CLLM_INFO("[DEBUG_CPU] Embedding output shape: [%d], first 5 values: [%.6f, %.6f, %.6f, %.6f, %.6f]",
+              config_.hiddenSize,
+              embeddingOutput[0], embeddingOutput[1], embeddingOutput[2], 
+              embeddingOutput[3], embeddingOutput[4]);
+    
+    // DEBUG: 验证权重
+    if (usePreconvertedWeights_) {
+        CLLM_INFO("[DEBUG_CPU] Layer 0 q_proj first 5 weights: [%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layersF32_[0].qProj[0], layersF32_[0].qProj[1], layersF32_[0].qProj[2],
+                  layersF32_[0].qProj[3], layersF32_[0].qProj[4]);
+    }
+    
+    // 保存残差
+    memcpy(residual_.data(), hiddenStates_.data(), config_.hiddenSize * sizeof(float));
+    
+    // Transformer 层
+    for (int layerIdx = 0; layerIdx < config_.numHiddenLayers; ++layerIdx) {
+        LayerDebugOutput layerDebug;
+        layerDebug.layerIdx = layerIdx;
+        
+        // 1. RMS Norm (input_layernorm)
+        const float* normWeight = usePreconvertedWeights_ 
+            ? layersF32_[layerIdx].inputLayernorm.data()
+            : (bf16ToF32Array(layers_[layerIdx].inputLayernorm, normWeightBuffer_.data(), config_.hiddenSize),
+               normWeightBuffer_.data());
+        rmsNorm(hiddenStates_.data(), normWeight, normOutput_.data(), 
+                config_.hiddenSize, config_.rmsNormEps);
+        layerDebug.inputNormOutput = normOutput_;  // 保存 Input Norm 输出
+        
+        // 2. QKV Projection
+        int qSize = config_.numAttentionHeads * config_.getHeadDim();
+        int kvSize = config_.getNumKVHeads() * config_.getHeadDim();
+        std::vector<float> qkvOutput(qSize + 2 * kvSize);
+        
+        if (usePreconvertedWeights_ && !layersF32_[layerIdx].qkvProj.empty()) {
+            // 使用融合的 QKV
+            matmulF32(layersF32_[layerIdx].qkvProj.data(), normOutput_.data(), 
+                     qkvOutput.data(), qSize + 2 * kvSize, config_.hiddenSize);
+        } else {
+            // 分别计算 Q, K, V
+            std::vector<float> q(qSize), k(kvSize), v(kvSize);
+            if (usePreconvertedWeights_) {
+                matmulF32(layersF32_[layerIdx].qProj.data(), normOutput_.data(), 
+                         q.data(), qSize, config_.hiddenSize);
+                matmulF32(layersF32_[layerIdx].kProj.data(), normOutput_.data(), 
+                         k.data(), kvSize, config_.hiddenSize);
+                matmulF32(layersF32_[layerIdx].vProj.data(), normOutput_.data(), 
+                         v.data(), kvSize, config_.hiddenSize);
+            } else {
+                matmulBF16(layers_[layerIdx].qProj, normOutput_.data(), 
+                          q.data(), qSize, config_.hiddenSize);
+                matmulBF16(layers_[layerIdx].kProj, normOutput_.data(), 
+                          k.data(), kvSize, config_.hiddenSize);
+                matmulBF16(layers_[layerIdx].vProj, normOutput_.data(), 
+                          v.data(), kvSize, config_.hiddenSize);
+            }
+            memcpy(qkvOutput.data(), q.data(), qSize * sizeof(float));
+            memcpy(qkvOutput.data() + qSize, k.data(), kvSize * sizeof(float));
+            memcpy(qkvOutput.data() + qSize + kvSize, v.data(), kvSize * sizeof(float));
+        }
+        layerDebug.qkvOutput = qkvOutput;  // 保存 QKV 输出
+        
+        // 3. Self-Attention
+        attention(layerIdx, normOutput_.data(), attnOutput_.data(), seqLen, startPos);
+        layerDebug.attentionOutput.assign(attnOutput_.data(), 
+                                          attnOutput_.data() + config_.hiddenSize);  // 保存 Attention 输出
+        
+        // 4. Residual Add
+        ggml_kernels::vector_add(residual_.data(), attnOutput_.data(), 
+                                 hiddenStates_.data(), config_.hiddenSize);
+        memcpy(residual_.data(), hiddenStates_.data(), config_.hiddenSize * sizeof(float));
+        
+        // 5. RMS Norm (post_attention_layernorm)
+        const float* postNormWeight = usePreconvertedWeights_
+            ? layersF32_[layerIdx].postAttentionLayernorm.data()
+            : (bf16ToF32Array(layers_[layerIdx].postAttentionLayernorm, normWeightBuffer_.data(), config_.hiddenSize),
+               normWeightBuffer_.data());
+        rmsNorm(hiddenStates_.data(), postNormWeight, normOutput_.data(),
+                config_.hiddenSize, config_.rmsNormEps);
+        layerDebug.postNormOutput = normOutput_;  // 保存 Post Norm 输出
+        
+        // 6. FFN
+        ffn(layerIdx, normOutput_.data(), ffnOutput_.data());
+        layerDebug.ffnOutput.assign(ffnOutput_.data(), 
+                                    ffnOutput_.data() + config_.hiddenSize);  // 保存 FFN 输出
+        
+        // 7. Residual Add
+        ggml_kernels::vector_add(residual_.data(), ffnOutput_.data(),
+                                 hiddenStates_.data(), config_.hiddenSize);
+        memcpy(residual_.data(), hiddenStates_.data(), config_.hiddenSize * sizeof(float));
+        
+        // 保存该层的所有输出
+        layerOutputs.push_back(std::move(layerDebug));
+        
+        CLLM_INFO("[DEBUG_CPU] Layer %d completed", layerIdx);
+    }
+    
+    // Final RMS Norm
+    const float* finalNormW = usePreconvertedWeights_
+        ? finalNormWeightF32_.data()
+        : (bf16ToF32Array(finalNormWeight_, normWeightBuffer_.data(), config_.hiddenSize),
+           normWeightBuffer_.data());
+    rmsNorm(hiddenStates_.data(), finalNormW, normOutput_.data(),
+            config_.hiddenSize, config_.rmsNormEps);
+    finalNormOutput = normOutput_;  // 保存 Final Norm 输出
+    
+    CLLM_INFO("[DEBUG_CPU] Final norm output shape: [%d], first 5 values: [%.6f, %.6f, %.6f, %.6f, %.6f]",
+              config_.hiddenSize,
+              finalNormOutput[0], finalNormOutput[1], finalNormOutput[2],
+              finalNormOutput[3], finalNormOutput[4]);
+    
+    // LM Head
+    std::vector<float> logits(config_.vocabSize);
+    lmHead(normOutput_.data(), logits.data());
+    
+    CLLM_INFO("[DEBUG_CPU] Logits shape: [%d], first 5 values: [%.6f, %.6f, %.6f, %.6f, %.6f]",
+              config_.vocabSize,
+              logits[0], logits[1], logits[2], logits[3], logits[4]);
+    
+    // 更新 KV Cache 长度
+    kvCacheLen_ = startPos + seqLen;
+    
+    return logits;
+}
+
+// ============================================================================
+// 调试功能：GPU 前向推理并导出中间结果
+// ============================================================================
+std::vector<float> HFTransformerModel::forwardWithDebugGPU(
+    const std::vector<int32_t>& inputIds,
+    std::vector<GGMLGPUBackend::LayerOutput>& layerOutputs,
+    std::vector<float>& embeddingOutput,
+    std::vector<float>& finalNormOutput
+) {
+    if (!loaded_) {
+        CLLM_ERROR("[HFTransformer] Model not loaded");
+        return {};
+    }
+    
+    if (!useGPU_ || !gpuBackend_) {
+        CLLM_ERROR("[HFTransformer] GPU backend not available");
+        return {};
+    }
+    
+    int seqLen = static_cast<int>(inputIds.size());
+    if (seqLen != 1) {
+        CLLM_ERROR("[HFTransformer] GPU debug only supports single token inference");
+        return {};
+    }
+    
+    int startPos = kvCacheLen_;
+    CLLM_INFO("[DEBUG_GPU] Starting forward with debug, tokenId=%d, startPos=%d", 
+              inputIds[0], startPos);
+    
+    // 使用 GPU 后端的 forwardWithDebug
+    auto logits = gpuBackend_->forwardWithDebug(
+        inputIds[0], startPos,
+        &layerOutputs,
+        &embeddingOutput,
+        &finalNormOutput
+    );
+    
+    if (!logits.empty()) {
+        kvCacheLen_ = startPos + 1;
+        CLLM_INFO("[DEBUG_GPU] Forward completed successfully, logits shape: [%zu]", logits.size());
+    } else {
+        CLLM_ERROR("[DEBUG_GPU] Forward failed");
+    }
+    
+    return logits;
 }
 
 } // namespace kylin

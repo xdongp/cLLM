@@ -63,7 +63,7 @@ public:
      * @param tokenId Token ID
      * @return true 如果是特殊token，false 否则
      */
-    bool isSpecialToken(int tokenId) const;
+    bool isSpecialToken(int tokenId) const override;
     
     void setPadToken(int tokenId);  ///< 设置填充token
     void setEosToken(int tokenId);  ///< 设置结束token

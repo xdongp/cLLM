@@ -977,46 +977,99 @@ kylin::Tensor KylinBackend::forwardBatch(
         // 使用 per-request KV Cache 实现真正的并发
         CLLM_DEBUG("[KylinBackend] HuggingFace mode: processing %zu requests with per-request KV cache", batchSize);
         
-        // 并行处理所有请求
-        #pragma omp parallel for schedule(dynamic) if(batchSize > 1)
+        // 优化：如果所有请求都是单 token 推理，使用 GPU 批处理加速
+        bool allSingleToken = true;
+        std::vector<int> singleTokenIds;
+        std::vector<int> positions;
+        std::vector<size_t> requestIds;
+        
+        // 检查是否所有请求都是单 token
         for (size_t i = 0; i < batchSize; ++i) {
             const auto &pos = requestPositions[i];
             const size_t start = pos.first;
             const size_t end = pos.second;
-
+            
             if (start > end || end > totalTokens) {
                 CLLM_ERROR("[KylinBackend] Invalid requestPositions range for request %zu", i);
                 continue;
             }
             
-            // 获取请求 ID（用于 per-request KV Cache）
+            const size_t reqLen = end - start;
             size_t requestId = (i < sequenceIds.size()) ? sequenceIds[i] : i;
             
-            const size_t reqLen = end - start;
-            
-            if (reqLen > 1) {
-                // 新请求（多 token）：使用 per-request KV Cache 逐 token 处理
-                // 先释放旧的 KV Cache（如果存在）
-                hfModel_->releaseKVCache(requestId);
-                
-                for (size_t t = 0; t < reqLen; ++t) {
-                    std::vector<int32_t> singleToken = {flatInputIds[start + t]};
-                    std::vector<float> tokenLogits = hfModel_->forwardWithRequestId(singleToken, requestId);
-                    
-                    // 复制到输出
-                    std::copy(tokenLogits.begin(), tokenLogits.end(),
-                             logits.data() + (start + t) * vocab);
-                }
+            if (reqLen == 1) {
+                singleTokenIds.push_back(flatInputIds[start]);
+                positions.push_back(hfModel_->getKVCacheCurrentLength(requestId)); // 获取当前位置
+                requestIds.push_back(requestId);
             } else {
-                // 单 token 推理：增量生成，使用现有的 KV Cache
-                std::vector<int32_t> requestIds32(flatInputIds.begin() + start, flatInputIds.begin() + end);
-                std::vector<float> requestLogits = hfModel_->forwardWithRequestId(requestIds32, requestId);
-                
-                // 复制到输出
-                std::copy(requestLogits.begin(), requestLogits.end(), 
-                         logits.data() + start * vocab);
+                // 有多 token 请求，不能使用 GPU 批处理
+                allSingleToken = false;
+                break;
             }
         }
+        
+        if (allSingleToken && !singleTokenIds.empty()) {
+             // 所有请求都是单 token，使用 GPU 加速批处理
+             CLLM_DEBUG("[KylinBackend] All requests are single-token, using GPU accelerated batch processing (%zu tokens)", 
+                       singleTokenIds.size());
+             
+             // 获取每个请求的当前位置
+             std::vector<int> positions;
+             for (size_t i = 0; i < requestIds.size(); ++i) {
+                 int pos = hfModel_->getKVCacheCurrentLength(requestIds[i]);
+                 positions.push_back(pos >= 0 ? pos : 0);  // 如果获取失败，使用默认位置 0
+             }
+             
+             auto gpuResults = hfModel_->forwardBatchGPU(singleTokenIds, positions, requestIds);
+             
+             // 将结果复制到输出张量
+             for (size_t i = 0; i < singleTokenIds.size(); ++i) {
+                 const size_t start = requestPositions[i].first;
+                 std::copy(gpuResults[i].begin(), gpuResults[i].end(), 
+                          logits.data() + start * vocab);
+             }
+         } else {
+             // 混合请求或有多个 token 的请求，使用原来的处理方式
+             #pragma omp parallel for schedule(dynamic) if(batchSize > 1)
+             for (size_t i = 0; i < batchSize; ++i) {
+                 const auto &pos = requestPositions[i];
+                 const size_t start = pos.first;
+                 const size_t end = pos.second;
+
+                 if (start > end || end > totalTokens) {
+                     CLLM_ERROR("[KylinBackend] Invalid requestPositions range for request %zu", i);
+                     continue;
+                 }
+                 
+                 // 获取请求 ID（用于 per-request KV Cache）
+                 size_t requestId = (i < sequenceIds.size()) ? sequenceIds[i] : i;
+                 
+                 const size_t reqLen = end - start;
+                 
+                 if (reqLen > 1) {
+                     // 新请求（多 token）：使用 per-request KV Cache 逐 token 处理
+                     // 先释放旧的 KV Cache（如果存在）
+                     hfModel_->releaseKVCache(requestId);
+                     
+                     for (size_t t = 0; t < reqLen; ++t) {
+                         std::vector<int32_t> singleToken = {flatInputIds[start + t]};
+                         std::vector<float> tokenLogits = hfModel_->forwardWithRequestId(singleToken, requestId);
+                         
+                         // 复制到输出
+                         std::copy(tokenLogits.begin(), tokenLogits.end(),
+                                  logits.data() + (start + t) * vocab);
+                     }
+                 } else {
+                     // 单 token 推理：增量生成，使用现有的 KV Cache
+                     std::vector<int32_t> requestIds32(flatInputIds.begin() + start, flatInputIds.begin() + end);
+                     std::vector<float> requestLogits = hfModel_->forwardWithRequestId(requestIds32, requestId);
+                     
+                     // 复制到输出
+                     std::copy(requestLogits.begin(), requestLogits.end(), 
+                              logits.data() + start * vocab);
+                 }
+             }
+         }
         
         return logits;
     }

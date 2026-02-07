@@ -35,6 +35,7 @@ public:
     int getEosId() const override;
     int getPadId() const override;
     int getUnkId() const override;
+    bool isSpecialToken(int tokenId) const override;
     
     cllm::ModelType getModelType() const override;
 

@@ -21,7 +21,7 @@ server:
 # ============================================================
 model:
   # HuggingFace 模型目录路径
-  path: "/Users/dannypan/.cache/modelscope/hub/models/Qwen/Qwen3-0.6B"
+  path: "/Users/dannypan/PycharmProjects/cLLM/model/Qwen/Qwen3-0.6B"
   
   vocab_size: 151936       # 词表大小
   max_context_length: 4096 # 最大上下文长度

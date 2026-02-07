@@ -52,6 +52,10 @@ public:
     int getUnkId() const override { return 3; }
     
     ModelType getModelType() const override { return ModelType::AUTO; }
+    
+    bool isSpecialToken(int tokenId) const override {
+        return tokenId == 0 || tokenId == 1 || tokenId == 2 || tokenId == 3;
+    }
 };
 
 class HttpConcurrencyTest : public ::testing::Test {

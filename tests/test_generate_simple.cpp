@@ -52,6 +52,10 @@ public:
     
     ModelType getModelType() const override { return ModelType::LLAMA; }
     
+    bool isSpecialToken(int tokenId) const override {
+        return tokenId == eosId_ || tokenId == padId_ || tokenId == bosId_ || tokenId == unkId_;
+    }
+
 private:
     int eosId_;
     int padId_;
