@@ -1,5 +1,5 @@
 /**
- * @file ggml_backend.cpp
+ * @file ggml_backend_impl.cpp
  * @brief GGML GPU 后端完整实现
  * 
  * 包含完整的 Transformer 计算：
