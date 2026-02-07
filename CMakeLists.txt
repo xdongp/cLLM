@@ -257,6 +257,7 @@ add_library(cllm_core
     src/kylin/hf/safetensors_loader.cpp
     src/kylin/hf/ggml_backend.cpp
     src/kylin/hf/kv_cache_pool.cpp
+    src/kylin/backend/backend_factory.cpp
     src/kylin/gguf/loader.cpp
     src/kylin/gguf/transformer.cpp
     src/kylin/gguf/ggml_operator.cpp
