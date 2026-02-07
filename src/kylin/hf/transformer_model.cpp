@@ -3,7 +3,7 @@
  * @brief Transformer模型核心实现 - 构造函数和主流程
  */
 
-#include "cllm/kylin/hf/transformer.h"
+#include "cllm/kylin/hf/hf_transformer_model.h"
 #include "cllm/kylin/core/ggml_kernels.h"
 #include "cllm/common/logger.h"
 

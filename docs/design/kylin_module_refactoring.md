@@ -131,7 +131,7 @@ mkdir -p include/cllm/kylin/{core,ops,hf,gguf,model}
 ```cpp
 // include/cllm/kylin/hf_transformer.h (兼容旧路径)
 #pragma once
-#include "cllm/kylin/hf/transformer.h"
+#include "cllm/kylin/hf/hf_transformer_model.h"
 ```
 
 ## 6. 时间线

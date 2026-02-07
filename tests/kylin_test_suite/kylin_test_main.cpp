@@ -98,7 +98,7 @@
 #include "test_layer_by_layer_debug.cpp"    // Stage 25-26: 逐层调试测试
 
 // 真实模型测试需要的头文件
-#include "cllm/kylin/hf/transformer.h"
+#include "cllm/kylin/hf/hf_transformer_model.h"
 #include "cllm/tokenizer/tokenizer.h"
 #include "cllm/tokenizer/hf_tokenizer.h"
 #include "test_real_model_comparison.cpp"   // 真实模型对比测试

@@ -197,7 +197,7 @@ include/cllm/kylin/core/
 ### 5.2 修改文件
 
 - `src/kylin/hf/transformer.cpp` - 替换 matmulBF16
-- `include/cllm/kylin/hf/transformer.h` - 添加 F32 权重成员
+- `include/cllm/kylin/hf/hf_transformer_model.h` - 添加 F32 权重成员
 - `CMakeLists.txt` - 添加 OpenMP 支持
 
 ## 6. 实现示例

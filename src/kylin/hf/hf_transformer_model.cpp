@@ -1,11 +1,11 @@
 /**
- * @file hf_transformer.cpp
+ * @file hf_transformer_model.cpp
  * @brief HuggingFace Transformer 模型实现
  * 
  * 使用 SIMD 优化内核加速推理
  */
 
-#include "cllm/kylin/hf/transformer.h"
+#include "cllm/kylin/hf/hf_transformer_model.h"
 #include "cllm/kylin/core/ggml_kernels.h"
 #include "cllm/common/logger.h"
 

@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "cllm/kylin/hf/transformer.h"
+#include "cllm/kylin/hf/hf_transformer_model.h"
 #include "cllm/kylin/core/tensor.h"
 #include "cllm/model/config.h"
 

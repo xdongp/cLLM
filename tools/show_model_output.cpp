@@ -6,7 +6,7 @@
 #include <chrono>
 #include <iomanip>
 #include <nlohmann/json.hpp>
-#include <cllm/kylin/hf/transformer.h>
+#include <cllm/kylin/hf/hf_transformer_model.h>
 #include <cllm/tokenizer/hf_tokenizer.h>
 #include <cllm/common/logger.h>
 #include <spdlog/spdlog.h>

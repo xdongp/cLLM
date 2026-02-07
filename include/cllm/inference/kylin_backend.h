@@ -15,7 +15,7 @@
 #include "cllm/inference/backend_interface.h"
 #include "cllm/kylin/model/transformer_model.h"
 #include "cllm/kylin/gguf/transformer.h"  // GGML 原生实现
-#include "cllm/kylin/hf/transformer.h"    // HuggingFace safetensors 支持
+#include "cllm/kylin/hf/hf_transformer_model.h"    // HuggingFace safetensors 支持
 #include "cllm/kylin/gguf/operator_interface.h"
 #include "cllm/model/loader_interface.h"
 #include "cllm/kylin/core/tensor.h"

@@ -3,7 +3,7 @@
  * @brief 测试 HuggingFace Transformer 模型
  */
 
-#include "cllm/kylin/hf/transformer.h"
+#include "cllm/kylin/hf/hf_transformer_model.h"
 #include "cllm/common/logger.h"
 
 #include <iostream>

@@ -1,5 +1,5 @@
 /**
- * @file hf_transformer.h
+ * @file hf_transformer_model.h
  * @brief HuggingFace 格式 Transformer 模型
  * 
  * 支持直接加载 safetensors 格式的 HF 模型进行推理
