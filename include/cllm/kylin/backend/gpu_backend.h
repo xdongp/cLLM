@@ -17,6 +17,7 @@ namespace kylin {
 
 // 前向声明
 class GGMLGPUBackend;
+struct GPUBackendImpl;
 
 /**
  * @brief GPU 计算后端
@@ -55,8 +56,11 @@ private:
     // 初始化标志
     bool initialized_ = false;
     
-    // 封装的 GGML GPU 后端
+    // 封装的 GGML GPU 后端（保留用于兼容性）
     std::unique_ptr<GGMLGPUBackend> ggmlBackend_;
+    
+    // PIMPL 模式隐藏实现细节
+    std::unique_ptr<GPUBackendImpl> impl_;
 };
 
 } // namespace kylin
