@@ -489,6 +489,248 @@ std::vector<float> GGMLGPUBackend::forward(int tokenId, int position) {
     return forwardCPU(tokenId, position);
 }
 
+std::vector<float> GGMLGPUBackend::forwardCPU(int tokenId, int position) {
+    // 使用 backend/cpu/CPUBackend 的实现
+    // 这里提供一个简化的实现，实际应该通过 backend/cpu/cpu_backend.cpp 调用
+    CLLM_WARN("[GGMLGPUBackend::forwardCPU] Using simplified CPU implementation");
+    
+    // 缓存权重到 CPU（首次调用）
+    if (weightsCached_.empty()) {
+        cacheWeightsToCPU();
+    }
+    
+    const int hiddenSize = config_.hiddenSize;
+    const int vocabSize = config_.vocabSize;
+    const int numLayers = config_.numHiddenLayers;
+    const int headDim = config_.getHeadDim();
+    const int nHeads = config_.numAttentionHeads;
+    const int nKVHeads = config_.getNumKVHeads();
+    const int intermediateSize = config_.intermediateSize;
+    const int qSize = nHeads * headDim;
+    const int kvSize = nKVHeads * headDim;
+    const int gqa = nHeads / nKVHeads;
+    const float eps = config_.rmsNormEps;
+    
+    // 工作缓冲区
+    std::vector<float> hidden(hiddenSize);
+    std::vector<float> residual(hiddenSize);
+    std::vector<float> normOut(hiddenSize);
+    std::vector<float> q(qSize);
+    std::vector<float> k(kvSize);
+    std::vector<float> v(kvSize);
+    std::vector<float> attnOut(qSize);
+    std::vector<float> oOut(hiddenSize);
+    std::vector<float> ffnGate(intermediateSize);
+    std::vector<float> ffnUp(intermediateSize);
+    std::vector<float> ffnDown(hiddenSize);
+    
+    const int maxSeqLen = 2048;
+    std::vector<float> attnScores(maxSeqLen);
+    
+    // 1. Embedding
+    const float* embedData = weightsCached_["embed_tokens"].data();
+    for (int i = 0; i < hiddenSize; ++i) {
+        hidden[i] = embedData[i * vocabSize + tokenId];
+    }
+    
+    // 2. Transformer Layers
+    for (int l = 0; l < numLayers; ++l) {
+        // 获取层权重
+        const float* inputNormW = weightsCached_["layer." + std::to_string(l) + ".input_layernorm"].data();
+        const float* qProjW = weightsCached_["layer." + std::to_string(l) + ".q_proj"].data();
+        const float* kProjW = weightsCached_["layer." + std::to_string(l) + ".k_proj"].data();
+        const float* vProjW = weightsCached_["layer." + std::to_string(l) + ".v_proj"].data();
+        const float* oProjW = weightsCached_["layer." + std::to_string(l) + ".o_proj"].data();
+        const float* qNormW = weightsCached_["layer." + std::to_string(l) + ".q_norm"].data();
+        const float* kNormW = weightsCached_["layer." + std::to_string(l) + ".k_norm"].data();
+        const float* postNormW = weightsCached_["layer." + std::to_string(l) + ".post_attention_layernorm"].data();
+        const float* gateProjW = weightsCached_["layer." + std::to_string(l) + ".gate_proj"].data();
+        const float* upProjW = weightsCached_["layer." + std::to_string(l) + ".up_proj"].data();
+        const float* downProjW = weightsCached_["layer." + std::to_string(l) + ".down_proj"].data();
+        
+        // 保存残差
+        std::copy(hidden.begin(), hidden.end(), residual.begin());
+        
+        // Input RMSNorm
+        float sum = 0.0f;
+        for (int i = 0; i < hiddenSize; ++i) sum += hidden[i] * hidden[i];
+        float scale = 1.0f / std::sqrt(sum / hiddenSize + eps);
+        for (int i = 0; i < hiddenSize; ++i) normOut[i] = hidden[i] * scale * inputNormW[i];
+        
+        // Q, K, V Projections
+        for (int m = 0; m < qSize; ++m) {
+            float s = 0.0f;
+            for (int k = 0; k < hiddenSize; ++k) s += qProjW[m * hiddenSize + k] * normOut[k];
+            q[m] = s;
+        }
+        for (int m = 0; m < kvSize; ++m) {
+            float s = 0.0f;
+            for (int k = 0; k < hiddenSize; ++k) s += kProjW[m * hiddenSize + k] * normOut[k];
+            k[m] = s;
+        }
+        for (int m = 0; m < kvSize; ++m) {
+            float s = 0.0f;
+            for (int k = 0; k < hiddenSize; ++k) s += vProjW[m * hiddenSize + k] * normOut[k];
+            v[m] = s;
+        }
+        
+        // Q/K Norm (Qwen3)
+        if (qNormW && kNormW) {
+            for (int h = 0; h < nHeads; ++h) {
+                float* qHead = q.data() + h * headDim;
+                float qsum = 0.0f;
+                for (int i = 0; i < headDim; ++i) qsum += qHead[i] * qHead[i];
+                float qscale = 1.0f / std::sqrt(qsum / headDim + eps);
+                for (int i = 0; i < headDim; ++i) qHead[i] *= qscale * qNormW[i];
+            }
+            for (int h = 0; h < nKVHeads; ++h) {
+                float* kHead = k.data() + h * headDim;
+                float ksum = 0.0f;
+                for (int i = 0; i < headDim; ++i) ksum += kHead[i] * kHead[i];
+                float kscale = 1.0f / std::sqrt(ksum / headDim + eps);
+                for (int i = 0; i < headDim; ++i) kHead[i] *= kscale * kNormW[i];
+            }
+        }
+        
+        // RoPE
+        const int halfDim = headDim / 2;
+        for (int h = 0; h < nHeads; ++h) {
+            float* qHead = q.data() + h * headDim;
+            for (int i = 0; i < halfDim; ++i) {
+                float freq = 1.0f / std::pow(config_.ropeTheta, 2.0f * i / headDim);
+                float angle = position * freq;
+                float cos_val = std::cos(angle);
+                float sin_val = std::sin(angle);
+                float x0 = qHead[i];
+                float x1 = qHead[i + halfDim];
+                qHead[i] = x0 * cos_val - x1 * sin_val;
+                qHead[i + halfDim] = x0 * sin_val + x1 * cos_val;
+            }
+        }
+        for (int h = 0; h < nKVHeads; ++h) {
+            float* kHead = k.data() + h * headDim;
+            for (int i = 0; i < halfDim; ++i) {
+                float freq = 1.0f / std::pow(config_.ropeTheta, 2.0f * i / headDim);
+                float angle = position * freq;
+                float cos_val = std::cos(angle);
+                float sin_val = std::sin(angle);
+                float x0 = kHead[i];
+                float x1 = kHead[i + halfDim];
+                kHead[i] = x0 * cos_val - x1 * sin_val;
+                kHead[i + halfDim] = x0 * sin_val + x1 * cos_val;
+            }
+        }
+        
+        // 更新 KV Cache
+        float* kCacheLayer = kCacheCPU_[l].data();
+        float* vCacheLayer = vCacheCPU_[l].data();
+        std::copy(k.begin(), k.end(), kCacheLayer + position * kvSize);
+        std::copy(v.begin(), v.end(), vCacheLayer + position * kvSize);
+        
+        // Attention
+        const int totalLen = position + 1;
+        std::fill(attnOut.begin(), attnOut.end(), 0.0f);
+        
+        for (int h = 0; h < nHeads; ++h) {
+            float* qHead = q.data() + h * headDim;
+            float* outHead = attnOut.data() + h * headDim;
+            int kvHead = h / gqa;
+            
+            // 计算 attention scores
+            for (int t = 0; t < totalLen; ++t) {
+                float* kHead = kCacheLayer + t * kvSize + kvHead * headDim;
+                float score = 0.0f;
+                for (int d = 0; d < headDim; ++d) score += qHead[d] * kHead[d];
+                attnScores[t] = score / std::sqrt(static_cast<float>(headDim));
+            }
+            
+            // Softmax
+            float maxVal = attnScores[0];
+            for (int i = 1; i < totalLen; ++i) if (attnScores[i] > maxVal) maxVal = attnScores[i];
+            float sum_exp = 0.0f;
+            for (int i = 0; i < totalLen; ++i) {
+                attnScores[i] = std::exp(attnScores[i] - maxVal);
+                sum_exp += attnScores[i];
+            }
+            for (int i = 0; i < totalLen; ++i) attnScores[i] /= sum_exp;
+            
+            // 加权求和
+            for (int d = 0; d < headDim; ++d) {
+                float sum = 0.0f;
+                for (int t = 0; t < totalLen; ++t) {
+                    float* vHead = vCacheLayer + t * kvSize + kvHead * headDim;
+                    sum += attnScores[t] * vHead[d];
+                }
+                outHead[d] = sum;
+            }
+        }
+        
+        // O Projection
+        for (int m = 0; m < hiddenSize; ++m) {
+            float s = 0.0f;
+            for (int k = 0; k < qSize; ++k) s += oProjW[m * qSize + k] * attnOut[k];
+            oOut[m] = s;
+        }
+        
+        // 残差连接
+        for (int i = 0; i < hiddenSize; ++i) hidden[i] = residual[i] + oOut[i];
+        
+        // 保存残差
+        std::copy(hidden.begin(), hidden.end(), residual.begin());
+        
+        // Post Attention RMSNorm
+        sum = 0.0f;
+        for (int i = 0; i < hiddenSize; ++i) sum += hidden[i] * hidden[i];
+        scale = 1.0f / std::sqrt(sum / hiddenSize + eps);
+        for (int i = 0; i < hiddenSize; ++i) normOut[i] = hidden[i] * scale * postNormW[i];
+        
+        // FFN (SwiGLU)
+        for (int m = 0; m < intermediateSize; ++m) {
+            float s = 0.0f;
+            for (int k = 0; k < hiddenSize; ++k) s += gateProjW[m * hiddenSize + k] * normOut[k];
+            ffnGate[m] = s;
+        }
+        for (int m = 0; m < intermediateSize; ++m) {
+            float s = 0.0f;
+            for (int k = 0; k < hiddenSize; ++k) s += upProjW[m * hiddenSize + k] * normOut[k];
+            ffnUp[m] = s;
+        }
+        
+        // SwiGLU
+        for (int i = 0; i < intermediateSize; ++i) {
+            ffnGate[i] = ffnGate[i] / (1.0f + std::exp(-ffnGate[i])) * ffnUp[i];
+        }
+        
+        // Down projection
+        for (int m = 0; m < hiddenSize; ++m) {
+            float s = 0.0f;
+            for (int k = 0; k < intermediateSize; ++k) s += downProjW[m * intermediateSize + k] * ffnGate[k];
+            ffnDown[m] = s;
+        }
+        
+        // 残差连接
+        for (int i = 0; i < hiddenSize; ++i) hidden[i] = residual[i] + ffnDown[i];
+    }
+    
+    // 3. Final RMSNorm
+    const float* finalNormW = weightsCached_["final_norm"].data();
+    float sum = 0.0f;
+    for (int i = 0; i < hiddenSize; ++i) sum += hidden[i] * hidden[i];
+    float scale = 1.0f / std::sqrt(sum / hiddenSize + eps);
+    for (int i = 0; i < hiddenSize; ++i) normOut[i] = hidden[i] * scale * finalNormW[i];
+    
+    // 4. LM Head
+    const float* lmHeadW = weightsCached_["lm_head"].data();
+    std::vector<float> logits(vocabSize);
+    for (int m = 0; m < vocabSize; ++m) {
+        float s = 0.0f;
+        for (int k = 0; k < hiddenSize; ++k) s += lmHeadW[m * hiddenSize + k] * normOut[k];
+        logits[m] = s;
+    }
+    
+    return logits;
+}
+
 // 保留原来的 CPU 实现作为参考（已移至 cpu_backend.cpp）
 // 以下代码将在后续清理中移除
 #if 0
