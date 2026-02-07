@@ -72,6 +72,7 @@ struct CPUBackendImpl {
     std::vector<float> attnOutBuffer;
     std::vector<float> gateBuffer;
     std::vector<float> upBuffer;
+    std::vector<float> logitsBuffer;
     
     // RoPE 频率
     std::vector<float> ropeFreqsCos;
@@ -105,6 +106,7 @@ struct CPUBackendImpl {
         
         gateBuffer.resize(intermediateSize);
         upBuffer.resize(intermediateSize);
+        logitsBuffer.resize(config.vocabSize);
     }
     
     void precomputeRoPE() {
@@ -120,6 +122,96 @@ struct CPUBackendImpl {
                 ropeFreqsSin[pos * headDim / 2 + i] = std::sin(angle);
             }
         }
+    }
+    
+    // 获取或创建 KV Cache
+    KVCache& getOrCreateKVCache(int requestId) {
+        auto it = kvCaches.find(requestId);
+        if (it == kvCaches.end()) {
+            // 创建新的 KV Cache
+            int numLayers = config.numHiddenLayers;
+            int numKVHeads = config.getNumKVHeads();
+            int headDim = config.getHeadDim();
+            size_t kvSize = static_cast<size_t>(numLayers) * kMaxSeqLen * numKVHeads * headDim;
+            
+            KVCache cache;
+            cache.kCache.resize(kvSize, 0.0f);
+            cache.vCache.resize(kvSize, 0.0f);
+            cache.currentLen = 0;
+            kvCaches[requestId] = std::move(cache);
+            return kvCaches[requestId];
+        }
+        return it->second;
+    }
+    
+    // RMS Norm
+    void rmsNorm(const float* input, const float* weight, float* output, int size, float eps) {
+        ggml_kernels::rms_norm(input, weight, output, size, eps);
+    }
+    
+    // 矩阵乘法 F32
+    void matmulF32(const float* weight, const float* input, float* output, int outFeatures, int inFeatures) {
+        ggml_kernels::matmul_f32(weight, input, output, outFeatures, inFeatures);
+    }
+    
+    // 应用 RoPE
+    void applyRoPE(float* q, float* k, int headDim, int nHeads, int nKVHeads, int seqLen, int startPos) {
+        const int halfDim = headDim / 2;
+        
+        for (int pos = 0; pos < seqLen; ++pos) {
+            const int actualPos = startPos + pos;
+            const float* cosPtr = ropeFreqsCos.data() + actualPos * halfDim;
+            const float* sinPtr = ropeFreqsSin.data() + actualPos * halfDim;
+            
+            // Q 头
+            for (int h = 0; h < nHeads; ++h) {
+                float* head = q + h * headDim;
+                for (int i = 0; i < halfDim; ++i) {
+                    float x0 = head[i];
+                    float x1 = head[i + halfDim];
+                    float cos = cosPtr[i];
+                    float sin = sinPtr[i];
+                    head[i] = x0 * cos - x1 * sin;
+                    head[i + halfDim] = x0 * sin + x1 * cos;
+                }
+            }
+            
+            // K 头
+            for (int h = 0; h < nKVHeads; ++h) {
+                float* head = k + h * headDim;
+                for (int i = 0; i < halfDim; ++i) {
+                    float x0 = head[i];
+                    float x1 = head[i + halfDim];
+                    float cos = cosPtr[i];
+                    float sin = sinPtr[i];
+                    head[i] = x0 * cos - x1 * sin;
+                    head[i + halfDim] = x0 * sin + x1 * cos;
+                }
+            }
+        }
+    }
+    
+    // Softmax
+    void softmax(float* scores, int size) {
+        float maxVal = scores[0];
+        for (int i = 1; i < size; ++i) {
+            if (scores[i] > maxVal) maxVal = scores[i];
+        }
+        
+        float sum = 0.0f;
+        for (int i = 0; i < size; ++i) {
+            scores[i] = std::exp(scores[i] - maxVal);
+            sum += scores[i];
+        }
+        
+        for (int i = 0; i < size; ++i) {
+            scores[i] /= sum;
+        }
+    }
+    
+    // SiLU 激活函数
+    float silu(float x) {
+        return x / (1.0f + std::exp(-x));
     }
 };
 
@@ -160,9 +252,10 @@ bool CPUBackend::loadWeights(const ModelWeights& weights) {
     }
     
     // TODO: 从 weights 加载到 impl_->layers 等
+    // 这里需要根据 weights.weightType 进行相应的转换
     
     weightsLoaded_ = true;
-    CLLM_INFO("[CPUBackend] Weights loaded");
+    CLLM_INFO("[CPUBackend] Weights loaded (placeholder)");
     return true;
 }
 
@@ -175,10 +268,29 @@ std::vector<float> CPUBackend::forward(
         return {};
     }
     
-    // TODO: 实现完整的前向推理
-    CLLM_WARN("[CPUBackend] forward() partially implemented");
+    if (!weightsLoaded_) {
+        CLLM_ERROR("[CPUBackend] Weights not loaded");
+        return {};
+    }
     
-    // 返回空向量表示未实现
+    // 检查权重是否已实际加载到 layers
+    if (impl_->layers.empty()) {
+        CLLM_WARN("[CPUBackend] Weights not loaded into layers, forward not implemented yet");
+        return {};
+    }
+    
+    // TODO: 实现完整的前向推理
+    // 1. Embedding
+    // 2. 对于每一层：
+    //    - RMS Norm
+    //    - QKV Projection
+    //    - RoPE
+    //    - Attention
+    //    - FFN
+    // 3. Final RMS Norm
+    // 4. LM Head
+    
+    CLLM_WARN("[CPUBackend] forward() not fully implemented yet");
     return {};
 }
 
@@ -191,9 +303,14 @@ std::vector<std::vector<float>> CPUBackend::forwardBatch(
         return {};
     }
     
-    // TODO: 实现批量前向推理
-    CLLM_WARN("[CPUBackend] forwardBatch() not implemented yet");
-    return {};
+    std::vector<std::vector<float>> results;
+    results.reserve(batchInputIds.size());
+    
+    for (size_t i = 0; i < batchInputIds.size(); ++i) {
+        results.push_back(forward(batchInputIds[i], requestIds[i]));
+    }
+    
+    return results;
 }
 
 void CPUBackend::resetKVCache(int requestId) {
