@@ -14,6 +14,7 @@
 #include "cllm/kylin/hf/kv_cache_pool.h"
 #include "cllm/kylin/core/ggml_kernels.h"
 #include "cllm/kylin/core/quantization.h"
+#include "cllm/kylin/backend/backend_interface.h"
 
 #include <memory>
 #include <vector>
@@ -264,6 +265,9 @@ private:
     // GPU 后端（Metal）
     std::unique_ptr<GGMLGPUBackend> gpuBackend_;
     bool useGPU_ = false;
+    
+    // 统一后端接口（新的后端抽象）
+    std::unique_ptr<IComputeBackend> backend_;
     
     // 权重指针（指向 mmap 的 BF16 数据）
     const uint16_t* embedTokens_ = nullptr;
