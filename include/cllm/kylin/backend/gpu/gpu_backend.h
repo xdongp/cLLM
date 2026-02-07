@@ -3,6 +3,7 @@
  * @brief GPU 后端接口定义
  * 
  * 提供 GPU 推理的接口，支持 Metal 等硬件加速。
+ * 实际实现委托给 hf/ggml_backend.h 中的 GGMLGPUBackend。
  */
 
 #pragma once
@@ -12,16 +13,12 @@
 #include <string>
 #include <memory>
 
-// 前向声明 GGML 类型
-struct ggml_context;
-struct ggml_backend;
-struct ggml_backend_buffer;
-struct ggml_cgraph;
-struct ggml_tensor;
-struct ggml_backend_sched;
-
 namespace cllm {
 namespace kylin {
+
+// 前向声明
+class GGMLGPUBackend;
+
 namespace backend {
 
 // 层权重结构 (GPU) - 用于上传权重
@@ -39,21 +36,6 @@ struct LayerWeightsGPU {
     const float* kNorm = nullptr;
 };
 
-// 层张量结构 - 用于 GGML 张量存储
-struct LayerTensors {
-    struct ggml_tensor* inputLayernorm = nullptr;
-    struct ggml_tensor* qProj = nullptr;
-    struct ggml_tensor* kProj = nullptr;
-    struct ggml_tensor* vProj = nullptr;
-    struct ggml_tensor* oProj = nullptr;
-    struct ggml_tensor* qNorm = nullptr;
-    struct ggml_tensor* kNorm = nullptr;
-    struct ggml_tensor* postAttentionLayernorm = nullptr;
-    struct ggml_tensor* gateProj = nullptr;
-    struct ggml_tensor* upProj = nullptr;
-    struct ggml_tensor* downProj = nullptr;
-};
-
 /**
  * @brief GPU 后端类
  * 
@@ -61,6 +43,8 @@ struct LayerTensors {
  * - GPU 内存管理
  * - 计算图构建和执行
  * - 权重上传和管理
+ * 
+ * 实际实现委托给 GGMLGPUBackend。
  */
 class GPUBackend {
 public:
@@ -144,51 +128,9 @@ public:
     );
 
 private:
-    // 模型配置
-    HFModelConfig config_;
+    // 实际实现（Pimpl 模式）
+    std::unique_ptr<GGMLGPUBackend> impl_;
     bool initialized_ = false;
-    int graphStage_ = 5;
-    int kvCacheLen_ = 0;
-
-    // GGML 上下文和后台
-    struct ggml_context* weightCtx_ = nullptr;
-    struct ggml_context* computeCtx_ = nullptr;
-    struct ggml_backend* backend_ = nullptr;
-    struct ggml_backend* backendCPU_ = nullptr;
-    struct ggml_backend_buffer* weightBuffer_ = nullptr;
-    struct ggml_backend_buffer* computeBuffer_ = nullptr;
-
-    // 计算图
-    struct ggml_context* graphCtx_ = nullptr;
-    struct ggml_backend_buffer* graphBuffer_ = nullptr;
-    struct ggml_backend_sched* graphSched_ = nullptr;
-    struct ggml_cgraph* graph_ = nullptr;
-
-    // 权重张量
-    struct ggml_tensor* embedTokens_ = nullptr;
-    struct ggml_tensor* embedTokensLookup_ = nullptr;
-    struct ggml_tensor* finalNorm_ = nullptr;
-    struct ggml_tensor* lmHead_ = nullptr;
-    std::vector<LayerTensors> layers_;
-
-    // CPU KV Cache（用于调试和数据传输）
-    std::vector<std::vector<float>> kCacheCPU_;
-    std::vector<std::vector<float>> vCacheCPU_;
-
-    // RoPE 频率
-    std::vector<float> ropeFreqsCos_;
-    std::vector<float> ropeFreqsSin_;
-
-    // 计算图输入/输出
-    struct ggml_tensor* graphInputToken_ = nullptr;
-    struct ggml_tensor* graphInputPosition_ = nullptr;
-    struct ggml_tensor* graphOutput_ = nullptr;
-    std::vector<struct ggml_tensor*> graphNormWeightedAllLayers_;
-
-    // 内部方法
-    bool createWeightTensors();
-    void precomputeRoPE();
-    void cleanup();
 };
 
 } // namespace backend
