@@ -11,9 +11,13 @@
 #include "cllm/kylin/backend/backend_interface.h"
 #include <vector>
 #include <memory>
+#include <unordered_map>
 
 namespace cllm {
 namespace kylin {
+
+// 前向声明内部实现
+struct CPUBackendImpl;
 
 /**
  * @brief CPU 计算后端
@@ -51,6 +55,9 @@ private:
     
     // 初始化标志
     bool initialized_ = false;
+    
+    // PIMPL 模式隐藏实现细节
+    std::unique_ptr<CPUBackendImpl> impl_;
 };
 
 } // namespace kylin
