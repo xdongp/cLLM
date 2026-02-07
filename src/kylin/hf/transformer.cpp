@@ -7,6 +7,7 @@
 
 #include "cllm/kylin/hf/transformer.h"
 #include "cllm/kylin/core/ggml_kernels.h"
+#include "cllm/kylin/backend/backend_interface.h"
 #include "cllm/common/logger.h"
 
 #include <cmath>
@@ -49,6 +50,13 @@ HFTransformerModel::HFTransformerModel(const std::string& modelDir, DeviceType d
         CLLM_WARN("[HFTransformer] Metal not compiled, falling back to CPU");
         deviceType_ = DeviceType::CPU;
 #endif
+    }
+    
+    // 创建新的统一后端接口（实验性）
+    // TODO: 完成后端迁移后，使用 backend_ 替代原有的 CPU/GPU 分支逻辑
+    backend_ = BackendFactory::create(device);
+    if (backend_) {
+        CLLM_INFO("[HFTransformer] Backend created: %s", backend_->getName().c_str());
     }
     
     // 加载配置
