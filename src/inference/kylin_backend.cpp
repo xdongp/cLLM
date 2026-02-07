@@ -1008,7 +1008,9 @@ kylin::Tensor KylinBackend::forwardBatch(
             }
         }
         
-        if (allSingleToken && !singleTokenIds.empty()) {
+        // 禁用 GPU 批处理，使用 forwardWithRequestId 以确保正确的 per-request KV Cache 管理
+        // GGMLGPUBackend::forwardGraphMinimal 没有 per-request KV Cache 支持，会导致位置计算错误
+        if (false && allSingleToken && !singleTokenIds.empty()) {
              // 所有请求都是单 token，使用 GPU 加速批处理
              CLLM_DEBUG("[KylinBackend] All requests are single-token, using GPU accelerated batch processing (%zu tokens)", 
                        singleTokenIds.size());

@@ -26,7 +26,7 @@ model:
   vocab_size: 151936       # 词表大小
   max_context_length: 4096 # 最大上下文长度
   default_max_tokens: 1024 # 默认最大生成 token 数
-  quantization: "fp16"     # 量化类型: fp32 | fp16 | int8
+  quantization: "fp32"     # 量化类型: fp32 | fp16 | int8
 
 # ============================================================
 # HTTP 配置
@@ -59,8 +59,8 @@ api:
   defaults:
     prompt: ""
     max_tokens: 100
-    temperature: 0.7
-    top_p: 0.9
+    temperature: 0.0      # 0.0 = 贪婪解码，与 test_generate_compare 行为一致
+    top_p: 1.0            # 1.0 = 禁用 top-p 采样
 
   timeouts:
     min: 60.0
@@ -76,9 +76,9 @@ scheduler:
   max_batch_size: 32       # 最大批处理大小（GPU 可以处理更大批次）
   context_usage_threshold: 0.75
   
-  default_temperature: 0.7
-  default_top_p: 0.9
-  default_top_k: 50
+  default_temperature: 0.0   # 0.0 = 贪婪解码
+  default_top_p: 1.0         # 1.0 = 禁用 top-p 采样
+  default_top_k: -1          # -1 = 禁用 top-k 采样
   default_max_tokens: 1024
   
   request_timeout: 300.0   # 请求超时（秒）

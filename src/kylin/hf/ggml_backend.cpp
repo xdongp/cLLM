@@ -793,6 +793,7 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
         if (graphStage_ >= 2) {
             if (graphStage_ >= 3) {
                 pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+                ggml_set_input(pos);
             }
 
             auto build_layer = [&](int layerIdx, ggml_tensor* inp) -> ggml_tensor* {

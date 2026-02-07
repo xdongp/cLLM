@@ -2082,7 +2082,13 @@ std::vector<std::vector<float>> HFTransformerModel::forwardBatchGPU(
     
     // 检查是否可以使用 GPU 后端进行批处理
     if (useGPU_ && gpuBackend_) {
-        CLLM_DEBUG("[HFTransformer] Using GPU accelerated batch processing for %zu requests", batchSize);
+        CLLM_INFO("[HFTransformer] Using GPU accelerated batch processing for %zu requests", batchSize);
+        
+        // 打印positions用于调试
+        for (size_t i = 0; i < tokenIds.size(); ++i) {
+            CLLM_INFO("[HFTransformer] Batch[%zu]: tokenId=%d, position=%d, requestId=%zu", 
+                      i, tokenIds[i], positions[i], requestIds[i]);
+        }
         
         // 使用 GPU 后端的批处理功能
         auto gpuResults = gpuBackend_->forwardBatch(tokenIds, positions);

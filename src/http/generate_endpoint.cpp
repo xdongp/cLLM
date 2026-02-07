@@ -167,13 +167,21 @@ HttpResponse GenerateEndpoint::handleNonStreaming(const GenerateRequest& req) {
             requestState.errorMessage = "";
             
             // 编码prompt
-            #ifdef CLLM_DEBUG_MODE
-            CLLM_DEBUG("Starting tokenization...");
-            #endif
-            requestState.tokenizedPrompt = tokenizer_->encode(req.prompt, false);
-            #ifdef CLLM_DEBUG_MODE
-            CLLM_DEBUG("Tokenization completed, got %zu tokens", requestState.tokenizedPrompt.size());
-            #endif
+            CLLM_INFO("Starting tokenization for prompt: '%s'", req.prompt.c_str());
+            requestState.tokenizedPrompt = tokenizer_->encode(req.prompt, true);
+            CLLM_INFO("Tokenization completed, got %zu tokens", requestState.tokenizedPrompt.size());
+            
+            // 打印token IDs
+            if (!requestState.tokenizedPrompt.empty()) {
+                std::stringstream tokenIds;
+                tokenIds << "Token IDs: [";
+                for (size_t i = 0; i < requestState.tokenizedPrompt.size(); ++i) {
+                    if (i > 0) tokenIds << ", ";
+                    tokenIds << requestState.tokenizedPrompt[i];
+                }
+                tokenIds << "]";
+                CLLM_INFO("%s", tokenIds.str().c_str());
+            }
             
             // 控制输入长度：TorchScript trace 可能固化 seq_len（当前模型为 128），过长输入会导致推理开销变大
             // 这里做一个温和的上限，避免超长 prompt 把 CPU 推理拖垮；真正的裁剪/填充由后端按 traced seq_len 处理
@@ -419,7 +427,7 @@ HttpResponse GenerateEndpoint::handleStreaming(const GenerateRequest& req) {
         requestState.errorMessage = "";
         
         // 编码prompt
-        requestState.tokenizedPrompt = tokenizer_->encode(req.prompt, false);
+        requestState.tokenizedPrompt = tokenizer_->encode(req.prompt, true);
         
         // 控制输入长度
         const int maxInputTokens = cllm::Config::instance().httpMaxInputTokens();
