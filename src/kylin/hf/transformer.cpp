@@ -772,6 +772,10 @@ std::vector<float> HFTransformerModel::forward(const std::vector<int32_t>& input
     }
     
     // CPU Forward 路径
+    // 在生成模式下，只处理最后一个 token，因为之前的 token 已经在 KV Cache 中
+    // 将 seqLen 设置为 1，确保 applyRoPE 不会循环多次
+    seqLen = 1;
+    
     // Embedding
     embedding(inputIds, hiddenStates_);
     
@@ -1210,8 +1214,8 @@ void HFTransformerModel::attention(int layerIdx, const float* input,
 
     // DEBUG: 打印 RoPE 后的 Q/K 值 (position 0 和 1 都打印)
     if ((layerIdx == 0 || layerIdx == 1) && (startPos == 0 || startPos == 1)) {
-        CLLM_INFO("[CPU DEBUG] Layer %d After RoPE (pos=%d) - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
-                  layerIdx, startPos, q[0], q[1], q[2], q[3], q[4]);
+        CLLM_INFO("[CPU DEBUG] Layer %d After RoPE (pos=%d) - q=%p, Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                  layerIdx, startPos, (void*)q, q[0], q[1], q[2], q[3], q[4]);
         CLLM_INFO("[CPU DEBUG] Layer %d After RoPE (pos=%d) - Q halfDim=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                   layerIdx, startPos, q[headDim/2], q[headDim/2+1], q[headDim/2+2], q[headDim/2+3], q[headDim/2+4]);
         CLLM_INFO("[CPU DEBUG] Layer %d After RoPE (pos=%d) - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
@@ -1605,6 +1609,12 @@ void HFTransformerModel::applyRoPE(float* q, float* k, int headDim,
                 head[i] = newX0;
                 head[i + halfDim] = newX1;
             }
+        }
+        
+        // DEBUG: K头处理后打印q的值
+        if (actualPos == 1 && nHeads > 0) {
+            CLLM_INFO("[CPU DEBUG] Position 1 RoPE after K heads: q=%p, q[0]=%.6f, q[64]=%.6f",
+                      (void*)q, q[0], q[64]);
         }
     }
 }
