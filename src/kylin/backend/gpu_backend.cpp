@@ -47,6 +47,11 @@ struct GPUBackendImpl {
     
     // 权重是否已上传
     bool weightsUploaded = false;
+    
+    // Per-request KV Cache 长度跟踪
+    // 注意：GGMLGPUBackend 目前使用全局 KV Cache，这里做简单的请求跟踪
+    std::unordered_map<int, int> requestKVCacheLength;
+    mutable std::mutex kvCacheMutex;
 };
 
 GPUBackend::GPUBackend() : impl_(std::make_unique<GPUBackendImpl>()) {}
@@ -152,6 +157,12 @@ std::vector<float> GPUBackend::forward(
         inputIds[0], 0
     );
     
+    // 更新 KV Cache 长度跟踪
+    {
+        std::lock_guard<std::mutex> lock(impl_->kvCacheMutex);
+        impl_->requestKVCacheLength[requestId] += static_cast<int>(inputIds.size());
+    }
+    
     auto end = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
     
@@ -207,18 +218,46 @@ std::vector<std::vector<float>> GPUBackend::forwardBatch(
 }
 
 void GPUBackend::resetKVCache(int requestId) {
+    std::lock_guard<std::mutex> lock(impl_->kvCacheMutex);
+    
+    // 重置指定请求的 KV Cache 长度
+    impl_->requestKVCacheLength[requestId] = 0;
+    
+    // 如果 GGML 后端支持，也调用其 resetKVCache
+    // 注意：当前 GGMLGPUBackend 使用全局 KV Cache，会重置所有请求
     if (impl_->ggmlBackend) {
         impl_->ggmlBackend->resetKVCache();
     }
+    
+    CLLM_DEBUG("[GPUBackend] KV Cache reset for request %d", requestId);
 }
 
 void GPUBackend::releaseKVCache(int requestId) {
-    // GGML 后端自动管理 KV Cache
+    std::lock_guard<std::mutex> lock(impl_->kvCacheMutex);
+    
+    // 移除指定请求的 KV Cache 跟踪
+    auto it = impl_->requestKVCacheLength.find(requestId);
+    if (it != impl_->requestKVCacheLength.end()) {
+        impl_->requestKVCacheLength.erase(it);
+        CLLM_DEBUG("[GPUBackend] KV Cache released for request %d", requestId);
+    }
+    
+    // 注意：GGMLGPUBackend 使用全局 KV Cache，无法单独释放单个请求的缓存
+    // 当所有请求都释放后，可以考虑重置全局缓存
+    if (impl_->requestKVCacheLength.empty() && impl_->ggmlBackend) {
+        impl_->ggmlBackend->resetKVCache();
+        CLLM_DEBUG("[GPUBackend] All requests released, global KV Cache reset");
+    }
 }
 
 int GPUBackend::getKVCacheCurrentLength(int requestId) const {
-    // 返回 0 表示需要实现
-    return 0;
+    std::lock_guard<std::mutex> lock(impl_->kvCacheMutex);
+    
+    auto it = impl_->requestKVCacheLength.find(requestId);
+    if (it != impl_->requestKVCacheLength.end()) {
+        return it->second;
+    }
+    return 0;  // 请求不存在，返回 0
 }
 
 // ========== 多 GPU 支持 ==========
