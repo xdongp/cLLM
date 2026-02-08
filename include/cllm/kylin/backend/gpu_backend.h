@@ -9,6 +9,7 @@
 #pragma once
 
 #include "cllm/kylin/backend/backend_interface.h"
+#include "cllm/kylin/hf/ggml_backend.h"  // For LayerWeightsGPU
 #include <vector>
 #include <memory>
 
@@ -44,6 +45,22 @@ public:
     std::string getName() const override { return "GPU"; }
     bool isGPU() const override { return true; }
     int getKVCacheCurrentLength(int requestId) const override;
+    
+    /**
+     * @brief 上传权重到 GPU
+     * 
+     * @param embedTokens 嵌入层权重
+     * @param layers 每层权重
+     * @param finalNorm 最终 norm 权重
+     * @param lmHead LM Head 权重
+     * @return true 上传成功
+     */
+    bool uploadWeights(
+        const float* embedTokens,
+        const std::vector<LayerWeightsGPU>& layers,
+        const float* finalNorm,
+        const float* lmHead
+    );
 
 private:
     // 模型配置
