@@ -1,6 +1,6 @@
 /**
  * @file cpu_backend.cpp
- * @brief CPU 计算后端实现 - 完整版本
+ * @brief CPU 计算后端实现 - 完整版本（从 transformer.cpp 迁移）
  */
 
 #include "cllm/kylin/backend/cpu_backend.h"
@@ -75,7 +75,10 @@ struct CPUBackendImpl {
     std::vector<float> attnOutBuffer;
     std::vector<float> gateBuffer;
     std::vector<float> upBuffer;
+    std::vector<float> gateUpBuffer;
     std::vector<float> logitsBuffer;
+    std::vector<float> normWeightBuffer;
+    std::vector<float> qkNormBuffer;
     
     // RoPE 频率
     std::vector<float> ropeFreqsCos;
@@ -109,7 +112,10 @@ struct CPUBackendImpl {
         
         gateBuffer.resize(intermediateSize);
         upBuffer.resize(intermediateSize);
+        gateUpBuffer.resize(intermediateSize * 2);
         logitsBuffer.resize(config.vocabSize);
+        normWeightBuffer.resize(hiddenSize);
+        qkNormBuffer.resize(headDim);
     }
     
     void precomputeRoPE() {
@@ -232,7 +238,7 @@ struct CPUBackendImpl {
     }
     
     // 单层的 Attention 计算
-    void attention(int layerIdx, const float* input, float* output, int startPos, KVCache& kvCache) {
+    void attention(int layerIdx, const float* input, float* output, int seqLen, int startPos, KVCache& kvCache) {
         const LayerWeights& layer = layers[layerIdx];
         const int headDim = config.getHeadDim();
         const int nHeads = config.numAttentionHeads;
@@ -247,9 +253,9 @@ struct CPUBackendImpl {
         // QKV 投影
         if (!layer.qkvProj.empty()) {
             matmulF32(layer.qkvProj.data(), input, qkvBuffer.data(), qSize + 2 * kvSize, config.hiddenSize);
-            q = qkvBuffer.data();
-            k = qkvBuffer.data() + qSize;
-            v = qkvBuffer.data() + qSize + kvSize;
+            std::memcpy(q, qkvBuffer.data(), qSize * sizeof(float));
+            std::memcpy(k, qkvBuffer.data() + qSize, kvSize * sizeof(float));
+            std::memcpy(v, qkvBuffer.data() + qSize + kvSize, kvSize * sizeof(float));
         } else {
             matmulF32(layer.qProj.data(), input, q, qSize, config.hiddenSize);
             matmulF32(layer.kProj.data(), input, k, kvSize, config.hiddenSize);
@@ -259,17 +265,33 @@ struct CPUBackendImpl {
         // Q/K Norm（如果存在）
         if (!layer.qNorm.empty()) {
             for (int h = 0; h < nHeads; ++h) {
-                rmsNorm(q + h * headDim, layer.qNorm.data(), q + h * headDim, headDim, config.rmsNormEps);
+                float* qHead = q + h * headDim;
+                float sumSq = ggml_kernels::dot_product(qHead, qHead, headDim);
+                float invRms = 1.0f / std::sqrt(sumSq / headDim + config.rmsNormEps);
+                for (int i = 0; i < headDim; i += 4) {
+                    qHead[i] = qHead[i] * invRms * layer.qNorm[i];
+                    qHead[i+1] = qHead[i+1] * invRms * layer.qNorm[i+1];
+                    qHead[i+2] = qHead[i+2] * invRms * layer.qNorm[i+2];
+                    qHead[i+3] = qHead[i+3] * invRms * layer.qNorm[i+3];
+                }
             }
         }
         if (!layer.kNorm.empty()) {
             for (int h = 0; h < nKVHeads; ++h) {
-                rmsNorm(k + h * headDim, layer.kNorm.data(), k + h * headDim, headDim, config.rmsNormEps);
+                float* kHead = k + h * headDim;
+                float sumSq = ggml_kernels::dot_product(kHead, kHead, headDim);
+                float invRms = 1.0f / std::sqrt(sumSq / headDim + config.rmsNormEps);
+                for (int i = 0; i < headDim; i += 4) {
+                    kHead[i] = kHead[i] * invRms * layer.kNorm[i];
+                    kHead[i+1] = kHead[i+1] * invRms * layer.kNorm[i+1];
+                    kHead[i+2] = kHead[i+2] * invRms * layer.kNorm[i+2];
+                    kHead[i+3] = kHead[i+3] * invRms * layer.kNorm[i+3];
+                }
             }
         }
         
         // 应用 RoPE
-        applyRoPE(q, k, headDim, nHeads, nKVHeads, 1, startPos);
+        applyRoPE(q, k, headDim, nHeads, nKVHeads, seqLen, startPos);
         
         // 写入 KV Cache
         int numLayers = config.numHiddenLayers;
@@ -279,45 +301,100 @@ struct CPUBackendImpl {
         float* kCacheLayer = kvCache.kCache.data() + layerOffset;
         float* vCacheLayer = kvCache.vCache.data() + layerOffset;
         
-        std::copy(k, k + kvSize, kCacheLayer + posOffset);
-        std::copy(v, v + kvSize, vCacheLayer + posOffset);
+        std::memcpy(kCacheLayer + posOffset, k, kvSize * sizeof(float));
+        std::memcpy(vCacheLayer + posOffset, v, kvSize * sizeof(float));
         
         // Attention 计算
-        const int kvLen = startPos + 1;
+        const int kvLen = startPos + seqLen;
+        const float scale = 1.0f / std::sqrt(static_cast<float>(headDim));
+        const int gqa = nHeads / nKVHeads;
+        const int vStride = nKVHeads * headDim;
         
+        float* attnOut = attnOutBuffer.data();
+        std::fill(attnOut, attnOut + qSize, 0.0f);
+        
+        // 并行处理每个 attention head
+        #pragma omp parallel for schedule(static) if(nHeads >= 4)
         for (int h = 0; h < nHeads; ++h) {
-            float* qHead = q + h * headDim;
-            int kvHead = h / (nHeads / nKVHeads);  // GQA
+            const int kvHead = h / gqa;
+            const float* qHead = q + h * headDim;
+            float* localScores = attnScores.data() + h * kMaxSeqLen;
             
-            // 计算 attention scores
+            // 计算 attention scores + softmax
+            float maxScore = -1e30f;
             for (int t = 0; t < kvLen; ++t) {
-                float* kHead = kCacheLayer + t * nKVHeads * headDim + kvHead * headDim;
-                float score = 0.0f;
-                for (int d = 0; d < headDim; ++d) {
-                    score += qHead[d] * kHead[d];
-                }
-                score /= std::sqrt(static_cast<float>(headDim));
-                attnScores[h * kMaxSeqLen + t] = score;
+                const float* kRow = kCacheLayer + t * vStride + kvHead * headDim;
+                float dot = ggml_kernels::dot_product(qHead, kRow, headDim) * scale;
+                localScores[t] = dot;
+                maxScore = (dot > maxScore) ? dot : maxScore;
             }
             
-            // Softmax
-            softmax(attnScores.data() + h * kMaxSeqLen, kvLen);
-            
-            // 加权求和
-            float* outHead = attnOutBuffer.data() + h * headDim;
-            std::fill(outHead, outHead + headDim, 0.0f);
-            
+            float sumExp = 0.0f;
             for (int t = 0; t < kvLen; ++t) {
-                float* vHead = vCacheLayer + t * nKVHeads * headDim + kvHead * headDim;
-                float weight = attnScores[h * kMaxSeqLen + t];
-                for (int d = 0; d < headDim; ++d) {
-                    outHead[d] += weight * vHead[d];
+                float e = std::exp(localScores[t] - maxScore);
+                localScores[t] = e;
+                sumExp += e;
+            }
+            const float invSum = 1.0f / sumExp;
+            for (int t = 0; t < kvLen; ++t) {
+                localScores[t] *= invSum;
+            }
+            
+            // Weighted sum of V
+            float* outHead = attnOut + h * headDim;
+            std::memset(outHead, 0, headDim * sizeof(float));
+            
+#if USE_NEON
+            int t = 0;
+            for (; t + 3 < kvLen; t += 4) {
+                const float* v0 = vCacheLayer + t * vStride + kvHead * headDim;
+                const float* v1 = vCacheLayer + (t+1) * vStride + kvHead * headDim;
+                const float* v2 = vCacheLayer + (t+2) * vStride + kvHead * headDim;
+                const float* v3 = vCacheLayer + (t+3) * vStride + kvHead * headDim;
+                
+                float32x4_t vw0 = vdupq_n_f32(localScores[t]);
+                float32x4_t vw1 = vdupq_n_f32(localScores[t+1]);
+                float32x4_t vw2 = vdupq_n_f32(localScores[t+2]);
+                float32x4_t vw3 = vdupq_n_f32(localScores[t+3]);
+                
+                for (int d = 0; d < headDim; d += 4) {
+                    float32x4_t out = vld1q_f32(outHead + d);
+                    float32x4_t a0 = vld1q_f32(v0 + d);
+                    float32x4_t a1 = vld1q_f32(v1 + d);
+                    float32x4_t a2 = vld1q_f32(v2 + d);
+                    float32x4_t a3 = vld1q_f32(v3 + d);
+                    
+                    out = vmlaq_f32(out, a0, vw0);
+                    out = vmlaq_f32(out, a1, vw1);
+                    out = vmlaq_f32(out, a2, vw2);
+                    out = vmlaq_f32(out, a3, vw3);
+                    
+                    vst1q_f32(outHead + d, out);
                 }
             }
+            for (; t < kvLen; ++t) {
+                const float* vRow = vCacheLayer + t * vStride + kvHead * headDim;
+                float32x4_t vw = vdupq_n_f32(localScores[t]);
+                for (int d = 0; d < headDim; d += 4) {
+                    float32x4_t out = vld1q_f32(outHead + d);
+                    float32x4_t a = vld1q_f32(vRow + d);
+                    out = vmlaq_f32(out, a, vw);
+                    vst1q_f32(outHead + d, out);
+                }
+            }
+#else
+            for (int t = 0; t < kvLen; ++t) {
+                const float* vRow = vCacheLayer + t * vStride + kvHead * headDim;
+                const float weight = localScores[t];
+                for (int d = 0; d < headDim; ++d) {
+                    outHead[d] += weight * vRow[d];
+                }
+            }
+#endif
         }
         
         // Output 投影
-        matmulF32(layer.oProj.data(), attnOutBuffer.data(), output, config.hiddenSize, qSize);
+        matmulF32(layer.oProj.data(), attnOut, output, config.hiddenSize, qSize);
     }
     
     // 单层的 FFN 计算
@@ -326,15 +403,17 @@ struct CPUBackendImpl {
         
         if (!layer.gateUpProj.empty()) {
             // 使用融合的 gate_up 投影
-            std::vector<float> gateUp(2 * config.intermediateSize);
-            matmulF32(layer.gateUpProj.data(), input, gateUp.data(), 2 * config.intermediateSize, config.hiddenSize);
+            matmulF32(layer.gateUpProj.data(), input, gateUpBuffer.data(), 2 * config.intermediateSize, config.hiddenSize);
             
             // SiLU(gate) * up
             for (int i = 0; i < config.intermediateSize; ++i) {
-                float gateVal = silu(gateUp[i]);
-                float upVal = gateUp[i + config.intermediateSize];
+                float gateVal = silu(gateUpBuffer[i]);
+                float upVal = gateUpBuffer[i + config.intermediateSize];
                 gateBuffer[i] = gateVal * upVal;
             }
+            
+            // Down 投影
+            matmulF32(layer.downProj.data(), gateBuffer.data(), output, config.hiddenSize, config.intermediateSize);
         } else {
             // 分开计算 gate 和 up
             matmulF32(layer.gateProj.data(), input, gateBuffer.data(), config.intermediateSize, config.hiddenSize);
@@ -344,10 +423,10 @@ struct CPUBackendImpl {
             for (int i = 0; i < config.intermediateSize; ++i) {
                 gateBuffer[i] = silu(gateBuffer[i]) * upBuffer[i];
             }
+            
+            // Down 投影
+            matmulF32(layer.downProj.data(), gateBuffer.data(), output, config.hiddenSize, config.intermediateSize);
         }
-        
-        // Down 投影
-        matmulF32(layer.downProj.data(), gateBuffer.data(), output, config.hiddenSize, config.intermediateSize);
     }
 };
 
@@ -386,11 +465,12 @@ bool CPUBackend::loadWeights(const ModelWeights& weights) {
         return false;
     }
     
-    int numLayers = impl_->config.numHiddenLayers;
-    impl_->layers.resize(numLayers);
+    // TODO: 从 ModelWeights (void* 指针) 加载权重到内部 vector
+    // 需要知道每个权重的具体大小才能正确复制
+    // 暂时标记为已加载，实际权重加载通过 loadWeightsFromHF 完成
     
     weightsLoaded_ = true;
-    CLLM_INFO("[CPUBackend] Weights loaded (placeholder, layers=%d)", numLayers);
+    CLLM_INFO("[CPUBackend] Weights placeholder loaded");
     return true;
 }
 
@@ -463,27 +543,25 @@ std::vector<float> CPUBackend::forward(
                        impl_->normOutput.data(), impl_->config.hiddenSize, impl_->config.rmsNormEps);
         
         // 2.2 Attention
-        impl_->attention(layerIdx, impl_->normOutput.data(), impl_->attnOutput.data(), startPos, kvCache);
+        impl_->attention(layerIdx, impl_->normOutput.data(), impl_->attnOutput.data(), 1, startPos, kvCache);
         
         // 2.3 残差连接
-        for (int i = 0; i < impl_->config.hiddenSize; ++i) {
-            impl_->attnOutput[i] += impl_->residual[i];
-        }
+        ggml_kernels::vector_add(impl_->residual.data(), impl_->attnOutput.data(),
+                                 impl_->hiddenStates.data(), impl_->config.hiddenSize);
         
         // 保存残差
-        std::copy(impl_->attnOutput.begin(), impl_->attnOutput.end(), impl_->residual.begin());
+        std::copy(impl_->hiddenStates.begin(), impl_->hiddenStates.end(), impl_->residual.begin());
         
         // 2.4 Post-Attention RMS Norm
-        impl_->rmsNorm(impl_->attnOutput.data(), layer.postAttentionLayernorm.data(),
+        impl_->rmsNorm(impl_->hiddenStates.data(), layer.postAttentionLayernorm.data(),
                        impl_->normOutput.data(), impl_->config.hiddenSize, impl_->config.rmsNormEps);
         
         // 2.5 FFN
         impl_->ffn(layerIdx, impl_->normOutput.data(), impl_->ffnOutput.data());
         
         // 2.6 残差连接
-        for (int i = 0; i < impl_->config.hiddenSize; ++i) {
-            impl_->hiddenStates[i] = impl_->ffnOutput[i] + impl_->residual[i];
-        }
+        ggml_kernels::vector_add(impl_->residual.data(), impl_->ffnOutput.data(),
+                                 impl_->hiddenStates.data(), impl_->config.hiddenSize);
         
         // 保存残差用于下一层
         std::copy(impl_->hiddenStates.begin(), impl_->hiddenStates.end(), impl_->residual.begin());
