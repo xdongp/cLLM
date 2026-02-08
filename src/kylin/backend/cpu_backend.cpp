@@ -360,13 +360,33 @@ struct CPUBackendImpl {
         matmulF32(layer.gateProj.data(), input, gateBuffer.data(), config.intermediateSize, config.hiddenSize);
         matmulF32(layer.upProj.data(), input, upBuffer.data(), config.intermediateSize, config.hiddenSize);
         
+        // DEBUG: 打印 Gate 和 Up 值
+        if (layerIdx == 0) {
+            CLLM_DEBUG_CPU("[CPU DEBUG] FFN Gate - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      gateBuffer[0], gateBuffer[1], gateBuffer[2], gateBuffer[3], gateBuffer[4]);
+            CLLM_DEBUG_CPU("[CPU DEBUG] FFN Up - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      upBuffer[0], upBuffer[1], upBuffer[2], upBuffer[3], upBuffer[4]);
+        }
+        
         // SiLU(gate) * up
         for (int i = 0; i < config.intermediateSize; ++i) {
             gateBuffer[i] = silu(gateBuffer[i]) * upBuffer[i];
         }
         
+        // DEBUG: 打印 SiLU(gate) * up 值
+        if (layerIdx == 0) {
+            CLLM_DEBUG_CPU("[CPU DEBUG] FFN Gate*Up - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      gateBuffer[0], gateBuffer[1], gateBuffer[2], gateBuffer[3], gateBuffer[4]);
+        }
+        
         // Down 投影
         matmulF32(layer.downProj.data(), gateBuffer.data(), output, config.hiddenSize, config.intermediateSize);
+        
+        // DEBUG: 打印 Down 输出值
+        if (layerIdx == 0) {
+            CLLM_DEBUG_CPU("[CPU DEBUG] FFN Down - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      output[0], output[1], output[2], output[3], output[4]);
+        }
     }
 };
 
@@ -577,12 +597,27 @@ std::vector<float> CPUBackend::forward(
     auto& kvCache = impl_->getOrCreateKVCache(requestId);
     int startPos = kvCache.currentLen;
     
-    // 只处理最后一个 token
-    int tokenId = inputIds.empty() ? 0 : inputIds.back();
+    // 🔥 关键优化：支持多 token 输入（批量 prefill）
+    // 当 inputIds.size() > 1 时，逐个处理所有 tokens
+    // 但只返回最后一个 token 的 logits
+    if (inputIds.empty()) {
+        CLLM_ERROR("[CPUBackend] Empty input");
+        return {};
+    }
     
-    // 1. Embedding
-    impl_->embedding(tokenId, impl_->hiddenStates.data());
-    
+    // 逐个处理所有 input tokens
+    for (size_t tokenIdx = 0; tokenIdx < inputIds.size(); ++tokenIdx) {
+        int tokenId = inputIds[tokenIdx];
+        int currentPos = startPos + static_cast<int>(tokenIdx);
+        
+        // 1. Embedding
+        impl_->embedding(tokenId, impl_->hiddenStates.data());
+
+    // DEBUG: 打印 Embedding 输出
+    CLLM_DEBUG_CPU("[CPU DEBUG] Embedding - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+              impl_->hiddenStates[0], impl_->hiddenStates[1], impl_->hiddenStates[2],
+              impl_->hiddenStates[3], impl_->hiddenStates[4]);
+
     // 保存残差
     std::copy(impl_->hiddenStates.begin(), impl_->hiddenStates.end(), impl_->residual.begin());
     
@@ -591,43 +626,100 @@ std::vector<float> CPUBackend::forward(
         const auto& layer = impl_->layers[layerIdx];
         
         // 2.1 RMS Norm
-        impl_->rmsNorm(impl_->hiddenStates.data(), layer.inputLayernorm.data(), 
+        impl_->rmsNorm(impl_->hiddenStates.data(), layer.inputLayernorm.data(),
                        impl_->normOutput.data(), impl_->config.hiddenSize, impl_->config.rmsNormEps);
-        
-        // 2.2 Attention
-        impl_->attention(layerIdx, impl_->normOutput.data(), impl_->attnOutput.data(), 1, startPos, kvCache);
-        
+
+        // DEBUG: 打印 Attention Input (RMS Norm 后的输出)
+        if (layerIdx == 0) {
+            CLLM_DEBUG_CPU("[CPU DEBUG] Attention Input - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      impl_->normOutput[0], impl_->normOutput[1], impl_->normOutput[2],
+                      impl_->normOutput[3], impl_->normOutput[4]);
+        }
+
+        // 2.2 Attention - 使用 currentPos 作为当前位置
+        impl_->attention(layerIdx, impl_->normOutput.data(), impl_->attnOutput.data(), 1, currentPos, kvCache);
+
+        // DEBUG: 打印 Attention 输出
+        if (layerIdx == 0) {
+            CLLM_DEBUG_CPU("[CPU DEBUG] Attention Output - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      impl_->attnOutput[0], impl_->attnOutput[1], impl_->attnOutput[2],
+                      impl_->attnOutput[3], impl_->attnOutput[4]);
+        }
+
         // 2.3 残差连接
         ggml_kernels::vector_add(impl_->residual.data(), impl_->attnOutput.data(),
                                  impl_->hiddenStates.data(), impl_->config.hiddenSize);
-        
+
+        // DEBUG: 打印 FFN Input (Attention + Residual 后的输出)
+        if (layerIdx == 0) {
+            CLLM_DEBUG_CPU("[CPU DEBUG] FFN Input - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      impl_->hiddenStates[0], impl_->hiddenStates[1], impl_->hiddenStates[2],
+                      impl_->hiddenStates[3], impl_->hiddenStates[4]);
+        }
+
         // 保存残差
         std::copy(impl_->hiddenStates.begin(), impl_->hiddenStates.end(), impl_->residual.begin());
-        
+
         // 2.4 Post-Attention RMS Norm
         impl_->rmsNorm(impl_->hiddenStates.data(), layer.postAttentionLayernorm.data(),
                        impl_->normOutput.data(), impl_->config.hiddenSize, impl_->config.rmsNormEps);
-        
+
+        // DEBUG: 打印 Post-Attention RMS Norm 输出
+        if (layerIdx == 0) {
+            CLLM_DEBUG_CPU("[CPU DEBUG] Post Attention RMS Norm - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      impl_->normOutput[0], impl_->normOutput[1], impl_->normOutput[2],
+                      impl_->normOutput[3], impl_->normOutput[4]);
+        }
+
         // 2.5 FFN
         impl_->ffn(layerIdx, impl_->normOutput.data(), impl_->ffnOutput.data());
         
         // 2.6 残差连接
         ggml_kernels::vector_add(impl_->residual.data(), impl_->ffnOutput.data(),
                                  impl_->hiddenStates.data(), impl_->config.hiddenSize);
-        
+
+        // DEBUG: 打印 Layer 0 Output
+        if (layerIdx == 0) {
+            CLLM_DEBUG_CPU("[CPU DEBUG] Layer 0 Output - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      impl_->hiddenStates[0], impl_->hiddenStates[1], impl_->hiddenStates[2],
+                      impl_->hiddenStates[3], impl_->hiddenStates[4]);
+        }
+
+        // DEBUG: 打印 Layer 1 关键步骤
+        if (layerIdx == 1) {
+            CLLM_DEBUG_CPU("[CPU DEBUG] Layer 1 Attention Input - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      impl_->normOutput[0], impl_->normOutput[1], impl_->normOutput[2],
+                      impl_->normOutput[3], impl_->normOutput[4]);
+            CLLM_DEBUG_CPU("[CPU DEBUG] Layer 1 Attention Output - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      impl_->attnOutput[0], impl_->attnOutput[1], impl_->attnOutput[2],
+                      impl_->attnOutput[3], impl_->attnOutput[4]);
+            CLLM_DEBUG_CPU("[CPU DEBUG] Layer 1 FFN Input - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      impl_->hiddenStates[0], impl_->hiddenStates[1], impl_->hiddenStates[2],
+                      impl_->hiddenStates[3], impl_->hiddenStates[4]);
+            CLLM_DEBUG_CPU("[CPU DEBUG] Layer 1 FFN Output - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      impl_->ffnOutput[0], impl_->ffnOutput[1], impl_->ffnOutput[2],
+                      impl_->ffnOutput[3], impl_->ffnOutput[4]);
+            CLLM_DEBUG_CPU("[CPU DEBUG] Layer 1 Output - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      impl_->hiddenStates[0], impl_->hiddenStates[1], impl_->hiddenStates[2],
+                      impl_->hiddenStates[3], impl_->hiddenStates[4]);
+        }
+
         // 保存残差用于下一层
         std::copy(impl_->hiddenStates.begin(), impl_->hiddenStates.end(), impl_->residual.begin());
     }
     
-    // 3. Final RMS Norm
-    impl_->rmsNorm(impl_->hiddenStates.data(), impl_->finalNormWeight.data(),
-                   impl_->normOutput.data(), impl_->config.hiddenSize, impl_->config.rmsNormEps);
-    
-    // 4. LM Head
-    impl_->lmHead(impl_->normOutput.data(), impl_->logitsBuffer.data());
-    
-    // 更新 KV Cache 长度
-    kvCache.currentLen = startPos + 1;
+        // 3. Final RMS Norm
+        impl_->rmsNorm(impl_->hiddenStates.data(), impl_->finalNormWeight.data(),
+                       impl_->normOutput.data(), impl_->config.hiddenSize, impl_->config.rmsNormEps);
+        
+        // 4. LM Head - 只在最后一个 token 时计算 logits
+        if (tokenIdx == inputIds.size() - 1) {
+            impl_->lmHead(impl_->normOutput.data(), impl_->logitsBuffer.data());
+        }
+        
+        // 更新 KV Cache 长度
+        kvCache.currentLen = currentPos + 1;
+    }
     
     return impl_->logitsBuffer;
 }

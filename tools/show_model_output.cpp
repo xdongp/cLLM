@@ -56,10 +56,46 @@ void printConfig(const cllm::kylin::HFModelConfig& config) {
     std::cout << "   - Heads: " << config.numAttentionHeads << std::endl;
 }
 
-void runGreedyGeneration(HFTokenizer& tokenizer, cllm::kylin::HFTransformerModel& transformer, const std::string& prompt, int maxTokens = 30) {
+// 辅助函数：应用 temperature 和 repetition penalty
+void applySamplingParams(std::vector<float>& logits, float temperature, float repetitionPenalty, 
+                         const std::vector<int>& generatedTokens, int lastToken) {
+    // 应用 temperature
+    if (temperature != 1.0f && temperature > 0.0f) {
+        for (auto& logit : logits) {
+            logit /= temperature;
+        }
+    }
+    
+    // 应用 repetition penalty
+    if (repetitionPenalty > 1.0f) {
+        // 对已经生成的 token 进行惩罚
+        for (int tokenId : generatedTokens) {
+            if (tokenId >= 0 && tokenId < (int)logits.size()) {
+                if (logits[tokenId] > 0) {
+                    logits[tokenId] /= repetitionPenalty;
+                } else {
+                    logits[tokenId] *= repetitionPenalty;
+                }
+            }
+        }
+        // 也对最后一个 token 进行惩罚
+        if (lastToken >= 0 && lastToken < (int)logits.size()) {
+            if (logits[lastToken] > 0) {
+                logits[lastToken] /= repetitionPenalty;
+            } else {
+                logits[lastToken] *= repetitionPenalty;
+            }
+        }
+    }
+}
+
+void runGreedyGeneration(HFTokenizer& tokenizer, cllm::kylin::HFTransformerModel& transformer, 
+                         const std::string& prompt, int maxTokens = 30,
+                         float temperature = 1.0f, float repetitionPenalty = 1.0f) {
     std::cout << std::endl;
     std::cout << "═══════════════════════════════════════════════════════════════════════════════════════════" << std::endl;
     std::cout << "测试提示词: \"" << prompt << "\"" << std::endl;
+    std::cout << "采样参数: temperature=" << temperature << ", repetition_penalty=" << repetitionPenalty << std::endl;
     std::cout << "═══════════════════════════════════════════════════════════════════════════════════════════" << std::endl;
 
     // 重置 KV Cache，确保每次测试都是独立的状态
@@ -96,8 +132,14 @@ void runGreedyGeneration(HFTokenizer& tokenizer, cllm::kylin::HFTransformerModel
     // 获取最后一个 token 用于生成
     int currentToken = inputIds.back();
 
+    // 开始计时纯生成时间
+    auto generationStartTime = std::chrono::high_resolution_clock::now();
+
     for (int step = 0; step < maxTokens; ++step) {
         std::vector<float> logits = transformer.forward({currentToken});
+        
+        // 应用 sampling 参数
+        applySamplingParams(logits, temperature, repetitionPenalty, generatedTokens, currentToken);
 
         int nextToken = 0;
         float maxVal = logits[0];
@@ -131,9 +173,16 @@ void runGreedyGeneration(HFTokenizer& tokenizer, cllm::kylin::HFTransformerModel
         currentToken = nextToken;
     }
 
+    auto generationEndTime = std::chrono::high_resolution_clock::now();
+    auto generationDuration = std::chrono::duration_cast<std::chrono::milliseconds>(generationEndTime - generationStartTime);
+    float generationSeconds = generationDuration.count() / 1000.0f;
+    float tokensPerSecond = generatedTokens.size() / generationSeconds;
+
     std::cout << std::endl;
     std::cout << "📊 生成结果统计:" << std::endl;
     std::cout << "   - 生成的 Token 数量: " << generatedTokens.size() << std::endl;
+    std::cout << "   - 纯生成时间: " << std::fixed << std::setprecision(3) << generationSeconds << "s" << std::endl;
+    std::cout << "   - 生成吞吐量: " << std::fixed << std::setprecision(2) << tokensPerSecond << " tokens/s" << std::endl;
     std::cout << "   - Tokens: [";
     for (size_t i = 0; i < generatedTokens.size(); ++i) {
         if (i > 0) std::cout << ", ";
@@ -160,6 +209,8 @@ int main(int argc, char** argv) {
     std::string deviceType = "cpu";
     std::string inputText = "hello";
     int maxTokens = 30;
+    float temperature = 1.0f;
+    float repetitionPenalty = 1.0f;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -171,6 +222,10 @@ int main(int argc, char** argv) {
             inputText = argv[++i];
         } else if (arg == "--max_tokens" && i + 1 < argc) {
             maxTokens = std::stoi(argv[++i]);
+        } else if (arg == "--temperature" && i + 1 < argc) {
+            temperature = std::stof(argv[++i]);
+        } else if (arg == "--repetition_penalty" && i + 1 < argc) {
+            repetitionPenalty = std::stof(argv[++i]);
         }
     }
 
@@ -208,7 +263,7 @@ int main(int argc, char** argv) {
     }
     std::cout << "✅ Transformer 模型加载成功" << std::endl;
 
-    runGreedyGeneration(tokenizer, transformer, inputText, maxTokens);
+    runGreedyGeneration(tokenizer, transformer, inputText, maxTokens, temperature, repetitionPenalty);
 
     std::cout << std::endl;
     std::cout << "╔════════════════════════════════════════════════════════════════════════════════════════════╗" << std::endl;

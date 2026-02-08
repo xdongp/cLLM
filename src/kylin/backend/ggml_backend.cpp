@@ -354,18 +354,8 @@ bool GGMLGPUBackend::uploadWeights(
     // ggml_get_rows 的行为: 给定 indices [n], 返回 a[indices[i], :] 即第 indices[i] 行
     // 在 GGML 列主序 [ne0, ne1] 中，元素 (i, j) 存储在 data[i + j * ne0]
     // 第 j 行的数据是 data[i + j * ne0] (i 从 0 到 ne0-1)
-    // 所以我们需要: embedTokensLookup_[i + j * hiddenSize] = embedTokens[j * hiddenSize + i]
-    // 即直接复制原始嵌入（行主序），因为 embedTokens[j * hiddenSize + i] 正好对应列主序的 (i, j)
-    // 等等，让我重新分析...
-    // 
-    // 原始嵌入: [vocabSize, hiddenSize] 行主序
-    //   embedTokens[token_id * hiddenSize + dim] = token_id 的第 dim 维
-    //
-    // GGML 列主序 [hiddenSize, vocabSize]:
-    //   data[dim + token_id * hiddenSize] = (dim, token_id) 位置的值
-    //
-    // 所以我们需要: data[dim + token_id * hiddenSize] = embedTokens[token_id * hiddenSize + dim]
-    // 即直接复制原始数据！
+    // 所以我们需要: embedTokensLookup_[i + token_id * hiddenSize] = embedTokens[token_id * hiddenSize + i]
+    // 即直接复制原始嵌入（行主序），因为 embedTokens[token_id * hiddenSize + i] 正好对应列主序的 (i, token_id)
     ggml_backend_tensor_set(embedTokensLookup_, embedTokens, 0, 
                             (size_t)vocabSize * hiddenSize * sizeof(float));
     
@@ -510,11 +500,11 @@ std::vector<float> GGMLGPUBackend::forward(int tokenId, int position) {
     // 1. 获取 Embedding
     std::vector<float> hidden(hiddenSize);
     const float* embedData = weightsCached_["embed_tokens"].data();
-    
-    // 注意：由于权重已经被转置为 GGML 格式 [hiddenSize, vocabSize]，
-    // 所以需要使用正确的索引方式
+
+    // 注意：cacheWeightsToCPU 已经将权重转置为行主序 [vocabSize, hiddenSize]
+    // 所以使用行主序的索引方式：embedData[tokenId * hiddenSize + i]
     for (int i = 0; i < hiddenSize; ++i) {
-        hidden[i] = embedData[i * vocabSize + tokenId];
+        hidden[i] = embedData[tokenId * hiddenSize + i];
     }
     
     // Debug: 检查 embedding 统计
@@ -890,9 +880,9 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
                     
                     // DEBUG: 打印 RoPE 参数
                     if (layerIdx == 0 && position == 0) {
-                        CLLM_INFO("[GPU DEBUG] RoPE params: headDim=%d, rope_mode=%d, n_ctx_orig=%d, ropeTheta=%f",
+                        CLLM_DEBUG_GPU("[GPU DEBUG] RoPE params: headDim=%d, rope_mode=%d, n_ctx_orig=%d, ropeTheta=%f",
                                   headDim, rope_mode, n_ctx_orig, config_.ropeTheta);
-                        CLLM_INFO("[GPU DEBUG] RoPE params: q->ne=[%d,%d,%d,%d], k->ne=[%d,%d,%d,%d]",
+                        CLLM_DEBUG_GPU("[GPU DEBUG] RoPE params: q->ne=[%d,%d,%d,%d], k->ne=[%d,%d,%d,%d]",
                                   (int)q->ne[0], (int)q->ne[1], (int)q->ne[2], (int)q->ne[3],
                                   (int)k->ne[0], (int)k->ne[1], (int)k->ne[2], (int)k->ne[3]);
                     }
@@ -1235,11 +1225,19 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
                 // 保存 Layer 0 Attention + Residual 后的输出用于调试
                 if (layerIdx == 0) {
                     graphLayer0Output_ = inp;
+                    // 也保存 FFN 输入（Attention + Residual 后）
+                    graphFFNInput_ = inp;
                 }
 
                 ggml_tensor* post = ggml_rms_norm(ctx, inp, config_.rmsNormEps);
-                ggml_tensor* post_w = ggml_mul(ctx, post, 
+                ggml_tensor* post_w = ggml_mul(ctx, post,
                     ggml_reshape_2d(ctx, layer.postAttentionLayernorm, hiddenSize, 1));
+
+                // 保存 Post Attention RMS Norm 输出用于调试
+                if (layerIdx == 0) {
+                    graphPostNormRaw_ = post;
+                    graphPostNorm_ = post_w;
+                }
 
                 ggml_tensor* gate = ggml_mul_mat(ctx, layer.gateProj, post_w);
                 ggml_tensor* up = ggml_mul_mat(ctx, layer.upProj, post_w);
@@ -1249,6 +1247,12 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
                           layerIdx, (long long)gate->ne[0], (long long)gate->ne[1],
                           (long long)up->ne[0], (long long)up->ne[1]);
 
+                // 保存 FFN Gate/Up 用于调试
+                if (layerIdx == 0) {
+                    graphFFNGate_ = gate;
+                    graphFFNUp_ = up;
+                }
+
                 ggml_tensor* gate_act = ggml_silu(ctx, gate);
                 ggml_tensor* ffn = ggml_mul(ctx, gate_act, up);
                 ggml_tensor* down = ggml_mul_mat(ctx, layer.downProj, ffn);
@@ -1257,15 +1261,22 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
                 CLLM_DEBUG("[GPU Layer %d] FFN down: down->ne=[%lld,%lld]",
                           layerIdx, (long long)down->ne[0], (long long)down->ne[1]);
 
+                // 保存 FFN Down 用于调试
+                if (layerIdx == 0) {
+                    graphFFNDown_ = down;
+                }
+
                 return ggml_add(ctx, inp, down);
             };
 
             if (graphStage_ >= 5) {
                 for (int l = 0; l < config_.numHiddenLayers; ++l) {
                     x = build_layer(l, x);
-                    // 保存 Layer 0 的输出用于调试
+                    // 保存 Layer 0 和 Layer 1 的输出用于调试
                     if (l == 0) {
                         graphLayer0Output_ = x;
+                    } else if (l == 1) {
+                        graphLayer1Output_ = x;
                     }
                 }
             } else {
@@ -1537,14 +1548,29 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
         const int qSize = nHeads * headDim;
         const int kvSize = nKVHeads * headDim;
         const int hiddenSize = config_.hiddenSize;
+        const int intermediateSize = config_.intermediateSize;
 
-        CLLM_INFO("[GPU DEBUG] ========== Position %d ==========", position);
+        CLLM_DEBUG_GPU("[GPU DEBUG] ========== Position %d ==========", position);
+
+        // 打印 embedTokensLookup_ 的前几个值（用于调试）
+        if (position == 0) {
+            std::vector<float> embedLookupDebug(10);
+            ggml_backend_tensor_get(embedTokensLookup_, embedLookupDebug.data(), 0, embedLookupDebug.size() * sizeof(float));
+            CLLM_DEBUG_GPU("[GPU DEBUG] embedTokensLookup_ first 10 values: [%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f]",
+                      embedLookupDebug[0], embedLookupDebug[1], embedLookupDebug[2], embedLookupDebug[3], embedLookupDebug[4],
+                      embedLookupDebug[5], embedLookupDebug[6], embedLookupDebug[7], embedLookupDebug[8], embedLookupDebug[9]);
+            // 读取 token 14990 (hello) 的 embedding
+            std::vector<float> token14990Emb(hiddenSize);
+            ggml_backend_tensor_get(embedTokensLookup_, token14990Emb.data(), 14990 * hiddenSize * sizeof(float), token14990Emb.size() * sizeof(float));
+            CLLM_DEBUG_GPU("[GPU DEBUG] embedTokensLookup_ token 14990 (hello) first 5: [%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      token14990Emb[0], token14990Emb[1], token14990Emb[2], token14990Emb[3], token14990Emb[4]);
+        }
 
         // 打印 Embedding 输出
         if (graphEmbedding_) {
             std::vector<float> embedding(hiddenSize);
             ggml_backend_tensor_get(graphEmbedding_, embedding.data(), 0, embedding.size() * sizeof(float));
-            CLLM_INFO("[GPU DEBUG] Embedding - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Embedding - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       embedding[0], embedding[1], embedding[2], embedding[3], embedding[4]);
         }
 
@@ -1552,15 +1578,23 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
         if (graphLayer0Output_) {
             std::vector<float> layer0Output(hiddenSize);
             ggml_backend_tensor_get(graphLayer0Output_, layer0Output.data(), 0, layer0Output.size() * sizeof(float));
-            CLLM_INFO("[GPU DEBUG] Layer 0 Output - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Layer 0 Output - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       layer0Output[0], layer0Output[1], layer0Output[2], layer0Output[3], layer0Output[4]);
+        }
+
+        // 打印 Layer 1 最终输出
+        if (graphLayer1Output_) {
+            std::vector<float> layer1Output(hiddenSize);
+            ggml_backend_tensor_get(graphLayer1Output_, layer1Output.data(), 0, layer1Output.size() * sizeof(float));
+            CLLM_DEBUG_GPU("[GPU DEBUG] Layer 1 Output - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      layer1Output[0], layer1Output[1], layer1Output[2], layer1Output[3], layer1Output[4]);
         }
 
         // 打印 Attention 输入
         if (graphAttnInput_) {
             std::vector<float> attnInput(hiddenSize);
             ggml_backend_tensor_get(graphAttnInput_, attnInput.data(), 0, attnInput.size() * sizeof(float));
-            CLLM_INFO("[GPU DEBUG] Attention Input - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Attention Input - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       attnInput[0], attnInput[1], attnInput[2], attnInput[3], attnInput[4]);
         }
 
@@ -1568,8 +1602,84 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
         if (graphAttnOutput_) {
             std::vector<float> attnOutput(hiddenSize);
             ggml_backend_tensor_get(graphAttnOutput_, attnOutput.data(), 0, attnOutput.size() * sizeof(float));
-            CLLM_INFO("[GPU DEBUG] Attention Output - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Attention Output - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       attnOutput[0], attnOutput[1], attnOutput[2], attnOutput[3], attnOutput[4]);
+        }
+
+        // 打印 FFN 输入
+        if (graphFFNInput_) {
+            std::vector<float> ffnInput(hiddenSize);
+            ggml_backend_tensor_get(graphFFNInput_, ffnInput.data(), 0, ffnInput.size() * sizeof(float));
+            CLLM_DEBUG_GPU("[GPU DEBUG] FFN Input - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      ffnInput[0], ffnInput[1], ffnInput[2], ffnInput[3], ffnInput[4]);
+        }
+
+        // 打印 Post Attention RMS Norm 输出
+        if (graphPostNormRaw_) {
+            std::vector<float> postNormRaw(hiddenSize);
+            ggml_backend_tensor_get(graphPostNormRaw_, postNormRaw.data(), 0, postNormRaw.size() * sizeof(float));
+            CLLM_DEBUG_GPU("[GPU DEBUG] Post Attention RMS Norm (Raw) - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      postNormRaw[0], postNormRaw[1], postNormRaw[2], postNormRaw[3], postNormRaw[4]);
+        }
+        if (graphPostNorm_) {
+            std::vector<float> postNorm(hiddenSize);
+            ggml_backend_tensor_get(graphPostNorm_, postNorm.data(), 0, postNorm.size() * sizeof(float));
+            CLLM_DEBUG_GPU("[GPU DEBUG] Post Attention RMS Norm (Weighted) - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      postNorm[0], postNorm[1], postNorm[2], postNorm[3], postNorm[4]);
+        }
+
+        // 打印 FFN 中间结果
+        if (graphFFNGate_) {
+            std::vector<float> ffnGate(intermediateSize);
+            ggml_backend_tensor_get(graphFFNGate_, ffnGate.data(), 0, ffnGate.size() * sizeof(float));
+            CLLM_DEBUG_GPU("[GPU DEBUG] FFN Gate - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      ffnGate[0], ffnGate[1], ffnGate[2], ffnGate[3], ffnGate[4]);
+        }
+        if (graphFFNUp_) {
+            std::vector<float> ffnUp(intermediateSize);
+            ggml_backend_tensor_get(graphFFNUp_, ffnUp.data(), 0, ffnUp.size() * sizeof(float));
+            CLLM_DEBUG_GPU("[GPU DEBUG] FFN Up - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      ffnUp[0], ffnUp[1], ffnUp[2], ffnUp[3], ffnUp[4]);
+        }
+        if (graphFFNDown_) {
+            std::vector<float> ffnDown(hiddenSize);
+            ggml_backend_tensor_get(graphFFNDown_, ffnDown.data(), 0, ffnDown.size() * sizeof(float));
+            CLLM_DEBUG_GPU("[GPU DEBUG] FFN Down - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      ffnDown[0], ffnDown[1], ffnDown[2], ffnDown[3], ffnDown[4]);
+        }
+
+        // 打印 downProj 权重值
+        if (!layers_.empty() && layers_[0].downProj) {
+            std::vector<float> downProjWeights(hiddenSize * intermediateSize);
+            ggml_backend_tensor_get(layers_[0].downProj, downProjWeights.data(), 0, downProjWeights.size() * sizeof(float));
+            CLLM_DEBUG_GPU("[GPU DEBUG] DownProj Weights - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      downProjWeights[0], downProjWeights[1], downProjWeights[2], downProjWeights[3], downProjWeights[4]);
+            CLLM_DEBUG_GPU("[GPU DEBUG] DownProj Weights - last 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      downProjWeights[hiddenSize * intermediateSize - 5], downProjWeights[hiddenSize * intermediateSize - 4],
+                      downProjWeights[hiddenSize * intermediateSize - 3], downProjWeights[hiddenSize * intermediateSize - 2],
+                      downProjWeights[hiddenSize * intermediateSize - 1]);
+        }
+
+        // 打印 gateProj 和 upProj 权重值
+        if (!layers_.empty() && layers_[0].gateProj) {
+            std::vector<float> gateProjWeights(intermediateSize * hiddenSize);
+            ggml_backend_tensor_get(layers_[0].gateProj, gateProjWeights.data(), 0, gateProjWeights.size() * sizeof(float));
+            CLLM_DEBUG_GPU("[GPU DEBUG] GateProj Weights - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      gateProjWeights[0], gateProjWeights[1], gateProjWeights[2], gateProjWeights[3], gateProjWeights[4]);
+        }
+        if (!layers_.empty() && layers_[0].upProj) {
+            std::vector<float> upProjWeights(intermediateSize * hiddenSize);
+            ggml_backend_tensor_get(layers_[0].upProj, upProjWeights.data(), 0, upProjWeights.size() * sizeof(float));
+            CLLM_DEBUG_GPU("[GPU DEBUG] UpProj Weights - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      upProjWeights[0], upProjWeights[1], upProjWeights[2], upProjWeights[3], upProjWeights[4]);
+        }
+
+        // 打印 postAttentionLayernorm 权重值
+        if (!layers_.empty() && layers_[0].postAttentionLayernorm) {
+            std::vector<float> postNormWeights(hiddenSize);
+            ggml_backend_tensor_get(layers_[0].postAttentionLayernorm, postNormWeights.data(), 0, postNormWeights.size() * sizeof(float));
+            CLLM_DEBUG_GPU("[GPU DEBUG] PostAttentionLayernorm Weights - first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+                      postNormWeights[0], postNormWeights[1], postNormWeights[2], postNormWeights[3], postNormWeights[4]);
         }
 
         // 在 position 0 和 1 时都打印 RMS Norm 信息
@@ -1577,7 +1687,7 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
         if (graphNormInput_) {
             std::vector<float> normInput(hiddenSize);
             ggml_backend_tensor_get(graphNormInput_, normInput.data(), 0, normInput.size() * sizeof(float));
-            CLLM_INFO("[GPU DEBUG] Before RMS Norm - Input first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Before RMS Norm - Input first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       normInput[0], normInput[1], normInput[2], normInput[3], normInput[4]);
         }
 
@@ -1585,7 +1695,7 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
         if (graphNormOutput_) {
             std::vector<float> normOutput(hiddenSize);
             ggml_backend_tensor_get(graphNormOutput_, normOutput.data(), 0, normOutput.size() * sizeof(float));
-            CLLM_INFO("[GPU DEBUG] After RMS Norm (before weight mul) - Output first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] After RMS Norm (before weight mul) - Output first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       normOutput[0], normOutput[1], normOutput[2], normOutput[3], normOutput[4]);
         }
 
@@ -1593,7 +1703,7 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
         if (graphNormWeighted_) {
             std::vector<float> normWeighted(hiddenSize);
             ggml_backend_tensor_get(graphNormWeighted_, normWeighted.data(), 0, normWeighted.size() * sizeof(float));
-            CLLM_INFO("[GPU DEBUG] After RMS Norm (after weight mul) - Output first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] After RMS Norm (after weight mul) - Output first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       normWeighted[0], normWeighted[1], normWeighted[2], normWeighted[3], normWeighted[4]);
         }
 
@@ -1605,9 +1715,9 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
             ggml_backend_tensor_get(graphQProj_, qProj.data(), 0, qProj.size() * sizeof(float));
             ggml_backend_tensor_get(graphKProj_, kProj.data(), 0, kProj.size() * sizeof(float));
 
-            CLLM_INFO("[GPU DEBUG] After Q/K Projection - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] After Q/K Projection - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       qProj[0], qProj[1], qProj[2], qProj[3], qProj[4]);
-            CLLM_INFO("[GPU DEBUG] After Q/K Projection - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] After Q/K Projection - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       kProj[0], kProj[1], kProj[2], kProj[3], kProj[4]);
         }
 
@@ -1619,13 +1729,13 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
             ggml_backend_tensor_get(graphQBeforeRoPE_, qBeforeRoPE.data(), 0, qBeforeRoPE.size() * sizeof(float));
             ggml_backend_tensor_get(graphKBeforeRoPE_, kBeforeRoPE.data(), 0, kBeforeRoPE.size() * sizeof(float));
 
-            CLLM_INFO("[GPU DEBUG] Before RoPE - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Before RoPE - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       qBeforeRoPE[0], qBeforeRoPE[1], qBeforeRoPE[2], qBeforeRoPE[3], qBeforeRoPE[4]);
-            CLLM_INFO("[GPU DEBUG] Before RoPE - Q halfDim=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Before RoPE - Q halfDim=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       qBeforeRoPE[headDim/2], qBeforeRoPE[headDim/2+1], qBeforeRoPE[headDim/2+2], qBeforeRoPE[headDim/2+3], qBeforeRoPE[headDim/2+4]);
-            CLLM_INFO("[GPU DEBUG] Before RoPE - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Before RoPE - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       kBeforeRoPE[0], kBeforeRoPE[1], kBeforeRoPE[2], kBeforeRoPE[3], kBeforeRoPE[4]);
-            CLLM_INFO("[GPU DEBUG] Before RoPE - K halfDim=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Before RoPE - K halfDim=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       kBeforeRoPE[headDim/2], kBeforeRoPE[headDim/2+1], kBeforeRoPE[headDim/2+2], kBeforeRoPE[headDim/2+3], kBeforeRoPE[headDim/2+4]);
         }
 
@@ -1637,46 +1747,46 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
             ggml_backend_tensor_get(graphQAfterRoPE_, qAfterRoPE.data(), 0, qAfterRoPE.size() * sizeof(float));
             ggml_backend_tensor_get(graphKAfterRoPE_, kAfterRoPE.data(), 0, kAfterRoPE.size() * sizeof(float));
 
-            CLLM_INFO("[GPU DEBUG] After RoPE - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] After RoPE - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       qAfterRoPE[0], qAfterRoPE[1], qAfterRoPE[2], qAfterRoPE[3], qAfterRoPE[4]);
-            CLLM_INFO("[GPU DEBUG] After RoPE - Q halfDim=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] After RoPE - Q halfDim=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       qAfterRoPE[headDim/2], qAfterRoPE[headDim/2+1], qAfterRoPE[headDim/2+2], qAfterRoPE[headDim/2+3], qAfterRoPE[headDim/2+4]);
-            CLLM_INFO("[GPU DEBUG] After RoPE - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] After RoPE - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       kAfterRoPE[0], kAfterRoPE[1], kAfterRoPE[2], kAfterRoPE[3], kAfterRoPE[4]);
-            CLLM_INFO("[GPU DEBUG] After RoPE - K halfDim=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] After RoPE - K halfDim=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       kAfterRoPE[headDim/2], kAfterRoPE[headDim/2+1], kAfterRoPE[headDim/2+2], kAfterRoPE[headDim/2+3], kAfterRoPE[headDim/2+4]);
             
             // DEBUG: 计算并打印 RoPE 频率值（与 CPU 对比）
             if (position == 1) {
                 const int halfDim = headDim / 2;
-                CLLM_INFO("[GPU DEBUG] Position 1 RoPE expected freqs (calculated):");
+                CLLM_DEBUG_GPU("[GPU DEBUG] Position 1 RoPE expected freqs (calculated):");
                 for (int i = 0; i < 5; ++i) {
                     float freq = 1.0f / std::pow(config_.ropeTheta, 2.0f * i / headDim);
                     float angle = position * freq;
-                    CLLM_INFO("[GPU DEBUG]   i=%d: freq=%.6f, angle=%.6f, cos=%.6f, sin=%.6f",
+                    CLLM_DEBUG_GPU("[GPU DEBUG]   i=%d: freq=%.6f, angle=%.6f, cos=%.6f, sin=%.6f",
                               i, freq, angle, std::cos(angle), std::sin(angle));
                 }
             }
         }
 
         // Layer 1 调试信息 - 在 position 0 和 1 时都打印 RMS Norm
-        CLLM_INFO("[GPU DEBUG] ========== Layer 1 ==========");
+        CLLM_DEBUG_GPU("[GPU DEBUG] ========== Layer 1 ==========");
         if (graphNormInputLayer1_) {
             std::vector<float> normInput(hiddenSize);
             ggml_backend_tensor_get(graphNormInputLayer1_, normInput.data(), 0, normInput.size() * sizeof(float));
-            CLLM_INFO("[GPU DEBUG] Layer 1 Before RMS Norm - Input first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Layer 1 Before RMS Norm - Input first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       normInput[0], normInput[1], normInput[2], normInput[3], normInput[4]);
         }
         if (graphNormOutputLayer1_) {
             std::vector<float> normOutput(hiddenSize);
             ggml_backend_tensor_get(graphNormOutputLayer1_, normOutput.data(), 0, normOutput.size() * sizeof(float));
-            CLLM_INFO("[GPU DEBUG] Layer 1 After RMS Norm (before weight mul) - Output first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Layer 1 After RMS Norm (before weight mul) - Output first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       normOutput[0], normOutput[1], normOutput[2], normOutput[3], normOutput[4]);
         }
         if (graphNormWeightedLayer1_) {
             std::vector<float> normWeighted(hiddenSize);
             ggml_backend_tensor_get(graphNormWeightedLayer1_, normWeighted.data(), 0, normWeighted.size() * sizeof(float));
-            CLLM_INFO("[GPU DEBUG] Layer 1 After RMS Norm (after weight mul) - Output first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Layer 1 After RMS Norm (after weight mul) - Output first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       normWeighted[0], normWeighted[1], normWeighted[2], normWeighted[3], normWeighted[4]);
         }
         
@@ -1686,9 +1796,9 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
             std::vector<float> kProj(kvSize);
             ggml_backend_tensor_get(graphQProjLayer1_, qProj.data(), 0, qProj.size() * sizeof(float));
             ggml_backend_tensor_get(graphKProjLayer1_, kProj.data(), 0, kProj.size() * sizeof(float));
-            CLLM_INFO("[GPU DEBUG] Layer 1 After Q/K Projection - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Layer 1 After Q/K Projection - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       qProj[0], qProj[1], qProj[2], qProj[3], qProj[4]);
-            CLLM_INFO("[GPU DEBUG] Layer 1 After Q/K Projection - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Layer 1 After Q/K Projection - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       kProj[0], kProj[1], kProj[2], kProj[3], kProj[4]);
         }
         if (graphQAfterRoPELayer1_ && graphKAfterRoPELayer1_) {
@@ -1696,9 +1806,9 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
             std::vector<float> kAfterRoPE(headDim * nKVHeads);
             ggml_backend_tensor_get(graphQAfterRoPELayer1_, qAfterRoPE.data(), 0, qAfterRoPE.size() * sizeof(float));
             ggml_backend_tensor_get(graphKAfterRoPELayer1_, kAfterRoPE.data(), 0, kAfterRoPE.size() * sizeof(float));
-            CLLM_INFO("[GPU DEBUG] Layer 1 After RoPE - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Layer 1 After RoPE - Q first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       qAfterRoPE[0], qAfterRoPE[1], qAfterRoPE[2], qAfterRoPE[3], qAfterRoPE[4]);
-            CLLM_INFO("[GPU DEBUG] Layer 1 After RoPE - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
+            CLLM_DEBUG_GPU("[GPU DEBUG] Layer 1 After RoPE - K first 5=[%.6f, %.6f, %.6f, %.6f, %.6f]",
                       kAfterRoPE[0], kAfterRoPE[1], kAfterRoPE[2], kAfterRoPE[3], kAfterRoPE[4]);
         }
     }
@@ -1706,7 +1816,7 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
     // DEBUG: 打印所有层的 RMS Norm 后输出统计信息
     // 只在 position == 0 时打印，因为 graphNormWeightedAllLayers_ 只在此时被设置
     if (position == 0) {
-        CLLM_INFO("[GPU DEBUG] ========== All Layers RMS Norm Stats ==========");
+        CLLM_DEBUG_GPU("[GPU DEBUG] ========== All Layers RMS Norm Stats ==========");
         for (int layerIdx = 0; layerIdx < 28; ++layerIdx) {
             if (graphNormWeightedAllLayers_[layerIdx]) {
                 std::vector<float> normData(hiddenSize);

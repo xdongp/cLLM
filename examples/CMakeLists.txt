@@ -67,13 +67,13 @@ if(LIBTORCH_FOUND)
     )
 endif()
 
-# CTokenizer example
-add_executable(ctokenizer_example
-    ctokenizer_example.cpp
-)
-target_link_libraries(ctokenizer_example
-    cllm_core
-)
+# CTokenizer example (暂时禁用)
+# add_executable(ctokenizer_example
+#     ctokenizer_example.cpp
+# )
+# target_link_libraries(ctokenizer_example
+#     cllm_core
+# )
 
 # Integrated test
 add_executable(integrated_test

@@ -7,6 +7,7 @@
 
 #include "cllm/kylin/backend/gpu_backend.h"
 #include "cllm/kylin/hf/ggml_backend.h"
+#include "cllm/kylin/core/ggml_kernels.h"
 #include "cllm/common/logger.h"
 
 #include <unordered_map>
@@ -92,38 +93,171 @@ bool GPUBackend::loadWeights(const ModelWeights& weights) {
         CLLM_ERROR("[GPUBackend] Not initialized");
         return false;
     }
-    
+
     weights_ = weights;
-    
+
     // 准备层权重
     int numLayers = config_.numHiddenLayers;
     std::vector<LayerWeightsGPU> layerWeights(numLayers);
-    
+
+    // 临时缓冲区用于存储转换后的 F32 权重
+    std::vector<std::vector<float>> convertedWeights;
+
+    // 转换 Embedding 权重 (BF16 -> F32)
+    std::vector<float> embedTokensF32;
+    if (weights.embedTokens) {
+        embedTokensF32.resize(config_.vocabSize * config_.hiddenSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(weights.embedTokens),
+            embedTokensF32.data(),
+            config_.vocabSize * config_.hiddenSize
+        );
+    }
+
+    // 转换 Final Norm 权重 (BF16 -> F32)
+    std::vector<float> finalNormF32;
+    if (weights.finalNormWeight) {
+        finalNormF32.resize(config_.hiddenSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(weights.finalNormWeight),
+            finalNormF32.data(),
+            config_.hiddenSize
+        );
+    }
+
+    // 转换 LM Head 权重 (BF16 -> F32)
+    std::vector<float> lmHeadF32;
+    if (weights.lmHeadWeight) {
+        lmHeadF32.resize(config_.vocabSize * config_.hiddenSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(weights.lmHeadWeight),
+            lmHeadF32.data(),
+            config_.vocabSize * config_.hiddenSize
+        );
+    }
+
+    // 转换层权重 (BF16 -> F32)
+    const int headDim = config_.getHeadDim();
+    const int nHeads = config_.numAttentionHeads;
+    const int nKVHeads = config_.getNumKVHeads();
+    const int qSize = nHeads * headDim;
+    const int kvSize = nKVHeads * headDim;
+
     for (int i = 0; i < numLayers && i < static_cast<int>(weights.layers.size()); ++i) {
         const auto& src = weights.layers[i];
-        layerWeights[i].inputLayernorm = static_cast<const float*>(src.inputLayernorm);
-        layerWeights[i].postAttentionLayernorm = static_cast<const float*>(src.postAttentionLayernorm);
-        layerWeights[i].qNorm = static_cast<const float*>(src.qNorm);
-        layerWeights[i].kNorm = static_cast<const float*>(src.kNorm);
-        layerWeights[i].qProj = static_cast<const float*>(src.qProj);
-        layerWeights[i].kProj = static_cast<const float*>(src.kProj);
-        layerWeights[i].vProj = static_cast<const float*>(src.vProj);
-        layerWeights[i].oProj = static_cast<const float*>(src.oProj);
-        layerWeights[i].gateProj = static_cast<const float*>(src.gateProj);
-        layerWeights[i].upProj = static_cast<const float*>(src.upProj);
-        layerWeights[i].downProj = static_cast<const float*>(src.downProj);
+
+        // 转换 1D 权重
+        convertedWeights.emplace_back(config_.hiddenSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(src.inputLayernorm),
+            convertedWeights.back().data(),
+            config_.hiddenSize
+        );
+        layerWeights[i].inputLayernorm = convertedWeights.back().data();
+
+        convertedWeights.emplace_back(config_.hiddenSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(src.postAttentionLayernorm),
+            convertedWeights.back().data(),
+            config_.hiddenSize
+        );
+        layerWeights[i].postAttentionLayernorm = convertedWeights.back().data();
+
+        if (src.qNorm) {
+            convertedWeights.emplace_back(headDim);
+            ggml_kernels::convert_bf16_to_f32(
+                static_cast<const uint16_t*>(src.qNorm),
+                convertedWeights.back().data(),
+                headDim
+            );
+            layerWeights[i].qNorm = convertedWeights.back().data();
+        }
+
+        if (src.kNorm) {
+            convertedWeights.emplace_back(headDim);
+            ggml_kernels::convert_bf16_to_f32(
+                static_cast<const uint16_t*>(src.kNorm),
+                convertedWeights.back().data(),
+                headDim
+            );
+            layerWeights[i].kNorm = convertedWeights.back().data();
+        }
+
+        // 转换 2D 权重 (BF16 -> F32)
+        // qProj: [qSize, hiddenSize]
+        convertedWeights.emplace_back(qSize * config_.hiddenSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(src.qProj),
+            convertedWeights.back().data(),
+            qSize * config_.hiddenSize
+        );
+        layerWeights[i].qProj = convertedWeights.back().data();
+
+        // kProj: [kvSize, hiddenSize]
+        convertedWeights.emplace_back(kvSize * config_.hiddenSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(src.kProj),
+            convertedWeights.back().data(),
+            kvSize * config_.hiddenSize
+        );
+        layerWeights[i].kProj = convertedWeights.back().data();
+
+        // vProj: [kvSize, hiddenSize]
+        convertedWeights.emplace_back(kvSize * config_.hiddenSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(src.vProj),
+            convertedWeights.back().data(),
+            kvSize * config_.hiddenSize
+        );
+        layerWeights[i].vProj = convertedWeights.back().data();
+
+        // oProj: [hiddenSize, qSize]
+        convertedWeights.emplace_back(config_.hiddenSize * qSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(src.oProj),
+            convertedWeights.back().data(),
+            config_.hiddenSize * qSize
+        );
+        layerWeights[i].oProj = convertedWeights.back().data();
+
+        // gateProj: [intermediateSize, hiddenSize]
+        convertedWeights.emplace_back(config_.intermediateSize * config_.hiddenSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(src.gateProj),
+            convertedWeights.back().data(),
+            config_.intermediateSize * config_.hiddenSize
+        );
+        layerWeights[i].gateProj = convertedWeights.back().data();
+
+        // upProj: [intermediateSize, hiddenSize]
+        convertedWeights.emplace_back(config_.intermediateSize * config_.hiddenSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(src.upProj),
+            convertedWeights.back().data(),
+            config_.intermediateSize * config_.hiddenSize
+        );
+        layerWeights[i].upProj = convertedWeights.back().data();
+
+        // downProj: [hiddenSize, intermediateSize]
+        convertedWeights.emplace_back(config_.hiddenSize * config_.intermediateSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(src.downProj),
+            convertedWeights.back().data(),
+            config_.hiddenSize * config_.intermediateSize
+        );
+        layerWeights[i].downProj = convertedWeights.back().data();
     }
-    
+
     // 上传权重到 GPU
     if (!impl_->ggmlBackend->uploadWeights(
-            static_cast<const float*>(weights.embedTokens),
+            embedTokensF32.empty() ? nullptr : embedTokensF32.data(),
             layerWeights,
-            static_cast<const float*>(weights.finalNormWeight),
-            static_cast<const float*>(weights.lmHeadWeight))) {
+            finalNormF32.empty() ? nullptr : finalNormF32.data(),
+            lmHeadF32.empty() ? nullptr : lmHeadF32.data())) {
         CLLM_ERROR("[GPUBackend] Failed to upload weights");
         return false;
     }
-    
+
     weightsLoaded_ = true;
     impl_->weightsUploaded = true;
     CLLM_INFO("[GPUBackend] Weights uploaded successfully");

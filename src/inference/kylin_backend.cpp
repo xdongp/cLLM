@@ -1030,28 +1030,21 @@ kylin::Tensor KylinBackend::forwardBatch(
                  
                  const size_t reqLen = end - start;
                  
+                 // 🔥 关键优化：使用批量 prefill，一次性处理所有 tokens
+                 // CPUBackend::forward 现在支持多 token 输入
                  if (reqLen > 1) {
-                     // 新请求（多 token）：使用 per-request KV Cache 逐 token 处理
-                     // 先释放旧的 KV Cache（如果存在）
+                     // 新请求（多 token）：先释放旧的 KV Cache
                      hfModel_->releaseKVCache(requestId);
-                     
-                     for (size_t t = 0; t < reqLen; ++t) {
-                         std::vector<int32_t> singleToken = {flatInputIds[start + t]};
-                         std::vector<float> tokenLogits = hfModel_->forwardWithRequestId(singleToken, requestId);
-                         
-                         // 复制到输出
-                         std::copy(tokenLogits.begin(), tokenLogits.end(),
-                                  logits.data() + (start + t) * vocab);
-                     }
-                 } else {
-                     // 单 token 推理：增量生成，使用现有的 KV Cache
-                     std::vector<int32_t> requestIds32(flatInputIds.begin() + start, flatInputIds.begin() + end);
-                     std::vector<float> requestLogits = hfModel_->forwardWithRequestId(requestIds32, requestId);
-                     
-                     // 复制到输出
-                     std::copy(requestLogits.begin(), requestLogits.end(), 
-                              logits.data() + start * vocab);
                  }
+                 
+                 // 一次性传入所有 tokens（单 token 或多 token）
+                 std::vector<int32_t> allTokens(flatInputIds.begin() + start, flatInputIds.begin() + end);
+                 std::vector<float> requestLogits = hfModel_->forwardWithRequestId(allTokens, requestId);
+                 
+                 // 复制最后一个 token 的 logits 到输出
+                 // 对于多 token 输入，只返回最后一个 token 的 logits
+                 std::copy(requestLogits.begin(), requestLogits.end(), 
+                          logits.data() + (end - 1) * vocab);
              }
         }
         

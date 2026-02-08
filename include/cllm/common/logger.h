@@ -76,4 +76,14 @@ private:
 #define CLLM_ERROR(...)    cllm::Logger::instance().error(__VA_ARGS__)
 #define CLLM_CRITICAL(...) cllm::Logger::instance().critical(__VA_ARGS__)
 
+// 条件编译调试宏
+// 定义 CLLM_DEBUG_BACKEND 宏来启用后端调试输出
+#ifdef CLLM_DEBUG_BACKEND
+    #define CLLM_DEBUG_CPU(...)  CLLM_INFO(__VA_ARGS__)
+    #define CLLM_DEBUG_GPU(...)  CLLM_INFO(__VA_ARGS__)
+#else
+    #define CLLM_DEBUG_CPU(...)  ((void)0)
+    #define CLLM_DEBUG_GPU(...)  ((void)0)
+#endif
+
 } // namespace cllm

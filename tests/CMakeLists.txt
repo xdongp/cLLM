@@ -133,27 +133,6 @@ set_target_properties(test_layer_debug PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
-# ========== Generate Compare Test ==========
-add_executable(test_generate_compare
-    ${CMAKE_SOURCE_DIR}/test_generate_compare.cpp
-)
-
-target_include_directories(test_generate_compare PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/third_party
-    ${CMAKE_SOURCE_DIR}/third_party/json/include
-)
-
-target_link_libraries(test_generate_compare PRIVATE
-    cllm_core
-    spdlog::spdlog
-)
-
-set_target_properties(test_generate_compare PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-
 # 添加测试到 CTest
 enable_testing()
 add_test(NAME minimal_test COMMAND minimal_test)

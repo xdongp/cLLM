@@ -56,7 +56,7 @@ resources:
 backend:
   type: "kylin"
   kylin:
-    device_backend: "metal"
+    device_backend: "cpu"
     operator_backend: "ggml"
     n_threads: 8
   llama_cpp:

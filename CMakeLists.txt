@@ -675,6 +675,14 @@ target_link_libraries(show_model_output
     spdlog::spdlog
 )
 
+# CPU/GPU 层对比测试工具
+add_executable(compare_cpu_gpu_layers ${CMAKE_SOURCE_DIR}/tools/compare_cpu_gpu_layers.cpp)
+target_link_libraries(compare_cpu_gpu_layers
+    cllm_core
+    Threads::Threads
+    spdlog::spdlog
+)
+
 # GPU 批处理测试程序
 add_executable(test_gpu_batch ${CMAKE_SOURCE_DIR}/src/test_gpu_batch.cpp)
 target_link_libraries(test_gpu_batch
