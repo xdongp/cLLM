@@ -774,15 +774,15 @@ std::vector<float> HFTransformerModel::forward(const std::vector<int32_t>& input
         CLLM_ERROR("[HFTransformer] Model not loaded");
         return {};
     }
-    
+
     int seqLen = static_cast<int>(inputIds.size());
     int startPos = kvCacheLen_;
-    
+
     int actualTokenId = inputIds.empty() ? -1 : inputIds.back();
-    CLLM_DEBUG("[HFTransformer] Forward: seq_len=%d, start_pos=%d, token_id=%d (last), first_token=%d, GPU=%s", 
+    CLLM_DEBUG("[HFTransformer] Forward: seq_len=%d, start_pos=%d, token_id=%d (last), first_token=%d, GPU=%s",
                seqLen, startPos, actualTokenId, inputIds.empty() ? -1 : inputIds[0],
                useGPU_ ? "true" : "false");
-    
+
     // GPU forward 已启用 - Flash Attention 形状问题已修复
     // 在生成模式下，我们总是只处理最后一个 token，因为之前的 token 已经在 KV Cache 中
     if (useGPU_ && gpuBackend_) {
@@ -792,7 +792,18 @@ std::vector<float> HFTransformerModel::forward(const std::vector<int32_t>& input
             return logits;
         }
     }
-    
+
+    // 实验性：使用新的后端接口（如果启用且已实现）
+    // 目前 backend_ 的 forward 返回空向量，所以不会实际使用
+    // TODO: 完成后端实现后，启用此代码路径
+    if (backend_ && false) {  // 暂时禁用，直到后端完全实现
+        auto logits = backend_->forward(inputIds, 0);  // requestId=0 用于单请求
+        if (!logits.empty()) {
+            kvCacheLen_ = startPos + 1;
+            return logits;
+        }
+    }
+
     // CPU Forward 路径
     // 在生成模式下，只处理最后一个 token，因为之前的 token 已经在 KV Cache 中
     // 将 seqLen 设置为 1，确保 applyRoPE 不会循环多次
