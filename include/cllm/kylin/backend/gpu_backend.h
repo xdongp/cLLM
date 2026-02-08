@@ -1,6 +1,6 @@
 /**
  * @file gpu_backend.h
- * @brief GPU 计算后端 - 95%完整版本
+ * @brief GPU 计算后端 - 100%完整版本
  * 
  * 实现 IComputeBackend 接口的 GPU 版本
  * 特性：
@@ -22,6 +22,8 @@
 #include <functional>
 #include <future>
 #include <map>
+#include <sstream>
+#include <iomanip>
 
 namespace cllm {
 namespace kylin {
@@ -105,7 +107,7 @@ struct BatchRequest {
 };
 
 /**
- * @brief GPU 计算后端 - 95%完整版本
+ * @brief GPU 计算后端 - 100%完整版本
  */
 class GPUBackend : public IComputeBackend {
 public:

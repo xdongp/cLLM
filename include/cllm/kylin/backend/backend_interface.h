@@ -17,9 +17,24 @@
 namespace cllm {
 namespace kylin {
 
-// 前向声明
-enum class DeviceType;
-enum class QuantType;
+// 设备类型枚举
+enum class DeviceType {
+    CPU,
+    Metal,
+    CUDA,
+    Vulkan,
+    OpenCL
+};
+
+// 量化类型枚举（与 quantization.h 保持一致）
+enum class QuantType {
+    FP32 = 0,   // 32-bit 浮点（默认）
+    FP16 = 1,   // 16-bit 浮点 (IEEE 754)
+    BF16 = 2,   // Brain Float 16
+    INT8 = 3,   // 8-bit 整数（需要 scale/zero_point）
+    Q4_K = 4,   // 4-bit 量化（GGML 风格，未来扩展）
+    Q8_0 = 5    // 8-bit 量化（GGML 风格，未来扩展）
+};
 
 /**
  * @brief 模型权重数据结构

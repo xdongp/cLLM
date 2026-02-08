@@ -63,7 +63,7 @@ void runGreedyGeneration(HFTokenizer& tokenizer, cllm::kylin::HFTransformerModel
     std::cout << "═══════════════════════════════════════════════════════════════════════════════════════════" << std::endl;
 
     // 重置 KV Cache，确保每次测试都是独立的状态
-    transformer.resetKVCache();
+    transformer.releaseKVCache(0);
 
     std::vector<int> inputIds = tokenizer.encode(prompt, false);
     std::cout << "📝 输入 Tokens: " << inputIds.size() << std::endl;

@@ -7,6 +7,7 @@
 #include "cllm/model/loader_interface.h"
 #include "cllm/common/logger.h"
 #include "cllm/common/config.h"
+#include "cllm/kylin/core/quantization.h"
 
 #include <stdexcept>
 #include <cmath>
@@ -891,7 +892,8 @@ kylin::Tensor KylinBackend::forward(const std::vector<int> &inputIds) {
             return result;
         } else {
             // 多 token 推理（prefill）：清除 KV cache 并逐 token 处理
-            hfModel_->resetKVCache();
+            // 使用 requestId = 0 作为默认请求
+            hfModel_->releaseKVCache(0);
             CLLM_DEBUG("[KylinBackend::forward] Prefill: seqLen=%zu, reset KV cache", seqLen);
             
             // 逐 token 处理以正确构建 KV cache
@@ -1008,29 +1010,9 @@ kylin::Tensor KylinBackend::forwardBatch(
             }
         }
         
-        // 禁用 GPU 批处理，使用 forwardWithRequestId 以确保正确的 per-request KV Cache 管理
-        // GGMLGPUBackend::forwardGraphMinimal 没有 per-request KV Cache 支持，会导致位置计算错误
-        if (false && allSingleToken && !singleTokenIds.empty()) {
-             // 所有请求都是单 token，使用 GPU 加速批处理
-             CLLM_DEBUG("[KylinBackend] All requests are single-token, using GPU accelerated batch processing (%zu tokens)", 
-                       singleTokenIds.size());
-             
-             // 获取每个请求的当前位置
-             std::vector<int> positions;
-             for (size_t i = 0; i < requestIds.size(); ++i) {
-                 int pos = hfModel_->getKVCacheCurrentLength(requestIds[i]);
-                 positions.push_back(pos >= 0 ? pos : 0);  // 如果获取失败，使用默认位置 0
-             }
-             
-             auto gpuResults = hfModel_->forwardBatchGPU(singleTokenIds, positions, requestIds);
-             
-             // 将结果复制到输出张量
-             for (size_t i = 0; i < singleTokenIds.size(); ++i) {
-                 const size_t start = requestPositions[i].first;
-                 std::copy(gpuResults[i].begin(), gpuResults[i].end(), 
-                          logits.data() + start * vocab);
-             }
-         } else {
+        // 使用 forwardWithRequestId 以确保正确的 per-request KV Cache 管理
+        // 注：GPU 批处理已禁用，因为 GGMLGPUBackend::forwardGraphMinimal 没有 per-request KV Cache 支持
+        {
              // 混合请求或有多个 token 的请求，使用原来的处理方式
              #pragma omp parallel for schedule(dynamic) if(batchSize > 1)
              for (size_t i = 0; i < batchSize; ++i) {
@@ -1071,7 +1053,7 @@ kylin::Tensor KylinBackend::forwardBatch(
                               logits.data() + start * vocab);
                  }
              }
-         }
+        }
         
         return logits;
     }

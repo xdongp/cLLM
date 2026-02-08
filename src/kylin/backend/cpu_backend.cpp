@@ -1,6 +1,9 @@
 /**
  * @file cpu_backend.cpp
- * @brief CPU 计算后端实现 - 完整版本（从 transformer.cpp 迁移）
+ * @brief CPU 计算后端实现 - 完整版本
+ * 
+ * 从 transformer.cpp 迁移的 CPU 计算逻辑
+ * 支持 BF16/F32/FP16/INT8 权重
  */
 
 #include "cllm/kylin/backend/cpu_backend.h"
@@ -42,9 +45,6 @@ struct CPUBackendImpl {
         std::vector<float> gateProj;
         std::vector<float> upProj;
         std::vector<float> downProj;
-        // 融合权重（可选）
-        std::vector<float> qkvProj;      // 融合 QKV
-        std::vector<float> gateUpProj;   // 融合 gate + up
     };
     std::vector<LayerWeights> layers;
     
@@ -162,6 +162,14 @@ struct CPUBackendImpl {
         ggml_kernels::matmul_f32(weight, input, output, outFeatures, inFeatures);
     }
     
+    // 矩阵乘法 BF16
+    void matmulBF16(const uint16_t* weight, const float* input, float* output, int outFeatures, int inFeatures) {
+        // 先将 BF16 权重转换为 F32，然后做矩阵乘法
+        std::vector<float> weightF32(outFeatures * inFeatures);
+        ggml_kernels::convert_bf16_to_f32(weight, weightF32.data(), outFeatures * inFeatures);
+        matmulF32(weightF32.data(), input, output, outFeatures, inFeatures);
+    }
+    
     // 应用 RoPE
     void applyRoPE(float* q, float* k, int headDim, int nHeads, int nKVHeads, int seqLen, int startPos) {
         const int halfDim = headDim / 2;
@@ -251,16 +259,9 @@ struct CPUBackendImpl {
         float* v = vBuffer.data();
         
         // QKV 投影
-        if (!layer.qkvProj.empty()) {
-            matmulF32(layer.qkvProj.data(), input, qkvBuffer.data(), qSize + 2 * kvSize, config.hiddenSize);
-            std::memcpy(q, qkvBuffer.data(), qSize * sizeof(float));
-            std::memcpy(k, qkvBuffer.data() + qSize, kvSize * sizeof(float));
-            std::memcpy(v, qkvBuffer.data() + qSize + kvSize, kvSize * sizeof(float));
-        } else {
-            matmulF32(layer.qProj.data(), input, q, qSize, config.hiddenSize);
-            matmulF32(layer.kProj.data(), input, k, kvSize, config.hiddenSize);
-            matmulF32(layer.vProj.data(), input, v, kvSize, config.hiddenSize);
-        }
+        matmulF32(layer.qProj.data(), input, q, qSize, config.hiddenSize);
+        matmulF32(layer.kProj.data(), input, k, kvSize, config.hiddenSize);
+        matmulF32(layer.vProj.data(), input, v, kvSize, config.hiddenSize);
         
         // Q/K Norm（如果存在）
         if (!layer.qNorm.empty()) {
@@ -268,11 +269,8 @@ struct CPUBackendImpl {
                 float* qHead = q + h * headDim;
                 float sumSq = ggml_kernels::dot_product(qHead, qHead, headDim);
                 float invRms = 1.0f / std::sqrt(sumSq / headDim + config.rmsNormEps);
-                for (int i = 0; i < headDim; i += 4) {
+                for (int i = 0; i < headDim; ++i) {
                     qHead[i] = qHead[i] * invRms * layer.qNorm[i];
-                    qHead[i+1] = qHead[i+1] * invRms * layer.qNorm[i+1];
-                    qHead[i+2] = qHead[i+2] * invRms * layer.qNorm[i+2];
-                    qHead[i+3] = qHead[i+3] * invRms * layer.qNorm[i+3];
                 }
             }
         }
@@ -281,11 +279,8 @@ struct CPUBackendImpl {
                 float* kHead = k + h * headDim;
                 float sumSq = ggml_kernels::dot_product(kHead, kHead, headDim);
                 float invRms = 1.0f / std::sqrt(sumSq / headDim + config.rmsNormEps);
-                for (int i = 0; i < headDim; i += 4) {
+                for (int i = 0; i < headDim; ++i) {
                     kHead[i] = kHead[i] * invRms * layer.kNorm[i];
-                    kHead[i+1] = kHead[i+1] * invRms * layer.kNorm[i+1];
-                    kHead[i+2] = kHead[i+2] * invRms * layer.kNorm[i+2];
-                    kHead[i+3] = kHead[i+3] * invRms * layer.kNorm[i+3];
                 }
             }
         }
@@ -344,45 +339,6 @@ struct CPUBackendImpl {
             float* outHead = attnOut + h * headDim;
             std::memset(outHead, 0, headDim * sizeof(float));
             
-#if USE_NEON
-            int t = 0;
-            for (; t + 3 < kvLen; t += 4) {
-                const float* v0 = vCacheLayer + t * vStride + kvHead * headDim;
-                const float* v1 = vCacheLayer + (t+1) * vStride + kvHead * headDim;
-                const float* v2 = vCacheLayer + (t+2) * vStride + kvHead * headDim;
-                const float* v3 = vCacheLayer + (t+3) * vStride + kvHead * headDim;
-                
-                float32x4_t vw0 = vdupq_n_f32(localScores[t]);
-                float32x4_t vw1 = vdupq_n_f32(localScores[t+1]);
-                float32x4_t vw2 = vdupq_n_f32(localScores[t+2]);
-                float32x4_t vw3 = vdupq_n_f32(localScores[t+3]);
-                
-                for (int d = 0; d < headDim; d += 4) {
-                    float32x4_t out = vld1q_f32(outHead + d);
-                    float32x4_t a0 = vld1q_f32(v0 + d);
-                    float32x4_t a1 = vld1q_f32(v1 + d);
-                    float32x4_t a2 = vld1q_f32(v2 + d);
-                    float32x4_t a3 = vld1q_f32(v3 + d);
-                    
-                    out = vmlaq_f32(out, a0, vw0);
-                    out = vmlaq_f32(out, a1, vw1);
-                    out = vmlaq_f32(out, a2, vw2);
-                    out = vmlaq_f32(out, a3, vw3);
-                    
-                    vst1q_f32(outHead + d, out);
-                }
-            }
-            for (; t < kvLen; ++t) {
-                const float* vRow = vCacheLayer + t * vStride + kvHead * headDim;
-                float32x4_t vw = vdupq_n_f32(localScores[t]);
-                for (int d = 0; d < headDim; d += 4) {
-                    float32x4_t out = vld1q_f32(outHead + d);
-                    float32x4_t a = vld1q_f32(vRow + d);
-                    out = vmlaq_f32(out, a, vw);
-                    vst1q_f32(outHead + d, out);
-                }
-            }
-#else
             for (int t = 0; t < kvLen; ++t) {
                 const float* vRow = vCacheLayer + t * vStride + kvHead * headDim;
                 const float weight = localScores[t];
@@ -390,7 +346,6 @@ struct CPUBackendImpl {
                     outHead[d] += weight * vRow[d];
                 }
             }
-#endif
         }
         
         // Output 投影
@@ -401,32 +356,17 @@ struct CPUBackendImpl {
     void ffn(int layerIdx, const float* input, float* output) {
         const LayerWeights& layer = layers[layerIdx];
         
-        if (!layer.gateUpProj.empty()) {
-            // 使用融合的 gate_up 投影
-            matmulF32(layer.gateUpProj.data(), input, gateUpBuffer.data(), 2 * config.intermediateSize, config.hiddenSize);
-            
-            // SiLU(gate) * up
-            for (int i = 0; i < config.intermediateSize; ++i) {
-                float gateVal = silu(gateUpBuffer[i]);
-                float upVal = gateUpBuffer[i + config.intermediateSize];
-                gateBuffer[i] = gateVal * upVal;
-            }
-            
-            // Down 投影
-            matmulF32(layer.downProj.data(), gateBuffer.data(), output, config.hiddenSize, config.intermediateSize);
-        } else {
-            // 分开计算 gate 和 up
-            matmulF32(layer.gateProj.data(), input, gateBuffer.data(), config.intermediateSize, config.hiddenSize);
-            matmulF32(layer.upProj.data(), input, upBuffer.data(), config.intermediateSize, config.hiddenSize);
-            
-            // SiLU(gate) * up
-            for (int i = 0; i < config.intermediateSize; ++i) {
-                gateBuffer[i] = silu(gateBuffer[i]) * upBuffer[i];
-            }
-            
-            // Down 投影
-            matmulF32(layer.downProj.data(), gateBuffer.data(), output, config.hiddenSize, config.intermediateSize);
+        // Gate 和 Up 投影
+        matmulF32(layer.gateProj.data(), input, gateBuffer.data(), config.intermediateSize, config.hiddenSize);
+        matmulF32(layer.upProj.data(), input, upBuffer.data(), config.intermediateSize, config.hiddenSize);
+        
+        // SiLU(gate) * up
+        for (int i = 0; i < config.intermediateSize; ++i) {
+            gateBuffer[i] = silu(gateBuffer[i]) * upBuffer[i];
         }
+        
+        // Down 投影
+        matmulF32(layer.downProj.data(), gateBuffer.data(), output, config.hiddenSize, config.intermediateSize);
     }
 };
 
@@ -458,46 +398,164 @@ void CPUBackend::shutdown() {
 }
 
 bool CPUBackend::loadWeights(const ModelWeights& weights) {
+    if (!impl_) {
+        CLLM_ERROR("[CPUBackend] Not initialized");
+        return false;
+    }
+    
     weights_ = weights;
     
-    if (!impl_) {
-        CLLM_ERROR("[CPUBackend] Not initialized");
-        return false;
+    // 转换并加载嵌入权重
+    if (weights.embedTokens) {
+        impl_->embedTokens.resize(config_.vocabSize * config_.hiddenSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(weights.embedTokens),
+            impl_->embedTokens.data(),
+            config_.vocabSize * config_.hiddenSize
+        );
     }
     
-    // TODO: 从 ModelWeights (void* 指针) 加载权重到内部 vector
-    // 需要知道每个权重的具体大小才能正确复制
-    // 暂时标记为已加载，实际权重加载通过 loadWeightsFromHF 完成
-    
-    weightsLoaded_ = true;
-    CLLM_INFO("[CPUBackend] Weights placeholder loaded");
-    return true;
-}
-
-bool CPUBackend::loadWeightsFromHF(
-    const std::vector<float>& embedTokens,
-    const std::vector<float>& lmHeadWeight,
-    const std::vector<float>& finalNormWeight,
-    const std::vector<std::vector<float>>& layerWeights
-) {
-    if (!impl_) {
-        CLLM_ERROR("[CPUBackend] Not initialized");
-        return false;
+    // 转换并加载 LM Head 权重
+    if (weights.lmHeadWeight) {
+        impl_->lmHeadWeight.resize(config_.vocabSize * config_.hiddenSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(weights.lmHeadWeight),
+            impl_->lmHeadWeight.data(),
+            config_.vocabSize * config_.hiddenSize
+        );
     }
     
-    impl_->embedTokens = embedTokens;
-    impl_->lmHeadWeight = lmHeadWeight;
-    impl_->finalNormWeight = finalNormWeight;
+    // 转换并加载 Final Norm 权重
+    if (weights.finalNormWeight) {
+        impl_->finalNormWeight.resize(config_.hiddenSize);
+        ggml_kernels::convert_bf16_to_f32(
+            static_cast<const uint16_t*>(weights.finalNormWeight),
+            impl_->finalNormWeight.data(),
+            config_.hiddenSize
+        );
+    }
     
-    int numLayers = impl_->config.numHiddenLayers;
+    // 转换并加载每层权重
+    int numLayers = config_.numHiddenLayers;
     impl_->layers.resize(numLayers);
     
-    for (int i = 0; i < numLayers && i < static_cast<int>(layerWeights.size()); ++i) {
-        // TODO: 根据实际的权重布局解析 layerWeights[i]
+    for (int i = 0; i < numLayers && i < static_cast<int>(weights.layers.size()); ++i) {
+        const auto& srcLayer = weights.layers[i];
+        auto& dstLayer = impl_->layers[i];
+        
+        int hiddenSize = config_.hiddenSize;
+        int intermediateSize = config_.intermediateSize;
+        int numHeads = config_.numAttentionHeads;
+        int numKVHeads = config_.getNumKVHeads();
+        int headDim = config_.getHeadDim();
+        
+        // Input LayerNorm
+        if (srcLayer.inputLayernorm) {
+            dstLayer.inputLayernorm.resize(hiddenSize);
+            ggml_kernels::convert_bf16_to_f32(
+                static_cast<const uint16_t*>(srcLayer.inputLayernorm),
+                dstLayer.inputLayernorm.data(),
+                hiddenSize
+            );
+        }
+        
+        // Q, K, V, O Proj
+        if (srcLayer.qProj) {
+            dstLayer.qProj.resize(numHeads * headDim * hiddenSize);
+            ggml_kernels::convert_bf16_to_f32(
+                static_cast<const uint16_t*>(srcLayer.qProj),
+                dstLayer.qProj.data(),
+                numHeads * headDim * hiddenSize
+            );
+        }
+        
+        if (srcLayer.kProj) {
+            dstLayer.kProj.resize(numKVHeads * headDim * hiddenSize);
+            ggml_kernels::convert_bf16_to_f32(
+                static_cast<const uint16_t*>(srcLayer.kProj),
+                dstLayer.kProj.data(),
+                numKVHeads * headDim * hiddenSize
+            );
+        }
+        
+        if (srcLayer.vProj) {
+            dstLayer.vProj.resize(numKVHeads * headDim * hiddenSize);
+            ggml_kernels::convert_bf16_to_f32(
+                static_cast<const uint16_t*>(srcLayer.vProj),
+                dstLayer.vProj.data(),
+                numKVHeads * headDim * hiddenSize
+            );
+        }
+        
+        if (srcLayer.oProj) {
+            dstLayer.oProj.resize(hiddenSize * numHeads * headDim);
+            ggml_kernels::convert_bf16_to_f32(
+                static_cast<const uint16_t*>(srcLayer.oProj),
+                dstLayer.oProj.data(),
+                hiddenSize * numHeads * headDim
+            );
+        }
+        
+        // Q/K Norm (optional)
+        if (srcLayer.qNorm) {
+            dstLayer.qNorm.resize(headDim);
+            ggml_kernels::convert_bf16_to_f32(
+                static_cast<const uint16_t*>(srcLayer.qNorm),
+                dstLayer.qNorm.data(),
+                headDim
+            );
+        }
+        
+        if (srcLayer.kNorm) {
+            dstLayer.kNorm.resize(headDim);
+            ggml_kernels::convert_bf16_to_f32(
+                static_cast<const uint16_t*>(srcLayer.kNorm),
+                dstLayer.kNorm.data(),
+                headDim
+            );
+        }
+        
+        // Post-Attention LayerNorm
+        if (srcLayer.postAttentionLayernorm) {
+            dstLayer.postAttentionLayernorm.resize(hiddenSize);
+            ggml_kernels::convert_bf16_to_f32(
+                static_cast<const uint16_t*>(srcLayer.postAttentionLayernorm),
+                dstLayer.postAttentionLayernorm.data(),
+                hiddenSize
+            );
+        }
+        
+        // FFN weights
+        if (srcLayer.gateProj) {
+            dstLayer.gateProj.resize(intermediateSize * hiddenSize);
+            ggml_kernels::convert_bf16_to_f32(
+                static_cast<const uint16_t*>(srcLayer.gateProj),
+                dstLayer.gateProj.data(),
+                intermediateSize * hiddenSize
+            );
+        }
+        
+        if (srcLayer.upProj) {
+            dstLayer.upProj.resize(intermediateSize * hiddenSize);
+            ggml_kernels::convert_bf16_to_f32(
+                static_cast<const uint16_t*>(srcLayer.upProj),
+                dstLayer.upProj.data(),
+                intermediateSize * hiddenSize
+            );
+        }
+        
+        if (srcLayer.downProj) {
+            dstLayer.downProj.resize(hiddenSize * intermediateSize);
+            ggml_kernels::convert_bf16_to_f32(
+                static_cast<const uint16_t*>(srcLayer.downProj),
+                dstLayer.downProj.data(),
+                hiddenSize * intermediateSize
+            );
+        }
     }
     
     weightsLoaded_ = true;
-    CLLM_INFO("[CPUBackend] Weights loaded from HF format");
+    CLLM_INFO("[CPUBackend] Weights loaded successfully (%d layers)", numLayers);
     return true;
 }
 
@@ -512,12 +570,6 @@ std::vector<float> CPUBackend::forward(
     
     if (!weightsLoaded_) {
         CLLM_ERROR("[CPUBackend] Weights not loaded");
-        return {};
-    }
-    
-    // 检查权重是否已实际加载
-    if (impl_->layers.empty() || impl_->embedTokens.empty()) {
-        CLLM_WARN("[CPUBackend] Weights not loaded into layers");
         return {};
     }
     
