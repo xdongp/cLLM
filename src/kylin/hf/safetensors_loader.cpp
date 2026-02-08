@@ -166,6 +166,17 @@ SafetensorsLoader::~SafetensorsLoader() {
     }
 }
 
+void SafetensorsLoader::releaseMappedData() {
+    if (mappedData_) {
+        munmap(mappedData_, mappedSize_);
+        mappedData_ = nullptr;
+        dataStart_ = nullptr;
+        mappedSize_ = 0;
+        // 注意：不关闭 fd_，不清理 tensors_ 元数据
+        CLLM_INFO("[SafetensorsLoader] Released mapped data, metadata preserved");
+    }
+}
+
 bool SafetensorsLoader::parseHeader() {
     if (!mappedData_ || mappedSize_ < 8) {
         return false;

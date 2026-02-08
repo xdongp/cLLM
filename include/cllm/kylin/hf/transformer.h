@@ -11,6 +11,7 @@
 #include "cllm/kylin/hf/config.h"
 #include "cllm/kylin/hf/safetensors_loader.h"
 #include "cllm/kylin/backend/backend_interface.h"
+#include "cllm/kylin/core/quantization.h"
 
 #include <memory>
 #include <vector>
@@ -124,6 +125,12 @@ private:
     // 加载权重
     bool loadWeights();
     
+    // FP32 模式加载权重（直接使用内存映射）
+    bool loadWeightsFP32();
+
+    // 量化模式加载权重（INT8/FP16）
+    bool loadWeightsQuantized(QuantType qType);
+    
     // 模型状态
     bool loaded_ = false;
     HFModelConfig config_;
@@ -136,6 +143,15 @@ private:
     
     // 模型权重（传递给后端）
     ModelWeights modelWeights_;
+    
+    // 量化后的权重存储（拥有权重的实际数据）
+    // 仅当 quantType_ 为 INT8 或 FP16 时使用
+    QuantizedWeight quantizedEmbedTokens_;
+    QuantizedWeight quantizedLmHeadWeight_;
+    QuantizedWeight quantizedFinalNormWeight_;
+    std::vector<QuantizedWeight> quantizedLayerWeights_;  // 每层的量化权重 (7个线性层)
+    std::vector<std::vector<float>> f32LayerWeights_;     // 每层的F32权重 (4个LayerNorm)
+    std::vector<float> f32FinalNormWeight_;               // final norm的F32权重
 };
 
 } // namespace kylin

@@ -208,6 +208,7 @@ int main(int argc, char** argv) {
     std::string modelPath = "/Users/dannypan/.cache/modelscope/hub/models/Qwen/Qwen3-0.6B";
     std::string deviceType = "cpu";
     std::string inputText = "hello";
+    std::string quantTypeStr = "fp32";
     int maxTokens = 30;
     float temperature = 1.0f;
     float repetitionPenalty = 1.0f;
@@ -226,6 +227,8 @@ int main(int argc, char** argv) {
             temperature = std::stof(argv[++i]);
         } else if (arg == "--repetition_penalty" && i + 1 < argc) {
             repetitionPenalty = std::stof(argv[++i]);
+        } else if (arg == "--quant" && i + 1 < argc) {
+            quantTypeStr = argv[++i];
         }
     }
 
@@ -256,7 +259,17 @@ int main(int argc, char** argv) {
 
     std::cout << std::endl << "【Step 3】加载 Transformer 模型..." << std::endl;
     cllm::kylin::DeviceType device = (deviceType == "gpu") ? cllm::kylin::DeviceType::Metal : cllm::kylin::DeviceType::CPU;
-    cllm::kylin::HFTransformerModel transformer(modelPath, device, cllm::kylin::QuantType::FP32);
+    
+    // 解析量化类型
+    cllm::kylin::QuantType quantType = cllm::kylin::QuantType::FP32;
+    if (quantTypeStr == "int8") {
+        quantType = cllm::kylin::QuantType::INT8;
+    } else if (quantTypeStr == "fp16") {
+        quantType = cllm::kylin::QuantType::FP16;
+    }
+    std::cout << "   - 量化类型: " << quantTypeStr << std::endl;
+    
+    cllm::kylin::HFTransformerModel transformer(modelPath, device, quantType);
     if (!transformer.isLoaded()) {
         std::cerr << "❌ Transformer 模型加载失败" << std::endl;
         return 1;

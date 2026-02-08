@@ -59,6 +59,13 @@ private:
     
     // PIMPL 模式隐藏实现细节
     std::unique_ptr<CPUBackendImpl> impl_;
+    
+    // 权重加载辅助函数
+    bool loadWeightsINT8(const ModelWeights& weights);
+    bool loadWeightsFP16(const ModelWeights& weights);
+    bool loadWeightsBF16(const ModelWeights& weights);
+    bool loadLayerWeightsINT8(const ModelWeights& weights);
+    bool loadLayerWeightsFP16(const ModelWeights& weights);
 };
 
 } // namespace kylin

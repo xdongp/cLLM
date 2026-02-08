@@ -88,6 +88,13 @@ public:
      */
     size_t getTensorNumElements(const std::string& name) const;
     
+    /**
+     * @brief 释放内存映射，但保留元数据
+     * 
+     * 在量化权重加载完成后调用，释放原始F32权重内存
+     */
+    void releaseMappedData();
+    
 private:
     bool parseHeader();
     

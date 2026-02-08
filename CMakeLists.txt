@@ -702,6 +702,17 @@ if(LLAMA_CPP_FOUND)
     target_compile_definitions(show_model_output PRIVATE CLLM_USE_LLAMA_CPP)
 endif()
 
+# 内存测试工具
+add_executable(memory_test ${CMAKE_SOURCE_DIR}/tools/memory_test.cpp)
+target_link_libraries(memory_test
+    cllm_core
+    Threads::Threads
+    spdlog::spdlog
+)
+if(LLAMA_CPP_FOUND)
+    target_compile_definitions(memory_test PRIVATE CLLM_USE_LLAMA_CPP)
+endif()
+
 # 添加渐进式性能测试程序（逐步验证各阶段性能衰减）
 # add_executable(incremental_benchmark ${CMAKE_SOURCE_DIR}/tools/incremental_benchmark.cpp)
 # target_link_libraries(incremental_benchmark
