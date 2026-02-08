@@ -61,6 +61,44 @@ public:
         const float* finalNorm,
         const float* lmHead
     );
+    
+    /**
+     * @brief 获取 GPU 性能统计
+     * 
+     * @return 平均前向推理时间（毫秒）
+     */
+    double getAverageForwardTime() const;
+    
+    /**
+     * @brief 获取 GPU 显存使用统计
+     * 
+     * @return 权重显存使用（字节）
+     */
+    size_t getWeightMemoryBytes() const;
+    
+    /**
+     * @brief 获取 KV Cache 显存使用
+     * 
+     * @return KV Cache 显存使用（字节）
+     */
+    size_t getKVCacheMemoryBytes() const;
+    
+    /**
+     * @brief 重置性能统计
+     */
+    void resetPerformanceStats();
+    
+    /**
+     * @brief 设置是否使用 FP16 混合精度
+     * 
+     * @param useFP16 是否使用 FP16
+     */
+    void setUseFP16(bool useFP16);
+    
+    /**
+     * @brief 获取是否使用 FP16
+     */
+    bool getUseFP16() const;
 
 private:
     // 模型配置
