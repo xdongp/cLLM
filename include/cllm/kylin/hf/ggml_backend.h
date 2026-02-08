@@ -146,6 +146,31 @@ public:
      */
     const char* getName() const;
     
+    /**
+     * @brief 获取权重内存大小（字节）
+     */
+    size_t getWeightMemoryBytes() const;
+    
+    /**
+     * @brief 获取 KV Cache 内存大小（字节）
+     */
+    size_t getKVCacheMemoryBytes() const;
+    
+    /**
+     * @brief 获取激活内存大小（字节）
+     */
+    size_t getActivationMemoryBytes() const;
+    
+    /**
+     * @brief 获取总内存大小（字节）
+     */
+    size_t getTotalMemoryBytes() const;
+    
+    /**
+     * @brief 获取 GPU 设备信息
+     */
+    std::string getGPUInfo() const;
+    
 private:
     // GGML 后端
     ggml_backend_t backend_ = nullptr;

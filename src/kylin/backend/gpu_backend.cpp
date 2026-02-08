@@ -138,43 +138,48 @@ std::vector<float> GPUBackend::forward(
         CLLM_ERROR("[GPUBackend] Not initialized");
         return {};
     }
-    
+
     if (!weightsLoaded_) {
         CLLM_ERROR("[GPUBackend] Weights not loaded");
         return {};
     }
-    
-    auto start = std::chrono::high_resolution_clock::now();
-    
-    // 调用 GGML 后端
-    std::vector<int> positions(inputIds.size());
-    for (size_t i = 0; i < inputIds.size(); ++i) {
-        positions[i] = static_cast<int>(i);
+
+    if (inputIds.empty()) {
+        CLLM_ERROR("[GPUBackend] Empty input");
+        return {};
     }
-    
-    // 只使用第一个 token 进行推理（简化版本）
-    std::vector<float> result = impl_->ggmlBackend->forward(
-        inputIds[0], 0
-    );
-    
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    // 获取当前 KV Cache 长度作为起始位置
+    int currentPos = getKVCacheCurrentLength(requestId);
+
+    std::vector<float> result;
+
+    // 处理所有输入 tokens，逐个推理以正确构建 KV Cache
+    for (size_t i = 0; i < inputIds.size(); ++i) {
+        int position = currentPos + static_cast<int>(i);
+        result = impl_->ggmlBackend->forward(inputIds[i], position);
+    }
+
     // 更新 KV Cache 长度跟踪
     {
         std::lock_guard<std::mutex> lock(impl_->kvCacheMutex);
         impl_->requestKVCacheLength[requestId] += static_cast<int>(inputIds.size());
     }
-    
+
     auto end = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
-    
+
     // 更新统计
     impl_->stats.forwardCount++;
     impl_->stats.totalForwardTimeMs += static_cast<uint64_t>(elapsed);
-    
+
     double minTime = impl_->stats.minForwardTime.load();
     double maxTime = impl_->stats.maxForwardTime.load();
     if (elapsed < minTime) impl_->stats.minForwardTime = elapsed;
     if (elapsed > maxTime) impl_->stats.maxForwardTime = elapsed;
-    
+
     return result;
 }
 
@@ -474,18 +479,30 @@ double GPUBackend::getAverageBatchTime() const {
 }
 
 size_t GPUBackend::getWeightMemoryBytes() const {
+    if (impl_->ggmlBackend) {
+        return impl_->ggmlBackend->getWeightMemoryBytes();
+    }
     return 0;
 }
 
 size_t GPUBackend::getKVCacheMemoryBytes() const {
+    if (impl_->ggmlBackend) {
+        return impl_->ggmlBackend->getKVCacheMemoryBytes();
+    }
     return 0;
 }
 
 size_t GPUBackend::getActivationMemoryBytes() const {
+    if (impl_->ggmlBackend) {
+        return impl_->ggmlBackend->getActivationMemoryBytes();
+    }
     return 0;
 }
 
 size_t GPUBackend::getTotalMemoryBytes() const {
+    if (impl_->ggmlBackend) {
+        return impl_->ggmlBackend->getTotalMemoryBytes();
+    }
     return 0;
 }
 
@@ -539,7 +556,10 @@ bool GPUBackend::isAvailable() const {
 }
 
 std::string GPUBackend::getGPUInfo() const {
-    return "GPU Backend (GGML)";
+    if (impl_->ggmlBackend) {
+        return impl_->ggmlBackend->getGPUInfo();
+    }
+    return "GPU Backend (GGML) - Not initialized";
 }
 
 } // namespace kylin

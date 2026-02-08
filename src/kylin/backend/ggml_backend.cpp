@@ -1946,6 +1946,56 @@ const char* GGMLGPUBackend::getName() const {
 #endif
 }
 
+size_t GGMLGPUBackend::getWeightMemoryBytes() const {
+    size_t total = 0;
+    if (weightBuffer_) {
+        total += ggml_backend_buffer_get_size(weightBuffer_);
+    }
+    return total;
+}
+
+size_t GGMLGPUBackend::getKVCacheMemoryBytes() const {
+    size_t total = 0;
+    // KV Cache 存储在 CPU 内存中
+    for (const auto& cache : kCacheCPU_) {
+        total += cache.size() * sizeof(float);
+    }
+    for (const auto& cache : vCacheCPU_) {
+        total += cache.size() * sizeof(float);
+    }
+    return total;
+}
+
+size_t GGMLGPUBackend::getActivationMemoryBytes() const {
+    size_t total = 0;
+    if (computeBuffer_) {
+        total += ggml_backend_buffer_get_size(computeBuffer_);
+    }
+    if (graphBuffer_) {
+        total += ggml_backend_buffer_get_size(graphBuffer_);
+    }
+    return total;
+}
+
+size_t GGMLGPUBackend::getTotalMemoryBytes() const {
+    return getWeightMemoryBytes() + getKVCacheMemoryBytes() + getActivationMemoryBytes();
+}
+
+std::string GGMLGPUBackend::getGPUInfo() const {
+    std::stringstream ss;
+#ifdef GGML_USE_METAL
+    ss << "Metal (Apple GPU)";
+    if (backend_) {
+        ss << " - Backend initialized";
+    }
+#else
+    ss << "CPU Fallback";
+#endif
+    ss << ", Weights: " << getWeightMemoryBytes() / (1024.0 * 1024.0) << " MB";
+    ss << ", KV Cache: " << getKVCacheMemoryBytes() / (1024.0 * 1024.0) << " MB";
+    return ss.str();
+}
+
 std::vector<std::vector<float>> GGMLGPUBackend::forwardBatch(
     const std::vector<int>& tokenIds,
     const std::vector<int>& positions) {
