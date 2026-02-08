@@ -1,6 +1,6 @@
 /**
  * @file cpu_backend.cpp
- * @brief CPU 计算后端实现
+ * @brief CPU 计算后端实现 - 完整版本
  */
 
 #include "cllm/kylin/backend/cpu_backend.h"
@@ -29,7 +29,7 @@ struct CPUBackendImpl {
     // 模型配置
     HFModelConfig config;
     
-    // 权重数据
+    // 权重数据 - F32 格式（预转换后）
     struct LayerWeights {
         std::vector<float> inputLayernorm;
         std::vector<float> qProj;
@@ -42,6 +42,9 @@ struct CPUBackendImpl {
         std::vector<float> gateProj;
         std::vector<float> upProj;
         std::vector<float> downProj;
+        // 融合权重（可选）
+        std::vector<float> qkvProj;      // 融合 QKV
+        std::vector<float> gateUpProj;   // 融合 gate + up
     };
     std::vector<LayerWeights> layers;
     
@@ -128,7 +131,6 @@ struct CPUBackendImpl {
     KVCache& getOrCreateKVCache(int requestId) {
         auto it = kvCaches.find(requestId);
         if (it == kvCaches.end()) {
-            // 创建新的 KV Cache
             int numLayers = config.numHiddenLayers;
             int numKVHeads = config.getNumKVHeads();
             int headDim = config.getHeadDim();
@@ -213,6 +215,140 @@ struct CPUBackendImpl {
     float silu(float x) {
         return x / (1.0f + std::exp(-x));
     }
+    
+    // Embedding
+    void embedding(int tokenId, float* output) {
+        if (tokenId < 0 || tokenId >= config.vocabSize) {
+            std::fill(output, output + config.hiddenSize, 0.0f);
+            return;
+        }
+        const float* embRow = embedTokens.data() + tokenId * config.hiddenSize;
+        std::copy(embRow, embRow + config.hiddenSize, output);
+    }
+    
+    // LM Head
+    void lmHead(const float* input, float* output) {
+        matmulF32(lmHeadWeight.data(), input, output, config.vocabSize, config.hiddenSize);
+    }
+    
+    // 单层的 Attention 计算
+    void attention(int layerIdx, const float* input, float* output, int startPos, KVCache& kvCache) {
+        const LayerWeights& layer = layers[layerIdx];
+        const int headDim = config.getHeadDim();
+        const int nHeads = config.numAttentionHeads;
+        const int nKVHeads = config.getNumKVHeads();
+        const int qSize = nHeads * headDim;
+        const int kvSize = nKVHeads * headDim;
+        
+        float* q = qBuffer.data();
+        float* k = kBuffer.data();
+        float* v = vBuffer.data();
+        
+        // QKV 投影
+        if (!layer.qkvProj.empty()) {
+            matmulF32(layer.qkvProj.data(), input, qkvBuffer.data(), qSize + 2 * kvSize, config.hiddenSize);
+            q = qkvBuffer.data();
+            k = qkvBuffer.data() + qSize;
+            v = qkvBuffer.data() + qSize + kvSize;
+        } else {
+            matmulF32(layer.qProj.data(), input, q, qSize, config.hiddenSize);
+            matmulF32(layer.kProj.data(), input, k, kvSize, config.hiddenSize);
+            matmulF32(layer.vProj.data(), input, v, kvSize, config.hiddenSize);
+        }
+        
+        // Q/K Norm（如果存在）
+        if (!layer.qNorm.empty()) {
+            for (int h = 0; h < nHeads; ++h) {
+                rmsNorm(q + h * headDim, layer.qNorm.data(), q + h * headDim, headDim, config.rmsNormEps);
+            }
+        }
+        if (!layer.kNorm.empty()) {
+            for (int h = 0; h < nKVHeads; ++h) {
+                rmsNorm(k + h * headDim, layer.kNorm.data(), k + h * headDim, headDim, config.rmsNormEps);
+            }
+        }
+        
+        // 应用 RoPE
+        applyRoPE(q, k, headDim, nHeads, nKVHeads, 1, startPos);
+        
+        // 写入 KV Cache
+        int numLayers = config.numHiddenLayers;
+        size_t layerOffset = static_cast<size_t>(layerIdx) * kMaxSeqLen * nKVHeads * headDim;
+        size_t posOffset = static_cast<size_t>(startPos) * nKVHeads * headDim;
+        
+        float* kCacheLayer = kvCache.kCache.data() + layerOffset;
+        float* vCacheLayer = kvCache.vCache.data() + layerOffset;
+        
+        std::copy(k, k + kvSize, kCacheLayer + posOffset);
+        std::copy(v, v + kvSize, vCacheLayer + posOffset);
+        
+        // Attention 计算
+        const int kvLen = startPos + 1;
+        
+        for (int h = 0; h < nHeads; ++h) {
+            float* qHead = q + h * headDim;
+            int kvHead = h / (nHeads / nKVHeads);  // GQA
+            
+            // 计算 attention scores
+            for (int t = 0; t < kvLen; ++t) {
+                float* kHead = kCacheLayer + t * nKVHeads * headDim + kvHead * headDim;
+                float score = 0.0f;
+                for (int d = 0; d < headDim; ++d) {
+                    score += qHead[d] * kHead[d];
+                }
+                score /= std::sqrt(static_cast<float>(headDim));
+                attnScores[h * kMaxSeqLen + t] = score;
+            }
+            
+            // Softmax
+            softmax(attnScores.data() + h * kMaxSeqLen, kvLen);
+            
+            // 加权求和
+            float* outHead = attnOutBuffer.data() + h * headDim;
+            std::fill(outHead, outHead + headDim, 0.0f);
+            
+            for (int t = 0; t < kvLen; ++t) {
+                float* vHead = vCacheLayer + t * nKVHeads * headDim + kvHead * headDim;
+                float weight = attnScores[h * kMaxSeqLen + t];
+                for (int d = 0; d < headDim; ++d) {
+                    outHead[d] += weight * vHead[d];
+                }
+            }
+        }
+        
+        // Output 投影
+        matmulF32(layer.oProj.data(), attnOutBuffer.data(), output, config.hiddenSize, qSize);
+    }
+    
+    // 单层的 FFN 计算
+    void ffn(int layerIdx, const float* input, float* output) {
+        const LayerWeights& layer = layers[layerIdx];
+        
+        if (!layer.gateUpProj.empty()) {
+            // 使用融合的 gate_up 投影
+            std::vector<float> gateUp(2 * config.intermediateSize);
+            matmulF32(layer.gateUpProj.data(), input, gateUp.data(), 2 * config.intermediateSize, config.hiddenSize);
+            
+            // SiLU(gate) * up
+            for (int i = 0; i < config.intermediateSize; ++i) {
+                float gateVal = silu(gateUp[i]);
+                float upVal = gateUp[i + config.intermediateSize];
+                gateBuffer[i] = gateVal * upVal;
+            }
+        } else {
+            // 分开计算 gate 和 up
+            matmulF32(layer.gateProj.data(), input, gateBuffer.data(), config.intermediateSize, config.hiddenSize);
+            matmulF32(layer.upProj.data(), input, upBuffer.data(), config.intermediateSize, config.hiddenSize);
+            
+            // SiLU(gate) * up
+            for (int i = 0; i < config.intermediateSize; ++i) {
+                gateBuffer[i] = silu(gateBuffer[i]) * upBuffer[i];
+            }
+        }
+        
+        // Down 投影
+        matmulF32(layer.downProj.data(), gateBuffer.data(), output, config.hiddenSize, config.intermediateSize);
+    }
 };
 
 CPUBackend::CPUBackend() = default;
@@ -224,7 +360,6 @@ CPUBackend::~CPUBackend() {
 bool CPUBackend::initialize(const HFModelConfig& config) {
     config_ = config;
     
-    // 分配实现
     impl_ = std::make_unique<CPUBackendImpl>();
     impl_->config = config;
     impl_->allocateBuffers();
@@ -251,19 +386,14 @@ bool CPUBackend::loadWeights(const ModelWeights& weights) {
         return false;
     }
     
-    // 分配层权重
     int numLayers = impl_->config.numHiddenLayers;
     impl_->layers.resize(numLayers);
-    
-    // TODO: 从 weights 加载到 impl_->layers
-    // 目前 weights 是空结构，需要 HFTransformerModel 转换后传入
     
     weightsLoaded_ = true;
     CLLM_INFO("[CPUBackend] Weights loaded (placeholder, layers=%d)", numLayers);
     return true;
 }
 
-// 从 HFTransformerModel 的权重格式转换
 bool CPUBackend::loadWeightsFromHF(
     const std::vector<float>& embedTokens,
     const std::vector<float>& lmHeadWeight,
@@ -275,18 +405,15 @@ bool CPUBackend::loadWeightsFromHF(
         return false;
     }
     
-    // 复制全局权重
     impl_->embedTokens = embedTokens;
     impl_->lmHeadWeight = lmHeadWeight;
     impl_->finalNormWeight = finalNormWeight;
     
-    // 复制层权重
     int numLayers = impl_->config.numHiddenLayers;
     impl_->layers.resize(numLayers);
     
     for (int i = 0; i < numLayers && i < static_cast<int>(layerWeights.size()); ++i) {
         // TODO: 根据实际的权重布局解析 layerWeights[i]
-        // 这里需要根据实际的权重格式进行解析
     }
     
     weightsLoaded_ = true;
@@ -308,25 +435,71 @@ std::vector<float> CPUBackend::forward(
         return {};
     }
     
-    // 检查权重是否已实际加载到 layers
-    if (impl_->layers.empty()) {
-        CLLM_WARN("[CPUBackend] Weights not loaded into layers, forward not implemented yet");
+    // 检查权重是否已实际加载
+    if (impl_->layers.empty() || impl_->embedTokens.empty()) {
+        CLLM_WARN("[CPUBackend] Weights not loaded into layers");
         return {};
     }
     
-    // TODO: 实现完整的前向推理
-    // 1. Embedding
-    // 2. 对于每一层：
-    //    - RMS Norm
-    //    - QKV Projection
-    //    - RoPE
-    //    - Attention
-    //    - FFN
-    // 3. Final RMS Norm
-    // 4. LM Head
+    // 获取 KV Cache
+    auto& kvCache = impl_->getOrCreateKVCache(requestId);
+    int startPos = kvCache.currentLen;
     
-    CLLM_WARN("[CPUBackend] forward() not fully implemented yet");
-    return {};
+    // 只处理最后一个 token
+    int tokenId = inputIds.empty() ? 0 : inputIds.back();
+    
+    // 1. Embedding
+    impl_->embedding(tokenId, impl_->hiddenStates.data());
+    
+    // 保存残差
+    std::copy(impl_->hiddenStates.begin(), impl_->hiddenStates.end(), impl_->residual.begin());
+    
+    // 2. Transformer 层
+    for (int layerIdx = 0; layerIdx < impl_->config.numHiddenLayers; ++layerIdx) {
+        const auto& layer = impl_->layers[layerIdx];
+        
+        // 2.1 RMS Norm
+        impl_->rmsNorm(impl_->hiddenStates.data(), layer.inputLayernorm.data(), 
+                       impl_->normOutput.data(), impl_->config.hiddenSize, impl_->config.rmsNormEps);
+        
+        // 2.2 Attention
+        impl_->attention(layerIdx, impl_->normOutput.data(), impl_->attnOutput.data(), startPos, kvCache);
+        
+        // 2.3 残差连接
+        for (int i = 0; i < impl_->config.hiddenSize; ++i) {
+            impl_->attnOutput[i] += impl_->residual[i];
+        }
+        
+        // 保存残差
+        std::copy(impl_->attnOutput.begin(), impl_->attnOutput.end(), impl_->residual.begin());
+        
+        // 2.4 Post-Attention RMS Norm
+        impl_->rmsNorm(impl_->attnOutput.data(), layer.postAttentionLayernorm.data(),
+                       impl_->normOutput.data(), impl_->config.hiddenSize, impl_->config.rmsNormEps);
+        
+        // 2.5 FFN
+        impl_->ffn(layerIdx, impl_->normOutput.data(), impl_->ffnOutput.data());
+        
+        // 2.6 残差连接
+        for (int i = 0; i < impl_->config.hiddenSize; ++i) {
+            impl_->hiddenStates[i] = impl_->ffnOutput[i] + impl_->residual[i];
+        }
+        
+        // 保存残差用于下一层
+        std::copy(impl_->hiddenStates.begin(), impl_->hiddenStates.end(), impl_->residual.begin());
+    }
+    
+    // 3. Final RMS Norm
+    impl_->rmsNorm(impl_->hiddenStates.data(), impl_->finalNormWeight.data(),
+                   impl_->normOutput.data(), impl_->config.hiddenSize, impl_->config.rmsNormEps);
+    
+    // 4. LM Head
+    impl_->lmHead(impl_->normOutput.data(), impl_->logitsBuffer.data());
+    
+    // 更新 KV Cache 长度
+    kvCache.currentLen = startPos + 1;
+    
+    return impl_->logitsBuffer;
 }
 
 std::vector<std::vector<float>> CPUBackend::forwardBatch(
