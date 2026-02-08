@@ -27,6 +27,14 @@
 namespace cllm {
 namespace kylin {
 
+// 默认最大序列长度
+static constexpr int DEFAULT_MAX_SEQ_LEN = 4096;
+
+// 辅助函数：获取最大序列长度
+static inline int getMaxSeqLen(const HFModelConfig& config) {
+    return config.maxPositionEmbeddings > 0 ? config.maxPositionEmbeddings : DEFAULT_MAX_SEQ_LEN;
+}
+
 // 内部实现结构
 struct CPUBackendImpl {
     // 模型配置
@@ -84,16 +92,13 @@ struct CPUBackendImpl {
     std::vector<float> ropeFreqsCos;
     std::vector<float> ropeFreqsSin;
     
-    // 常量
-    static constexpr int kMaxSeqLen = 4096;
-    
     void allocateBuffers() {
         int hiddenSize = config.hiddenSize;
         int intermediateSize = config.intermediateSize;
         int numHeads = config.numAttentionHeads;
         int numKVHeads = config.getNumKVHeads();
         int headDim = config.getHeadDim();
-        int maxSeqLen = kMaxSeqLen;
+        int maxSeqLen = getMaxSeqLen(config);
         
         hiddenStates.resize(hiddenSize);
         residual.resize(hiddenSize);
@@ -120,10 +125,11 @@ struct CPUBackendImpl {
     
     void precomputeRoPE() {
         int headDim = config.getHeadDim();
-        ropeFreqsCos.resize(kMaxSeqLen * headDim / 2);
-        ropeFreqsSin.resize(kMaxSeqLen * headDim / 2);
+        int maxSeqLen = getMaxSeqLen(config);
+        ropeFreqsCos.resize(maxSeqLen * headDim / 2);
+        ropeFreqsSin.resize(maxSeqLen * headDim / 2);
         
-        for (int pos = 0; pos < kMaxSeqLen; ++pos) {
+        for (int pos = 0; pos < maxSeqLen; ++pos) {
             for (int i = 0; i < headDim / 2; ++i) {
                 float freq = 1.0f / std::pow(config.ropeTheta, 2.0f * i / headDim);
                 float angle = pos * freq;
@@ -140,7 +146,8 @@ struct CPUBackendImpl {
             int numLayers = config.numHiddenLayers;
             int numKVHeads = config.getNumKVHeads();
             int headDim = config.getHeadDim();
-            size_t kvSize = static_cast<size_t>(numLayers) * kMaxSeqLen * numKVHeads * headDim;
+            int maxSeqLen = getMaxSeqLen(config);
+            size_t kvSize = static_cast<size_t>(numLayers) * maxSeqLen * numKVHeads * headDim;
             
             KVCache cache;
             cache.kCache.resize(kvSize, 0.0f);
@@ -290,7 +297,8 @@ struct CPUBackendImpl {
         
         // 写入 KV Cache
         int numLayers = config.numHiddenLayers;
-        size_t layerOffset = static_cast<size_t>(layerIdx) * kMaxSeqLen * nKVHeads * headDim;
+        int maxSeqLen = getMaxSeqLen(config);
+        size_t layerOffset = static_cast<size_t>(layerIdx) * maxSeqLen * nKVHeads * headDim;
         size_t posOffset = static_cast<size_t>(startPos) * nKVHeads * headDim;
         
         float* kCacheLayer = kvCache.kCache.data() + layerOffset;
@@ -313,7 +321,7 @@ struct CPUBackendImpl {
         for (int h = 0; h < nHeads; ++h) {
             const int kvHead = h / gqa;
             const float* qHead = q + h * headDim;
-            float* localScores = attnScores.data() + h * kMaxSeqLen;
+            float* localScores = attnScores.data() + h * maxSeqLen;
             
             // 计算 attention scores + softmax
             float maxScore = -1e30f;

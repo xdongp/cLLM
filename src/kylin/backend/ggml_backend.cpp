@@ -25,7 +25,13 @@
 namespace cllm {
 namespace kylin {
 
-static constexpr int MAX_SEQ_LEN = 2048;
+// 默认最大序列长度
+static constexpr int DEFAULT_MAX_SEQ_LEN = 4096;
+
+// 辅助函数：获取最大序列长度
+static inline int getMaxSeqLen(const HFModelConfig& config) {
+    return config.maxPositionEmbeddings > 0 ? config.maxPositionEmbeddings : DEFAULT_MAX_SEQ_LEN;
+}
 
 struct SchedStats {
     ggml_backend_sched_t sched = nullptr;
@@ -57,9 +63,7 @@ static bool sched_eval_cb(struct ggml_tensor* t, bool ask, void* user_data) {
     return true;
 }
 
-GGMLGPUBackend::GGMLGPUBackend() {
-    graphNormWeightedAllLayers_.resize(28, nullptr);  // 初始化28层的存储
-}
+GGMLGPUBackend::GGMLGPUBackend() = default;
 
 GGMLGPUBackend::~GGMLGPUBackend() {
     if (graphSched_) {
@@ -144,12 +148,16 @@ bool GGMLGPUBackend::initialize(const HFModelConfig& config) {
     const int headDim = config_.getHeadDim();
     const int nKVHeads = config_.getNumKVHeads();
     const int numLayers = config_.numHiddenLayers;
+    const int maxSeqLen = getMaxSeqLen(config_);
     kCacheCPU_.resize(numLayers);
     vCacheCPU_.resize(numLayers);
     for (int l = 0; l < numLayers; ++l) {
-        kCacheCPU_[l].resize(MAX_SEQ_LEN * nKVHeads * headDim, 0.0f);
-        vCacheCPU_[l].resize(MAX_SEQ_LEN * nKVHeads * headDim, 0.0f);
+        kCacheCPU_[l].resize(maxSeqLen * nKVHeads * headDim, 0.0f);
+        vCacheCPU_[l].resize(maxSeqLen * nKVHeads * headDim, 0.0f);
     }
+    
+    // 初始化调试用的层输出存储
+    graphNormWeightedAllLayers_.resize(numLayers, nullptr);
     
     kvCacheLen_ = 0;
     initialized_ = true;
@@ -164,11 +172,12 @@ void GGMLGPUBackend::precomputeRoPE() {
     const int headDim = config_.getHeadDim();
     const int halfDim = headDim / 2;
     const float ropeTheta = config_.ropeTheta;
+    const int maxSeqLen = getMaxSeqLen(config_);
     
-    ropeFreqsCos_.resize(MAX_SEQ_LEN * halfDim);
-    ropeFreqsSin_.resize(MAX_SEQ_LEN * halfDim);
+    ropeFreqsCos_.resize(maxSeqLen * halfDim);
+    ropeFreqsSin_.resize(maxSeqLen * halfDim);
     
-    for (int pos = 0; pos < MAX_SEQ_LEN; ++pos) {
+    for (int pos = 0; pos < maxSeqLen; ++pos) {
         for (int i = 0; i < halfDim; ++i) {
             float freq = 1.0f / std::pow(ropeTheta, 2.0f * i / headDim);
             float angle = pos * freq;
@@ -824,7 +833,7 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
                           (int)norm_w->ne[0], (int)norm_w->ne[1], (int)norm_w->ne[2], (int)norm_w->ne[3]);
 
                 // 保存所有层的 RMS Norm 后输出用于逐层验证
-                if (position == 0 && layerIdx < 28) {
+                if (position == 0 && layerIdx < config_.numHiddenLayers) {
                     graphNormWeightedAllLayers_[layerIdx] = norm_w;
                 }
 
@@ -931,8 +940,9 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
                         vCacheGraphCPU_.resize(config_.numHiddenLayers);
                     }
                     if (kCacheGraphCPU_[layerIdx].empty()) {
-                        kCacheGraphCPU_[layerIdx].resize((size_t) MAX_SEQ_LEN * kvSize, 0.0f);
-                        vCacheGraphCPU_[layerIdx].resize((size_t) MAX_SEQ_LEN * kvSize, 0.0f);
+                        const int maxSeqLen = getMaxSeqLen(config_);
+                        kCacheGraphCPU_[layerIdx].resize((size_t) maxSeqLen * kvSize, 0.0f);
+                        vCacheGraphCPU_[layerIdx].resize((size_t) maxSeqLen * kvSize, 0.0f);
                     }
 
                     // Create KV cache tensors for historical data only
@@ -1811,7 +1821,7 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
     // 只在 position == 0 时打印，因为 graphNormWeightedAllLayers_ 只在此时被设置
     if (position == 0) {
         CLLM_DEBUG_GPU("[GPU DEBUG] ========== All Layers RMS Norm Stats ==========");
-        for (int layerIdx = 0; layerIdx < 28; ++layerIdx) {
+        for (int layerIdx = 0; layerIdx < config_.numHiddenLayers; ++layerIdx) {
             if (graphNormWeightedAllLayers_[layerIdx]) {
                 std::vector<float> normData(hiddenSize);
                 ggml_backend_tensor_get(graphNormWeightedAllLayers_[layerIdx], normData.data(), 0, normData.size() * sizeof(float));
