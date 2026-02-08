@@ -34,6 +34,15 @@ public:
     bool initialize(const HFModelConfig& config) override;
     void shutdown() override;
     bool loadWeights(const ModelWeights& weights) override;
+    
+    // 从 HFTransformerModel 的权重格式加载（辅助函数）
+    bool loadWeightsFromHF(
+        const std::vector<float>& embedTokens,
+        const std::vector<float>& lmHeadWeight,
+        const std::vector<float>& finalNormWeight,
+        const std::vector<std::vector<float>>& layerWeights
+    );
+    
     std::vector<float> forward(const std::vector<int32_t>& inputIds, int requestId) override;
     std::vector<std::vector<float>> forwardBatch(
         const std::vector<std::vector<int32_t>>& batchInputIds,

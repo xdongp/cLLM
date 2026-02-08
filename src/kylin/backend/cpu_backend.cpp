@@ -251,11 +251,46 @@ bool CPUBackend::loadWeights(const ModelWeights& weights) {
         return false;
     }
     
-    // TODO: 从 weights 加载到 impl_->layers 等
-    // 这里需要根据 weights.weightType 进行相应的转换
+    // 分配层权重
+    int numLayers = impl_->config.numHiddenLayers;
+    impl_->layers.resize(numLayers);
+    
+    // TODO: 从 weights 加载到 impl_->layers
+    // 目前 weights 是空结构，需要 HFTransformerModel 转换后传入
     
     weightsLoaded_ = true;
-    CLLM_INFO("[CPUBackend] Weights loaded (placeholder)");
+    CLLM_INFO("[CPUBackend] Weights loaded (placeholder, layers=%d)", numLayers);
+    return true;
+}
+
+// 从 HFTransformerModel 的权重格式转换
+bool CPUBackend::loadWeightsFromHF(
+    const std::vector<float>& embedTokens,
+    const std::vector<float>& lmHeadWeight,
+    const std::vector<float>& finalNormWeight,
+    const std::vector<std::vector<float>>& layerWeights
+) {
+    if (!impl_) {
+        CLLM_ERROR("[CPUBackend] Not initialized");
+        return false;
+    }
+    
+    // 复制全局权重
+    impl_->embedTokens = embedTokens;
+    impl_->lmHeadWeight = lmHeadWeight;
+    impl_->finalNormWeight = finalNormWeight;
+    
+    // 复制层权重
+    int numLayers = impl_->config.numHiddenLayers;
+    impl_->layers.resize(numLayers);
+    
+    for (int i = 0; i < numLayers && i < static_cast<int>(layerWeights.size()); ++i) {
+        // TODO: 根据实际的权重布局解析 layerWeights[i]
+        // 这里需要根据实际的权重格式进行解析
+    }
+    
+    weightsLoaded_ = true;
+    CLLM_INFO("[CPUBackend] Weights loaded from HF format");
     return true;
 }
 
