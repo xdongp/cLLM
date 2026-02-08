@@ -288,13 +288,18 @@ std::vector<float> GPUBackend::forward(
     // 获取当前 KV Cache 长度作为起始位置
     int currentPos = getKVCacheCurrentLength(requestId);
 
-    std::vector<float> result;
-
-    // 处理所有输入 tokens，逐个推理以正确构建 KV Cache
+    // 🔥 优化：使用 forwardBatch 一次性处理所有 tokens
+    std::vector<int> tokenIds(inputIds.begin(), inputIds.end());
+    std::vector<int> positions;
+    positions.reserve(inputIds.size());
     for (size_t i = 0; i < inputIds.size(); ++i) {
-        int position = currentPos + static_cast<int>(i);
-        result = impl_->ggmlBackend->forward(inputIds[i], position);
+        positions.push_back(currentPos + static_cast<int>(i));
     }
+    
+    auto results = impl_->ggmlBackend->forwardBatch(tokenIds, positions);
+    
+    // 返回最后一个 token 的 logits
+    std::vector<float> result = results.empty() ? std::vector<float>() : std::move(results.back());
 
     // 更新 KV Cache 长度跟踪
     {

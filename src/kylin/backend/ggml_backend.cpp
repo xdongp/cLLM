@@ -1364,12 +1364,9 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
                                  nullptr, nullptr, nullptr, nullptr);
 
             if (graphStage_ >= 6) {
-                ggml_backend_t backends[2] = { backend_, nullptr };
-                int n_backends = 1;
-                if (graphStage_ >= 8 && backendCPU_) {
-                    backends[1] = backendCPU_;
-                    n_backends = 2;
-                }
+                // GGML scheduler 要求最后一个 backend 必须是 CPU
+                ggml_backend_t backends[2] = { backend_, backendCPU_ };
+                int n_backends = backendCPU_ ? 2 : 1;
                 graphSched_ = ggml_backend_sched_new(backends, nullptr, n_backends, GGML_DEFAULT_GRAPH_SIZE, false, true);
                 if (!graphSched_) {
                     CLLM_ERROR("[GGMLGPUBackend] Failed to create backend scheduler");
@@ -1421,12 +1418,9 @@ std::vector<float> GGMLGPUBackend::forwardGraphMinimal(int tokenId, int position
     ggml_backend_sched_t sched = nullptr;
     if (!usePersistent) {
         if (graphStage_ >= 6) {
-            ggml_backend_t backends[2] = { backend_, nullptr };
-            int n_backends = 1;
-            if (graphStage_ >= 8 && backendCPU_) {
-                backends[1] = backendCPU_;
-                n_backends = 2;
-            }
+            // GGML scheduler 要求最后一个 backend 必须是 CPU
+            ggml_backend_t backends[2] = { backend_, backendCPU_ };
+            int n_backends = backendCPU_ ? 2 : 1;
             sched = ggml_backend_sched_new(backends, nullptr, n_backends, GGML_DEFAULT_GRAPH_SIZE, false, true);
             if (!sched) {
                 CLLM_ERROR("[GGMLGPUBackend] Failed to create backend scheduler");
