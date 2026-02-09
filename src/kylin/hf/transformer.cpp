@@ -158,6 +158,13 @@ bool HFTransformerModel::loadWeightsQuantized(QuantType qType) {
     CLLM_INFO("[HFTransformer] Loading weights with %s quantization...",
               qType == QuantType::INT8 ? "INT8" : "FP16");
 
+    // 检测原始数据类型
+    std::string embedDtype = loader_->getTensorDtype("model.embed_tokens.weight");
+    bool isSourceBF16 = (embedDtype == "BF16" || embedDtype == "bfloat16");
+    CLLM_INFO("[HFTransformer] Source dtype: %s, Target: %s", 
+              embedDtype.empty() ? "unknown" : embedDtype.c_str(),
+              quantTypeName(qType));
+
     // 为量化参数预留空间 (3个全局权重: embed, norm, lm_head + 每层11个权重)
     size_t totalWeights = 3 + config_.numHiddenLayers * 11;
     modelWeights_.scales.resize(totalWeights, 1.0f);
@@ -165,8 +172,15 @@ bool HFTransformerModel::loadWeightsQuantized(QuantType qType) {
 
     // 量化嵌入层
     size_t embedCount = loader_->getTensorNumElements("model.embed_tokens.weight");
-    auto embedF32 = loader_->getTensorAsF32("model.embed_tokens.weight");
-    quantizedEmbedTokens_ = QuantizedWeight::fromFP32(embedF32.data(), embedCount, qType);
+    if (isSourceBF16 && qType == QuantType::FP16) {
+        // BF16 -> FP16 直接转换（避免中间 F32）
+        const uint16_t* embedBF16 = static_cast<const uint16_t*>(loader_->getTensorData("model.embed_tokens.weight"));
+        quantizedEmbedTokens_ = QuantizedWeight::fromBF16(embedBF16, embedCount, qType);
+    } else {
+        // 其他情况：先转 F32，再量化
+        auto embedF32 = loader_->getTensorAsF32("model.embed_tokens.weight");
+        quantizedEmbedTokens_ = QuantizedWeight::fromFP32(embedF32.data(), embedCount, qType);
+    }
     modelWeights_.embedTokens = quantizedEmbedTokens_.data();
     modelWeights_.scales[0] = quantizedEmbedTokens_.scale();
     modelWeights_.zeroPoints[0] = quantizedEmbedTokens_.zeroPoint();
@@ -183,8 +197,13 @@ bool HFTransformerModel::loadWeightsQuantized(QuantType qType) {
     // 量化 lm_head (索引2)
     if (!config_.tieWordEmbeddings) {
         size_t lmHeadCount = loader_->getTensorNumElements("lm_head.weight");
-        auto lmHeadF32 = loader_->getTensorAsF32("lm_head.weight");
-        quantizedLmHeadWeight_ = QuantizedWeight::fromFP32(lmHeadF32.data(), lmHeadCount, qType);
+        if (isSourceBF16 && qType == QuantType::FP16) {
+            const uint16_t* lmHeadBF16 = static_cast<const uint16_t*>(loader_->getTensorData("lm_head.weight"));
+            quantizedLmHeadWeight_ = QuantizedWeight::fromBF16(lmHeadBF16, lmHeadCount, qType);
+        } else {
+            auto lmHeadF32 = loader_->getTensorAsF32("lm_head.weight");
+            quantizedLmHeadWeight_ = QuantizedWeight::fromFP32(lmHeadF32.data(), lmHeadCount, qType);
+        }
         modelWeights_.lmHeadWeight = quantizedLmHeadWeight_.data();
         modelWeights_.scales[2] = quantizedLmHeadWeight_.scale();
         modelWeights_.zeroPoints[2] = quantizedLmHeadWeight_.zeroPoint();
@@ -229,22 +248,33 @@ bool HFTransformerModel::loadWeightsQuantized(QuantType qType) {
         for (int w = 0; w < 11; ++w) {
             std::string name = prefix + weights[w].suffix;
             size_t count = loader_->getTensorNumElements(name);
-            auto f32 = loader_->getTensorAsF32(name);
-
-            if (f32.empty()) {
-                CLLM_ERROR("[HFTransformer] Missing weight: %s", name.c_str());
-                return false;
-            }
 
             if (weights[w].shouldQuantize) {
                 // 量化线性层权重
-                quantizedLayerWeights_[qwIdx + w] = QuantizedWeight::fromFP32(f32.data(), count, qType);
+                if (isSourceBF16 && qType == QuantType::FP16) {
+                    // BF16 -> FP16 直接转换
+                    const uint16_t* bf16Data = static_cast<const uint16_t*>(loader_->getTensorData(name));
+                    quantizedLayerWeights_[qwIdx + w] = QuantizedWeight::fromBF16(bf16Data, count, qType);
+                } else {
+                    // 其他情况：先转 F32，再量化
+                    auto f32 = loader_->getTensorAsF32(name);
+                    if (f32.empty()) {
+                        CLLM_ERROR("[HFTransformer] Missing weight: %s", name.c_str());
+                        return false;
+                    }
+                    quantizedLayerWeights_[qwIdx + w] = QuantizedWeight::fromFP32(f32.data(), count, qType);
+                }
                 *weights[w].target = quantizedLayerWeights_[qwIdx + w].data();
                 // 保存量化参数
                 modelWeights_.scales[scaleIdx + w] = quantizedLayerWeights_[qwIdx + w].scale();
                 modelWeights_.zeroPoints[scaleIdx + w] = quantizedLayerWeights_[qwIdx + w].zeroPoint();
             } else {
                 // LayerNorm权重保持F32，存储在f32LayerWeights_中
+                auto f32 = loader_->getTensorAsF32(name);
+                if (f32.empty()) {
+                    CLLM_ERROR("[HFTransformer] Missing weight: %s", name.c_str());
+                    return false;
+                }
                 size_t f32Idx = i * 4 + (w == 0 ? 0 : w == 5 ? 1 : w == 6 ? 2 : 3); // 映射到4个F32权重
                 f32LayerWeights_[f32Idx].resize(count);
                 std::memcpy(f32LayerWeights_[f32Idx].data(), f32.data(), count * sizeof(float));

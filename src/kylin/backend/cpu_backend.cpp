@@ -74,6 +74,15 @@ struct CPUBackendImpl {
         std::vector<int8_t> upProjInt8;
         std::vector<int8_t> downProjInt8;
         
+        // FP16 格式权重（用于 FP16 主力模式）
+        std::vector<uint16_t> qProjFP16;
+        std::vector<uint16_t> kProjFP16;
+        std::vector<uint16_t> vProjFP16;
+        std::vector<uint16_t> oProjFP16;
+        std::vector<uint16_t> gateProjFP16;
+        std::vector<uint16_t> upProjFP16;
+        std::vector<uint16_t> downProjFP16;
+        
         // INT8 量化参数
         QuantParams qProjQParams;
         QuantParams kProjQParams;
@@ -93,6 +102,10 @@ struct CPUBackendImpl {
     // 全局权重 - INT8 格式
     std::vector<int8_t> embedTokensInt8;
     std::vector<int8_t> lmHeadWeightInt8;
+    
+    // 全局权重 - FP16 格式（主力格式）
+    std::vector<uint16_t> embedTokensFP16;
+    std::vector<uint16_t> lmHeadWeightFP16;
     
     // INT8 量化参数
     QuantParams embedTokensQParams;
@@ -214,6 +227,11 @@ struct CPUBackendImpl {
         matmulF32(weightF32.data(), input, output, outFeatures, inFeatures);
     }
 
+    // 矩阵乘法 FP16（主力格式 - 直接计算，不转 F32）
+    void matmulFP16(const uint16_t* weight, const float* input, float* output, int outFeatures, int inFeatures) {
+        quant_kernels::matmul_fp16_f32(weight, input, output, outFeatures, inFeatures);
+    }
+
     // 矩阵乘法 INT8
     void matmulINT8(const int8_t* weight, const float* input, float* output,
                     int outFeatures, int inFeatures, const QuantParams& qparams) {
@@ -226,6 +244,25 @@ struct CPUBackendImpl {
                 const float* input, float* output, int outFeatures, int inFeatures) {
         if (weightType == QuantType::INT8 && int8Weight != nullptr) {
             matmulINT8(int8Weight, input, output, outFeatures, inFeatures, qparams);
+        } else {
+            matmulF32(f32Weight, input, output, outFeatures, inFeatures);
+        }
+    }
+    
+    // FP16 专用矩阵乘法 - 使用 FP16 权重
+    void matmulFP16Layer(const uint16_t* fp16Weight, const float* input, float* output, 
+                         int outFeatures, int inFeatures) {
+        quant_kernels::matmul_fp16_f32(fp16Weight, input, output, outFeatures, inFeatures);
+    }
+    
+    // 通用矩阵乘法 - 自动选择最优路径（F32/INT8/FP16）
+    void matmulAuto(const float* f32Weight, const int8_t* int8Weight, const uint16_t* fp16Weight,
+                    const QuantParams& qparams, const float* input, float* output,
+                    int outFeatures, int inFeatures) {
+        if (weightType == QuantType::INT8 && int8Weight != nullptr) {
+            matmulINT8(int8Weight, input, output, outFeatures, inFeatures, qparams);
+        } else if (weightType == QuantType::FP16 && fp16Weight != nullptr) {
+            matmulFP16(fp16Weight, input, output, outFeatures, inFeatures);
         } else {
             matmulF32(f32Weight, input, output, outFeatures, inFeatures);
         }
@@ -303,6 +340,10 @@ struct CPUBackendImpl {
             for (int i = 0; i < config.hiddenSize; ++i) {
                 output[i] = (static_cast<float>(embRow[i]) - embedTokensQParams.zeroPoint) * embedTokensQParams.scale;
             }
+        } else if (weightType == QuantType::FP16 && !embedTokensFP16.empty()) {
+            // FP16 embedding: 实时转换为 F32
+            const uint16_t* embRow = embedTokensFP16.data() + tokenId * config.hiddenSize;
+            quant_kernels::convert_fp16_to_f32(embRow, output, config.hiddenSize);
         } else {
             const float* embRow = embedTokens.data() + tokenId * config.hiddenSize;
             std::copy(embRow, embRow + config.hiddenSize, output);
@@ -311,9 +352,14 @@ struct CPUBackendImpl {
     
     // LM Head
     void lmHead(const float* input, float* output) {
-        // 根据权重类型选择矩阵乘法
-        matmul(lmHeadWeight.data(), lmHeadWeightInt8.data(), lmHeadWeightQParams,
-               input, output, config.vocabSize, config.hiddenSize);
+        if (weightType == QuantType::FP16 && !lmHeadWeightFP16.empty()) {
+            // FP16 权重直接计算
+            matmulFP16(lmHeadWeightFP16.data(), input, output, config.vocabSize, config.hiddenSize);
+        } else {
+            // 根据权重类型选择矩阵乘法
+            matmul(lmHeadWeight.data(), lmHeadWeightInt8.data(), lmHeadWeightQParams,
+                   input, output, config.vocabSize, config.hiddenSize);
+        }
     }
 
     // 单层的 Attention 计算
@@ -329,13 +375,13 @@ struct CPUBackendImpl {
         float* k = kBuffer.data();
         float* v = vBuffer.data();
 
-        // QKV 投影 - 根据权重类型自动选择
-        matmul(layer.qProj.data(), layer.qProjInt8.data(), layer.qProjQParams,
-               input, q, qSize, config.hiddenSize);
-        matmul(layer.kProj.data(), layer.kProjInt8.data(), layer.kProjQParams,
-               input, k, kvSize, config.hiddenSize);
-        matmul(layer.vProj.data(), layer.vProjInt8.data(), layer.vProjQParams,
-               input, v, kvSize, config.hiddenSize);
+        // QKV 投影 - 根据权重类型自动选择（支持 FP16/INT8/F32）
+        matmulAuto(layer.qProj.data(), layer.qProjInt8.data(), layer.qProjFP16.data(),
+                   layer.qProjQParams, input, q, qSize, config.hiddenSize);
+        matmulAuto(layer.kProj.data(), layer.kProjInt8.data(), layer.kProjFP16.data(),
+                   layer.kProjQParams, input, k, kvSize, config.hiddenSize);
+        matmulAuto(layer.vProj.data(), layer.vProjInt8.data(), layer.vProjFP16.data(),
+                   layer.vProjQParams, input, v, kvSize, config.hiddenSize);
         
         // Q/K Norm（如果存在）
         if (!layer.qNorm.empty()) {
@@ -423,20 +469,20 @@ struct CPUBackendImpl {
             }
         }
         
-        // Output 投影
-        matmul(layer.oProj.data(), layer.oProjInt8.data(), layer.oProjQParams,
-               attnOut, output, config.hiddenSize, qSize);
+        // Output 投影 - 支持 FP16/INT8/F32
+        matmulAuto(layer.oProj.data(), layer.oProjInt8.data(), layer.oProjFP16.data(),
+                   layer.oProjQParams, attnOut, output, config.hiddenSize, qSize);
     }
 
     // 单层的 FFN 计算
     void ffn(int layerIdx, const float* input, float* output) {
         const LayerWeights& layer = layers[layerIdx];
 
-        // Gate 和 Up 投影
-        matmul(layer.gateProj.data(), layer.gateProjInt8.data(), layer.gateProjQParams,
-               input, gateBuffer.data(), config.intermediateSize, config.hiddenSize);
-        matmul(layer.upProj.data(), layer.upProjInt8.data(), layer.upProjQParams,
-               input, upBuffer.data(), config.intermediateSize, config.hiddenSize);
+        // Gate 和 Up 投影 - 支持 FP16/INT8/F32
+        matmulAuto(layer.gateProj.data(), layer.gateProjInt8.data(), layer.gateProjFP16.data(),
+                   layer.gateProjQParams, input, gateBuffer.data(), config.intermediateSize, config.hiddenSize);
+        matmulAuto(layer.upProj.data(), layer.upProjInt8.data(), layer.upProjFP16.data(),
+                   layer.upProjQParams, input, upBuffer.data(), config.intermediateSize, config.hiddenSize);
         
         // DEBUG: 打印 Gate 和 Up 值
         if (layerIdx == 0) {
@@ -446,10 +492,8 @@ struct CPUBackendImpl {
                       upBuffer[0], upBuffer[1], upBuffer[2], upBuffer[3], upBuffer[4]);
         }
         
-        // SiLU(gate) * up
-        for (int i = 0; i < config.intermediateSize; ++i) {
-            gateBuffer[i] = silu(gateBuffer[i]) * upBuffer[i];
-        }
+        // SiLU(gate) * up - 使用融合算子优化
+        ggml_kernels::silu_mul(gateBuffer.data(), upBuffer.data(), gateBuffer.data(), config.intermediateSize);
         
         // DEBUG: 打印 SiLU(gate) * up 值
         if (layerIdx == 0) {
@@ -457,9 +501,9 @@ struct CPUBackendImpl {
                       gateBuffer[0], gateBuffer[1], gateBuffer[2], gateBuffer[3], gateBuffer[4]);
         }
         
-        // Down 投影
-        matmul(layer.downProj.data(), layer.downProjInt8.data(), layer.downProjQParams,
-               gateBuffer.data(), output, config.hiddenSize, config.intermediateSize);
+        // Down 投影 - 支持 FP16/INT8/F32
+        matmulAuto(layer.downProj.data(), layer.downProjInt8.data(), layer.downProjFP16.data(),
+                   layer.downProjQParams, gateBuffer.data(), output, config.hiddenSize, config.intermediateSize);
         
         // DEBUG: 打印 Down 输出值
         if (layerIdx == 0) {
@@ -553,23 +597,21 @@ bool CPUBackend::loadWeightsINT8(const ModelWeights& weights) {
 }
 
 bool CPUBackend::loadWeightsFP16(const ModelWeights& weights) {
-    // FP16: 转换为 F32 存储
+    // FP16: 保持 FP16 格式存储（主力格式优化）
+    CLLM_INFO("[CPUBackend] Loading FP16 weights (native format)");
+    
     if (weights.embedTokens) {
-        impl_->embedTokens.resize(config_.vocabSize * config_.hiddenSize);
-        quant_kernels::convert_fp16_to_f32(
-            static_cast<const uint16_t*>(weights.embedTokens),
-            impl_->embedTokens.data(),
-            config_.vocabSize * config_.hiddenSize
-        );
+        size_t count = config_.vocabSize * config_.hiddenSize;
+        impl_->embedTokensFP16.resize(count);
+        const uint16_t* src = static_cast<const uint16_t*>(weights.embedTokens);
+        std::copy(src, src + count, impl_->embedTokensFP16.begin());
     }
 
     if (weights.lmHeadWeight) {
-        impl_->lmHeadWeight.resize(config_.vocabSize * config_.hiddenSize);
-        quant_kernels::convert_fp16_to_f32(
-            static_cast<const uint16_t*>(weights.lmHeadWeight),
-            impl_->lmHeadWeight.data(),
-            config_.vocabSize * config_.hiddenSize
-        );
+        size_t count = config_.vocabSize * config_.hiddenSize;
+        impl_->lmHeadWeightFP16.resize(count);
+        const uint16_t* src = static_cast<const uint16_t*>(weights.lmHeadWeight);
+        std::copy(src, src + count, impl_->lmHeadWeightFP16.begin());
     }
 
     // LayerNorm 权重保持 F32，直接复制
@@ -891,33 +933,33 @@ bool CPUBackend::loadLayerWeightsFP16(const ModelWeights& weights) {
                       dstLayer.inputLayernorm.begin());
         }
 
-        // Q, K, V, O Proj - FP16 转 F32
+        // Q, K, V, O Proj - 保持 FP16 格式（主力格式）
         if (srcLayer.qProj) {
-            dstLayer.qProj.resize(static_cast<size_t>(numHeads) * headDim * hiddenSize);
-            quant_kernels::convert_fp16_to_f32(
-                static_cast<const uint16_t*>(srcLayer.qProj),
-                dstLayer.qProj.data(), static_cast<size_t>(numHeads) * headDim * hiddenSize);
+            size_t count = static_cast<size_t>(numHeads) * headDim * hiddenSize;
+            dstLayer.qProjFP16.resize(count);
+            const uint16_t* src = static_cast<const uint16_t*>(srcLayer.qProj);
+            std::copy(src, src + count, dstLayer.qProjFP16.begin());
         }
 
         if (srcLayer.kProj) {
-            dstLayer.kProj.resize(static_cast<size_t>(numKVHeads) * headDim * hiddenSize);
-            quant_kernels::convert_fp16_to_f32(
-                static_cast<const uint16_t*>(srcLayer.kProj),
-                dstLayer.kProj.data(), static_cast<size_t>(numKVHeads) * headDim * hiddenSize);
+            size_t count = static_cast<size_t>(numKVHeads) * headDim * hiddenSize;
+            dstLayer.kProjFP16.resize(count);
+            const uint16_t* src = static_cast<const uint16_t*>(srcLayer.kProj);
+            std::copy(src, src + count, dstLayer.kProjFP16.begin());
         }
 
         if (srcLayer.vProj) {
-            dstLayer.vProj.resize(static_cast<size_t>(numKVHeads) * headDim * hiddenSize);
-            quant_kernels::convert_fp16_to_f32(
-                static_cast<const uint16_t*>(srcLayer.vProj),
-                dstLayer.vProj.data(), static_cast<size_t>(numKVHeads) * headDim * hiddenSize);
+            size_t count = static_cast<size_t>(numKVHeads) * headDim * hiddenSize;
+            dstLayer.vProjFP16.resize(count);
+            const uint16_t* src = static_cast<const uint16_t*>(srcLayer.vProj);
+            std::copy(src, src + count, dstLayer.vProjFP16.begin());
         }
 
         if (srcLayer.oProj) {
-            dstLayer.oProj.resize(static_cast<size_t>(hiddenSize) * numHeads * headDim);
-            quant_kernels::convert_fp16_to_f32(
-                static_cast<const uint16_t*>(srcLayer.oProj),
-                dstLayer.oProj.data(), static_cast<size_t>(hiddenSize) * numHeads * headDim);
+            size_t count = static_cast<size_t>(hiddenSize) * numHeads * headDim;
+            dstLayer.oProjFP16.resize(count);
+            const uint16_t* src = static_cast<const uint16_t*>(srcLayer.oProj);
+            std::copy(src, src + count, dstLayer.oProjFP16.begin());
         }
 
         // Q/K Norm - 保持 F32
@@ -943,26 +985,26 @@ bool CPUBackend::loadLayerWeightsFP16(const ModelWeights& weights) {
                       dstLayer.postAttentionLayernorm.begin());
         }
 
-        // FFN weights - FP16 转 F32
+        // FFN weights - 保持 FP16 格式（主力格式）
         if (srcLayer.gateProj) {
-            dstLayer.gateProj.resize(static_cast<size_t>(intermediateSize) * hiddenSize);
-            quant_kernels::convert_fp16_to_f32(
-                static_cast<const uint16_t*>(srcLayer.gateProj),
-                dstLayer.gateProj.data(), static_cast<size_t>(intermediateSize) * hiddenSize);
+            size_t count = static_cast<size_t>(intermediateSize) * hiddenSize;
+            dstLayer.gateProjFP16.resize(count);
+            const uint16_t* src = static_cast<const uint16_t*>(srcLayer.gateProj);
+            std::copy(src, src + count, dstLayer.gateProjFP16.begin());
         }
 
         if (srcLayer.upProj) {
-            dstLayer.upProj.resize(static_cast<size_t>(intermediateSize) * hiddenSize);
-            quant_kernels::convert_fp16_to_f32(
-                static_cast<const uint16_t*>(srcLayer.upProj),
-                dstLayer.upProj.data(), static_cast<size_t>(intermediateSize) * hiddenSize);
+            size_t count = static_cast<size_t>(intermediateSize) * hiddenSize;
+            dstLayer.upProjFP16.resize(count);
+            const uint16_t* src = static_cast<const uint16_t*>(srcLayer.upProj);
+            std::copy(src, src + count, dstLayer.upProjFP16.begin());
         }
 
         if (srcLayer.downProj) {
-            dstLayer.downProj.resize(static_cast<size_t>(hiddenSize) * intermediateSize);
-            quant_kernels::convert_fp16_to_f32(
-                static_cast<const uint16_t*>(srcLayer.downProj),
-                dstLayer.downProj.data(), static_cast<size_t>(hiddenSize) * intermediateSize);
+            size_t count = static_cast<size_t>(hiddenSize) * intermediateSize;
+            dstLayer.downProjFP16.resize(count);
+            const uint16_t* src = static_cast<const uint16_t*>(srcLayer.downProj);
+            std::copy(src, src + count, dstLayer.downProjFP16.begin());
         }
     }
 

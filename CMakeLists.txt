@@ -713,6 +713,17 @@ if(LLAMA_CPP_FOUND)
     target_compile_definitions(memory_test PRIVATE CLLM_USE_LLAMA_CPP)
 endif()
 
+# 块布局性能测试工具
+add_executable(block_layout_test ${CMAKE_SOURCE_DIR}/tools/block_layout_test.cpp)
+target_link_libraries(block_layout_test
+    cllm_core
+    Threads::Threads
+    spdlog::spdlog
+)
+if(LLAMA_CPP_FOUND)
+    target_compile_definitions(block_layout_test PRIVATE CLLM_USE_LLAMA_CPP)
+endif()
+
 # 添加渐进式性能测试程序（逐步验证各阶段性能衰减）
 # add_executable(incremental_benchmark ${CMAKE_SOURCE_DIR}/tools/incremental_benchmark.cpp)
 # target_link_libraries(incremental_benchmark
