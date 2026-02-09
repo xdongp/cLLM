@@ -203,8 +203,6 @@ build/
 # ====================================
 # GDB
 .gdb_history
-core
-core.*
 
 # Valgrind
 *.memcheck
