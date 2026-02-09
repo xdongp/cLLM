@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for Qwen3 0.6B INT8 model with xLLM
+用于测试Qwen3 0.6B INT8模型与xLLM的脚本
 """
 import sys
 import os
